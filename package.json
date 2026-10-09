@@ -1,0 +1,78 @@
+{
+  "name": "dsh-wotr-console",
+  "version": "1.0.1",
+  "description": "Installable wrapper for the DSH plugin in dsh-wotr-console/: WorkBuddy model pool + Trae connector as two independent providers, plus one settings page with four tabs. This root manifest exists so `pnpm add github:kdczyz/dsh-workbuddy-mode` (DSH 插件管理页) installs a package that declares dsh.bundle.patch at its root.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kdczyz/dsh-workbuddy-mode.git"
+  },
+  "homepage": "https://github.com/kdczyz/dsh-workbuddy-mode#readme",
+  "license": "MIT",
+  "author": "dhdbvcg",
+  "contributors": [
+    "XDTrees (dsh-workbuddy-xdpool, vendored under dsh-wotr-console/vendor/xdpool — MIT)",
+    "dingminhua (dsh-connect-trae, merged in as dsh-wotr-console/lib/trae.js)"
+  ],
+  "type": "module",
+  "main": "./dsh-wotr-console/lib/index.js",
+  "exports": {
+    ".": "./dsh-wotr-console/lib/index.js",
+    "./trae": "./dsh-wotr-console/lib/trae.js",
+    "./client": "./dsh-wotr-console/lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "workbuddy",
+    "codebuddy",
+    "trae",
+    "model-provider",
+    "account-pool",
+    "multi-account",
+    "credits",
+    "usage-history"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.4 <5.0.0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.4 <4.0.0",
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build:console": "npm --prefix dsh-wotr-console run build:console",
+    "check:console": "npm --prefix dsh-wotr-console run check:console",
+    "test": "npm --prefix dsh-wotr-console run test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./dsh-wotr-console/cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  }
+}
