@@ -21,3 +21,7 @@ pnpm-debug.log*
 # 本地临时文件
 /tmp/
 *.tmp
+
+# 本地调试脚本（不进仓库；仅用于复现排查，不被任何源码引用）
+dsh-wotr-console/repro*.mjs
+dsh-wotr-console/check-pool-tmp.mjs

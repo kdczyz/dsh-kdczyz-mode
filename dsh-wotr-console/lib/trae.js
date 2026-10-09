@@ -13,7 +13,7 @@ import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 //#region src/catalog.ts
 /**
 * Bootstrap catalog: identity only where current Trae metadata has not been
@@ -1018,6 +1018,22 @@ function traeOwnAuthPath(region) {
 	return join(resolveDshHome(), `${TRAE_OWN_PREFIX}.${region}.json`);
 }
 /**
+* Plugin-owned copy path for ONE account.
+*
+* Per-account files are what make a multi-account pool possible: the old
+* per-region single file was overwritten by whichever account refreshed last,
+* so a pool of N accounts could only ever persist ONE refreshed token and every
+* other account silently fell back to its (expired) desktop credential. Each
+* account now owns its own file, and the per-region file stays readable as a
+* migration source (see {@link TraeCredentialStore#ownCandidates}).
+*
+* The account id is the same digest `traeAccountId` derives, so the name is
+* stable across restarts and never contains a token.
+*/
+function traeOwnAccountAuthPath(region, accountId) {
+	return join(resolveDshHome(), `${TRAE_OWN_PREFIX}.${region}.${accountId}.json`);
+}
+/**
 * Pre-dual-provider single-copy path. Still read as a migration source (a
 * legacy credential serves the region it belongs to until that region's own
 * first refresh writes the per-region file), and removed by `logout`.
@@ -1120,28 +1136,57 @@ var TraeCredentialStore = class {
 	* region-scoped store, the legacy single file otherwise, or an explicitly
 	* injected path in tests.
 	*/
-	ownAuthPath() {
+	ownAuthPath(accountId) {
 		if (this.ownPathExplicit !== void 0) return this.ownPathExplicit;
-		return this.region !== void 0 ? traeOwnAuthPath(this.region) : this.legacyOwnPath;
+		if (this.region === void 0) return this.legacyOwnPath;
+		// Per-account file when the caller names one: a pool refresh must write
+		// back to the account it refreshed, or the next account's refresh would
+		// overwrite this one's token (the whole reason for per-account files).
+		if (typeof accountId === "string" && accountId !== "") return traeOwnAccountAuthPath(this.region, accountId);
+		return traeOwnAuthPath(this.region);
 	}
 	/**
-	* Every plugin-owned copy to read, most preferred first. A region-scoped
-	* store reads the legacy single copy as its migration source (readAll's
-	* region filter drops it when it carries the other region's credential); an
-	* unscoped store reads everything so diagnostics see both regions.
+	* Every plugin-owned copy to read, most preferred first.
 	*
-	* With an explicitly injected own path the legacy source is read ONLY when
-	* it was injected too — a test that pins one file must not accidentally see
-	* the real machine's legacy copy.
+	* Per-account files come first: once a pool has refreshed two accounts, each
+	* has its own file and the per-region file is stale (it carries whichever
+	* account refreshed last, before this change). The per-region and legacy
+	* single copies stay as migration sources — `readAll`'s region filter drops
+	* them when they carry the other region's credential.
+	*
+	* With an explicitly injected own path the legacy source is read ONLY when it
+	* was injected too — a test that pins one file must not accidentally see the
+	* real machine's legacy copy.
 	*/
 	ownCandidates() {
 		if (this.ownPathExplicit !== void 0) return this.legacyOwnPathExplicit !== void 0 ? [this.ownPathExplicit, this.legacyOwnPathExplicit] : [this.ownPathExplicit];
-		if (this.region !== void 0) return [traeOwnAuthPath(this.region), this.legacyOwnPath];
+		const perAccount = this.perAccountPaths();
+		if (this.region !== void 0) return [...perAccount, traeOwnAuthPath(this.region), this.legacyOwnPath];
 		return [
+			...perAccount,
 			this.legacyOwnPath,
 			traeOwnAuthPath("cn"),
 			traeOwnAuthPath("ai")
 		];
+	}
+	/**
+	* Per-account credential files for this region, newest first.
+	*
+	* Discovered by filename prefix rather than kept in memory: the pool's store
+	* is rebuilt on reload and accounts can be added by a browser login in
+	* another window, so a directory scan is the only listing that cannot go
+	* stale. Absent directory = no per-account copies yet (fresh install).
+	*/
+	perAccountPaths() {
+		if (this.region === void 0) return [];
+		let entries;
+		try {
+			entries = readdirSync(resolveDshHome());
+		} catch {
+			return [];
+		}
+		const prefix = `${TRAE_OWN_PREFIX}.${this.region}.`;
+		return entries.filter((name) => name.startsWith(prefix) && name.endsWith(".json")).sort().map((name) => join(resolveDshHome(), name));
 	}
 	setSource(storagePath, edition = "auto", accountId) {
 		this.storagePathOverride = storagePath;
@@ -1225,6 +1270,30 @@ var TraeCredentialStore = class {
 			this.inflight = void 0;
 		});
 		return this.inflight;
+	}
+	/**
+	* Resolve ONE named account's credential, refreshing it when stale.
+	*
+	* The pool needs this: `resolve()` always answers with the BOUND account
+	* (`current()`), so a pool of several logins could never refresh any account
+	* other than the bound one. Unlike `credentialOf`, which is a pure read-only
+	* lookup used to display a neighbour's balance, this one is allowed to refresh
+	* and to write the result back to that account's own file.
+	*
+	* Returns undefined for an unknown id rather than falling back to the bound
+	* account: silently serving a different account than the one asked for would
+	* bill the wrong login.
+	*/
+	async resolveFor(accountId) {
+		const credential = await this.credentialOf(accountId);
+		if (credential === undefined) return undefined;
+		if (credential.expiresAtMs > Date.now() + this.refreshMarginMs) return credential;
+		try {
+			return await this.refreshNow(credential);
+		} catch (error) {
+			if (credential.expiresAtMs > Date.now()) return credential;
+			throw error;
+		}
 	}
 	async status() {
 		try {
@@ -1382,7 +1451,7 @@ var TraeCredentialStore = class {
 				...outcome.host === void 0 ? {} : { host: outcome.host },
 				source: "dsh"
 			};
-			const ownPath = this.ownAuthPath();
+			const ownPath = this.ownAuthPath(traeAccountId(refreshed));
 			await withFileLock(ownPath, async () => {
 				await writeFileAtomic(ownPath, `${JSON.stringify({
 					version: OWN_VERSION,
@@ -1397,6 +1466,335 @@ var TraeCredentialStore = class {
 			if (credential.expiresAtMs > Date.now() + 3e4) return credential;
 			throw new Error(`trae: token refresh failed and access token is expired (${String(error)}); sign in again in Trae`);
 		}
+	}
+};
+//#endregion
+//#region src/pool.ts
+/**
+* Idle bonus per hour an account has gone unused, and its ceiling.
+*
+* Same shape as the WorkBuddy pool on purpose: two connectors that behave
+* differently for no reason are two things to explain. An idle account must not
+* dominate forever, hence the cap.
+*/
+const TRAE_IDLE_WEIGHT_PER_HOUR = .5;
+const TRAE_IDLE_WEIGHT_MAX = 5;
+/**
+* Weight one account by how long it has been idle.
+*
+* The base of 1 keeps every eligible account in play, so a single unhealthy
+* account cannot pin the pool to itself and the weights never sum to zero.
+* `lastUsedAt === undefined` (never used in this process) earns the full bonus:
+* on a fresh start every account ties and the first requests spread out instead
+* of always landing on the first entry.
+*/
+function traeIdleWeight(lastUsedAt, now) {
+	if (lastUsedAt === void 0) return 6;
+	const hours = (now - lastUsedAt) / 36e5;
+	return 1 + Math.min(Math.max(hours, 0) * TRAE_IDLE_WEIGHT_PER_HOUR, TRAE_IDLE_WEIGHT_MAX);
+}
+/**
+* Read-only pool of every discovered Trae account, with rate-limit cooldown and
+* failover between accounts.
+*
+* Trae's credential store already lists every login on the machine (desktop
+* installs per edition, the CLI token, and the plugin's own per-account files —
+* see {@link TraeCredentialStore#readAll}); before this existed the request
+* chain called `store.resolve()`, which always returns the ONE bound account, so
+* a rate-limited or exhausted login failed the request outright even with other
+* logins available. The pool wraps that list with the same rotate/cool logic the
+* WorkBuddy half has always had.
+*
+* Region is fixed per pool instance: Trae CN and international credentials are
+* not interchangeable, and each region is its own provider.
+*/
+var TraeAccountPool = class {
+	logger;
+	store;
+	cooldownMs;
+	/** How long an account rests after the upstream reports its credits are spent. */
+	exhaustCooldownMs;
+	distribution;
+	accounts = [];
+	/** Cursor for round-robin; unused under priority distribution. */
+	cursor = 0;
+	lastScanAtMs = 0;
+	preferredId;
+	/** Account ids the user switched off on the card. */
+	disabledIds = /* @__PURE__ */ new Set();
+	/** Per-account credit floor; 0 (or absent) means "spend it all". */
+	creditReserves = /* @__PURE__ */ new Map();
+	/** Last known general balance per account, epoch ms aside. */
+	creditBalances = /* @__PURE__ */ new Map();
+	/** Last time each account served a request; drives idle weighting. */
+	lastUsedAt = /* @__PURE__ */ new Map();
+	constructor(options = {}) {
+		this.logger = options.logger;
+		this.store = options.store;
+		this.cooldownMs = options.cooldownMs ?? 6e4;
+		this.exhaustCooldownMs = options.exhaustCooldownMs ?? 18e5;
+		this.distribution = options.distribution ?? "priority";
+	}
+	applyConfig(options) {
+		if (options.cooldownMs !== void 0 && options.cooldownMs >= 1e3) this.cooldownMs = options.cooldownMs;
+		if (options.exhaustCooldownMs !== void 0 && options.exhaustCooldownMs >= 1e3) this.exhaustCooldownMs = options.exhaustCooldownMs;
+		if (options.distribution !== void 0) this.distribution = options.distribution;
+		if (options.disabledAccountIds !== void 0) this.disabledIds = new Set(options.disabledAccountIds);
+		if (options.creditReserves !== void 0) this.setCreditReserves(options.creditReserves);
+	}
+	setCreditReserves(reserves) {
+		const next = /* @__PURE__ */ new Map();
+		for (const [id, value] of Object.entries(reserves ?? {})) if (Number.isFinite(value) && value > 0) next.set(id, Math.floor(value));
+		this.creditReserves = next;
+	}
+	creditReservesInOrder() {
+		const out = {};
+		for (const account of this.accounts) {
+			const reserve = this.creditReserves.get(account.id);
+			if (reserve !== void 0 && reserve > 0) out[account.id] = reserve;
+		}
+		return out;
+	}
+	creditReserveOf(accountId) {
+		return this.creditReserves.get(accountId) ?? 0;
+	}
+	creditsOf(accountId) {
+		return this.creditBalances.get(accountId);
+	}
+	/**
+	* Rescan the machine's Trae logins and merge them into the pool.
+	*
+	* Existing entries keep their cooldown and usage state — `scan()` runs on
+	* every exhausted pick, and an account that is cooling must not be reset by
+	* that. Only the credential itself is replaced, and only when the fresh read
+	* expires later (a browser login in another window is how an account changes).
+	*/
+	async scan() {
+		if (this.store === void 0) return this.accounts;
+		const credentials = await this.store.readAll();
+		const byId = /* @__PURE__ */ new Map();
+		for (const account of this.accounts) byId.set(account.id, account);
+		for (const credential of credentials) {
+			const id = traeAccountId(credential);
+			const existing = byId.get(id);
+			if (existing === void 0) {
+				byId.set(id, {
+					id,
+					label: credential.accountName ?? credential.userId ?? "Trae account",
+					credential,
+					cooldownUntilMs: 0,
+					modelCooldowns: {},
+					rateLimitHits: 0
+				});
+				continue;
+			}
+			if (credential.expiresAtMs > existing.credential.expiresAtMs) byId.set(id, {
+				...existing,
+				credential,
+				label: credential.accountName ?? credential.userId ?? existing.label
+			});
+		}
+		this.accounts = [...byId.values()];
+		this.lastScanAtMs = Date.now();
+		return this.accounts;
+	}
+	list() {
+		return this.accounts;
+	}
+	/**
+	* Accounts currently eligible to serve a request.
+	*
+	* With a `modelId`, an account is eligible when it is not account-wide cooled
+	* AND that model is not cooling on it — Trae rate-limits per model, so a 429
+	* on one model must not take the account's other models out of rotation.
+	*/
+	available(now, modelId) {
+		return this.accounts.filter((account) => {
+			if (this.disabledIds.has(account.id)) return false;
+			const reserve = this.creditReserves.get(account.id);
+			if (reserve !== void 0 && reserve > 0) {
+				const balance = this.creditBalances.get(account.id);
+				if (balance !== void 0 && balance <= reserve) return false;
+			}
+			if (account.cooldownUntilMs > now) return false;
+			if (modelId !== void 0 && (account.modelCooldowns[modelId] ?? 0) > now) return false;
+			return true;
+		});
+	}
+	pickRoundRobin(pool) {
+		const index = this.cursor % pool.length;
+		const account = pool[index];
+		if (account === void 0) return void 0;
+		this.cursor = (index + 1) % pool.length;
+		return account;
+	}
+	/** Weighted random over eligible accounts, biased towards the idle ones. */
+	pickByWeight(pool) {
+		if (pool.length === 1) return pool[0];
+		const now = Date.now();
+		const weights = pool.map((account) => traeIdleWeight(this.lastUsedAt.get(account.id), now));
+		const total = weights.reduce((sum, weight) => sum + weight, 0);
+		if (!Number.isFinite(total) || total <= 0) return pool[0];
+		let roll = Math.random() * total;
+		for (let index = 0; index < pool.length; index += 1) {
+			roll -= weights[index] ?? 0;
+			if (roll < 0) return pool[index];
+		}
+		return pool[pool.length - 1];
+	}
+	/**
+	* Pick the account to serve a request.
+	*
+	* Three distributions, matching the WorkBuddy pool:
+	*
+	* - **priority** (default): one account serves until it is cooled, then the
+	*   next eligible one takes over.
+	* - **round-robin**: consecutive requests rotate through the pool.
+	* - **balanced**: weighted random, favouring whichever account has been idle
+	*   longest.
+	*
+	* An explicit user selection (`prefer`) heads the list in every mode.
+	*
+	* Scans on first use, and rescans when every known account is cooling: a
+	* fresh login is the usual way out of an exhausted pool.
+	*/
+	async acquire(modelId) {
+		if (this.accounts.length === 0) await this.scan();
+		let pool = this.available(Date.now(), modelId);
+		if (pool.length === 0) {
+			await this.scan();
+			pool = this.available(Date.now(), modelId);
+		}
+		if (pool.length === 0) return void 0;
+		if (this.preferredId !== void 0) {
+			const preferred = pool.find((account) => account.id === this.preferredId);
+			if (preferred !== void 0) {
+				await this.ensureFresh(preferred);
+				return preferred;
+			}
+		}
+		const account = this.distribution === "round-robin" ? this.pickRoundRobin(pool) : this.distribution === "balanced" ? this.pickByWeight(pool) : pool[0];
+		if (account === void 0) return void 0;
+		await this.ensureFresh(account);
+		return account;
+	}
+	prefer(accountId) {
+		this.preferredId = accountId;
+	}
+	isDisabled(accountId) {
+		return this.disabledIds.has(accountId);
+	}
+	disabledIdsInOrder() {
+		return this.accounts.filter((account) => this.disabledIds.has(account.id)).map((account) => account.id);
+	}
+	/** Record that an account actually served a request (idle weighting reads it). */
+	noteServed(accountId) {
+		if (!this.accounts.some((account) => account.id === accountId)) return;
+		this.lastUsedAt.set(accountId, Date.now());
+	}
+	/** Record an account's latest known balance, so the reserve check has a value. */
+	noteCredits(accountId, balance) {
+		if (!Number.isFinite(balance)) return;
+		if (!this.accounts.some((account) => account.id === accountId)) return;
+		this.creditBalances.set(accountId, balance);
+	}
+	/** The account that served the most recent request, if any. */
+	lastServedId() {
+		let newest;
+		for (const [id, at] of this.lastUsedAt) {
+			if (!this.accounts.some((account) => account.id === id)) continue;
+			if (newest === undefined || at > newest.at) newest = {
+				id,
+				at
+			};
+		}
+		return newest?.id;
+	}
+	/**
+	* Refresh an account's token when it is inside the refresh margin.
+	*
+	* Trae's own store does the refresh and writes it back to that account's
+	* file (per-account paths, see `traeOwnAccountAuthPath`), so a pool of many
+	* accounts no longer overwrites one shared token.
+	*
+	* A failed refresh keeps the existing token while it is still valid, so an
+	* unreachable refresh endpoint cannot take down a working session.
+	*/
+	async ensureFresh(account) {
+		if (this.store === undefined) return;
+		if (account.credential.expiresAtMs > Date.now() + 3e5) return;
+		try {
+			const fresh = await this.store.credentialOf(account.id);
+			if (fresh !== undefined && fresh.expiresAtMs > Date.now() + 3e5) {
+				account.credential = fresh;
+				return;
+			}
+			const resolved = await this.store.resolveFor(account.id);
+			if (resolved !== undefined) account.credential = resolved;
+		} catch (error) {
+			if (account.credential.expiresAtMs <= Date.now()) this.logger?.warn?.(`dsh-connect-trae: token refresh failed and token expired for ${account.label}`, error);
+			else this.logger?.warn?.(`dsh-connect-trae: token refresh failed but token still valid for ${account.label}`, error);
+		}
+	}
+	/** Best-effort refresh of one account, e.g. after a session-dead upstream answer. */
+	async refreshAccount(accountId) {
+		const account = this.accounts.find((item) => item.id === accountId);
+		if (account === undefined) return;
+		account.credential = {
+			...account.credential,
+			expiresAtMs: 0
+		};
+		await this.ensureFresh(account);
+	}
+	/**
+	* Cool a whole account after the upstream reports its credits are spent.
+	*
+	* Credit exhaustion is account-wide — every model on it is unusable until the
+	* quota resets — so this cools the account as a whole rather than one model.
+	*/
+	penalizeExhausted(accountId) {
+		const until = Date.now() + this.exhaustCooldownMs;
+		this.penalize(accountId, until);
+		this.logger?.warn(`dsh-connect-trae: account credits exhausted; cooling until ${new Date(until).toISOString()}`);
+	}
+	/**
+	* Mark an account (or one of its models) rate-limited.
+	*
+	* With `modelId`, only that model on that account is cooled, matching Trae's
+	* per-model rate limit ("可切换其他模型继续使用"). Without one the whole
+	* account is cooled.
+	*/
+	penalize(accountId, resetAtMs, modelId) {
+		const account = this.accounts.find((item) => item.id === accountId);
+		if (account === undefined) return;
+		account.rateLimitHits += 1;
+		const until = resetAtMs ?? Date.now() + this.cooldownMs;
+		if (modelId !== undefined && modelId !== "") {
+			account.modelCooldowns[modelId] = Math.max(account.modelCooldowns[modelId] ?? 0, until);
+			this.logger?.warn(`dsh-connect-trae: ${account.label} rate-limited on model ${modelId}; cooling that model until ${new Date(until).toISOString()}`);
+			return;
+		}
+		account.cooldownUntilMs = Math.max(account.cooldownUntilMs, until);
+		this.logger?.warn(`dsh-connect-trae: account ${account.label} rate-limited; cooling until ${new Date(until).toISOString()}`);
+	}
+	resetCooldowns() {
+		for (const account of this.accounts) {
+			account.cooldownUntilMs = 0;
+			account.modelCooldowns = {};
+			account.rateLimitHits = 0;
+		}
+	}
+	currentDistribution() {
+		return this.distribution;
+	}
+	/** Diagnostics snapshot: total, cooling count, last scan time. */
+	status() {
+		const now = Date.now();
+		return {
+			count: this.accounts.length,
+			cooling: this.accounts.filter((account) => account.cooldownUntilMs > now).length,
+			lastScanAtMs: this.lastScanAtMs
+		};
 	}
 };
 //#endregion
@@ -1734,6 +2132,79 @@ function readBody(req) {
 		req.on("error", reject);
 	});
 }
+/**
+* Serve one chat request through the account pool.
+*
+* Why this exists: `options.client` is bound to ONE credential (its
+* `credential: () => store.resolve()` always answers with the bound account), so
+* a rate-limited or exhausted login used to fail the request outright even when
+* other Trae logins on the same machine could serve it.
+*
+* The failover rules mirror the WorkBuddy pool:
+*   - `soft_rate` (429) → cool THIS MODEL on that account and try the next one,
+*     because Trae's limit is per model and the account's other models still work;
+*   - `hard_credit` (402) → cool the whole account (no credit means no model) and
+*     rotate;
+*   - `authentication` → refresh that account's token once and retry it, then
+*     rotate: a stale token is the common cause and the account is still good;
+*   - anything else → fail immediately. Retrying a schema/protocol error on
+*     another account only spends more quota to get the same answer.
+*
+* `maxAttempts` is bounded by the pool size so a large pool cannot turn one bad
+* request into an unbounded burst of upstream calls.
+*/
+async function routeTraeChat(options, bodyJson, signal, parsed) {
+	const pool = options.pool;
+	if (pool === undefined) return options.client.chatStream(bodyJson, signal);
+	const modelId = typeof parsed?.model === "string" && parsed.model !== "" ? parsed.model : undefined;
+	let last;
+	let sawRateLimit = false;
+	const tried = [];
+	const maxAttempts = Math.max(1, Math.min(4, (await pool.scan()).length || 1));
+	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+		if (signal?.aborted === true) return {
+			ok: false,
+			status: 400,
+			kind: "client",
+			message: "client disconnected"
+		};
+		const account = await pool.acquire(modelId);
+		if (account === undefined) {
+			return {
+				ok: false,
+				status: sawRateLimit && last !== undefined ? STATUS_BY_KIND[last.kind] : 401,
+				kind: sawRateLimit && last !== undefined ? last.kind : "authentication",
+				message: sawRateLimit && last !== undefined ? `every Trae account is rate-limited for ${modelId ?? "(no model)"} (tried ${tried.length}: ${tried.join(", ")}); resets at the upstream window — ${last.message.slice(0, 200)}` : "no Trae account available; sign in in the Trae desktop app"
+			};
+		}
+		tried.push(account.label);
+		const result = await options.client.chatStream(bodyJson, signal, undefined, account.credential);
+		if (result.ok) {
+			pool.noteServed(account.id);
+			return result;
+		}
+		last = result;
+		if (result.kind === "authentication") {
+			// One token refresh per account per request: the common cause of a 401
+			// is a stale access token, and the account itself is still usable.
+			await pool.refreshAccount(account.id);
+			continue;
+		}
+		if (result.kind === "hard_credit") {
+			pool.penalizeExhausted(account.id);
+			continue;
+		}
+		if (result.kind !== "soft_rate") break;
+		sawRateLimit = true;
+		pool.penalize(account.id, undefined, modelId);
+	}
+	return last ?? {
+		ok: false,
+		status: 500,
+		kind: "server",
+		message: "chat request exhausted without a result"
+	};
+}
 function createTraeShim(options) {
 	const secret = randomBytes(32).toString("base64url");
 	const sockets = /* @__PURE__ */ new Set();
@@ -1794,7 +2265,7 @@ function createTraeShim(options) {
 				const abort = () => controller.abort();
 				req.once("aborted", abort);
 				req.socket.once("close", abort);
-				const result = await options.client.chatStream(raw, controller.signal);
+				const result = await options.routeChat(raw, controller.signal, parsed);
 				if (!result.ok) return writeError(res, STATUS_BY_KIND[result.kind], result.kind, result.message);
 				res.writeHead(200, {
 					"Content-Type": "text/event-stream",
@@ -2225,7 +2696,14 @@ var TraeSoloUpstreamClient = class {
 			});
 		}
 	}
-	async chatStream(bodyJson, signal, functionName) {
+	/**
+	* @param credentialOverride use THIS credential instead of the bound one.
+	*
+	* The pool passes it: `options.credential()` always resolves the account the
+	* store is bound to, so serving another account requires the credential to
+	* come from the caller. Absent = the previous behaviour (bound account).
+	*/
+	async chatStream(bodyJson, signal, functionName, credentialOverride) {
 		let prepared;
 		try {
 			prepared = prepareSoloBody(bodyJson, void 0, functionName);
@@ -2237,7 +2715,8 @@ var TraeSoloUpstreamClient = class {
 				message: "invalid JSON request"
 			};
 		}
-		const [credential, identity] = await Promise.all([this.options.credential(), this.options.identity()]);
+		const [resolved, identity] = await Promise.all([credentialOverride ?? this.options.credential(), this.options.identity()]);
+		const credential = resolved;
 		const headers = buildTraeCnHeaders(credential, identity);
 		const base = this.options.baseUrl ?? REGION_GATEWAYS[regionOfCredential(credential)].chat;
 		let response;
@@ -2713,7 +3192,7 @@ var TraeSoloBridge = class {
 		this.catalog = catalog;
 		this.wireResolver = wireResolver;
 	}
-	async chatStream(bodyJson, signal) {
+	async chatStream(bodyJson, signal, credential) {
 		let model = "glm-5.2";
 		let prepared = bodyJson;
 		try {
@@ -2748,7 +3227,7 @@ var TraeSoloBridge = class {
 				message: "invalid JSON request"
 			};
 		}
-		const result = await this.upstream.chatStream(prepared, signal);
+		const result = await this.upstream.chatStream(prepared, signal, undefined, credential);
 		if (!result.ok) return result;
 		return await bridgeTraeSoloStreamOrFail(result.response, model);
 	}
@@ -3335,12 +3814,12 @@ var TraeFallbackUpstreamClient = class {
 	constructor(options) {
 		this.options = options;
 	}
-	async chatStream(bodyJson, signal) {
-		const primary = await this.options.primary.chatStream(bodyJson, signal);
+	async chatStream(bodyJson, signal, credential) {
+		const primary = await this.options.primary.chatStream(bodyJson, signal, credential);
 		if (primary.ok) return primary;
 		if (!this.canFallback(primary, signal)) return primary;
 		this.options.onFallback?.(primary);
-		return this.options.fallback.chatStream(bodyJson, signal);
+		return this.options.fallback.chatStream(bodyJson, signal, credential);
 	}
 	canFallback(result, signal) {
 		if (signal?.aborted === true) return false;
@@ -3505,8 +3984,8 @@ var TraeDelegatingUpstreamClient = class {
 	replace(delegate) {
 		this.delegate = delegate;
 	}
-	chatStream(bodyJson, signal) {
-		return this.delegate.chatStream(bodyJson, signal);
+	chatStream(bodyJson, signal, credential) {
+		return this.delegate.chatStream(bodyJson, signal, credential);
 	}
 };
 //#endregion
@@ -3957,6 +4436,14 @@ const TRAE_ACCOUNT_CREDITS_PATH = "/plugins/dsh-connect-trae/account-credits";
 * route in this plugin that changes upstream account state.
 */
 const TRAE_CHECKIN_PATH = "/plugins/dsh-connect-trae/checkin";
+/**
+* Account-pool routes. Named after the WorkBuddy pool's own routes on purpose
+* (cooldowns/reset, accounts/credit-reserve), so the two connectors expose the
+* same management actions under their own namespace.
+*/
+const TRAE_COOLDOWNS_RESET_PATH = "/plugins/dsh-connect-trae/cooldowns/reset";
+const TRAE_POOL_ACCOUNT_PATH = "/plugins/dsh-connect-trae/pool/account";
+const TRAE_POOL_RESERVE_PATH = "/plugins/dsh-connect-trae/pool/credit-reserve";
 /** Query parameter naming the region a card request addresses. */
 const TRAE_REGION_PARAM = "region";
 /** Every region, in card tab order. */
@@ -4122,6 +4609,22 @@ const TRAE_CREDIT_ALTERNATIVE_LIMIT = 8;
 * Only ids present in the region's live catalog are accepted downstream (see
 * index.ts), so this reader only has to produce a bounded, string-only list.
 */
+/**
+* Read a JSON request body as text, capped so a browser cannot post an
+* unbounded blob into these routes. Returns "" for an empty body; the caller
+* parses.
+*/
+async function readJsonBody(req) {
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of req) {
+		const buffer = chunk;
+		size += buffer.byteLength;
+		if (size > 65536) throw new Error("request body too large");
+		chunks.push(buffer);
+	}
+	return Buffer.concat(chunks).toString("utf8").trim();
+}
 async function readModelTestBody(req) {
 	const chunks = [];
 	let size = 0;
@@ -4203,6 +4706,72 @@ function toCheckin(status) {
 * Sign-in state is read-only; credit is a live billing answer whose failure
 * degrades to `creditsError` rather than failing the whole document.
 */
+/**
+* The account-pool section of one region's status document.
+*
+* Mirrors what the WorkBuddy pool's own status exposes, because the card shows
+* both halves with the same widgets: how requests are spread, how many accounts
+* are cooling, which account served last, and the per-account reserve floor.
+*
+* Read-only and cheap — no upstream call — so it can ride along with every
+* status read without costing quota.
+*/
+/**
+ * The model list one region's CARD should display.
+ *
+ * 卡片要的是**全量目录**（未经 `enabledModelIds` 过滤），否则用户一旦取消勾选，
+ * 那个模型就从列表里消失 —— 再也勾不回来。这与 WorkBuddy 的分工一致：
+ * 那边卡片读 `catalog.current()`（全量、可勾选），DSH 选择器读 `visible()`
+ * （应用选择后的结果）。
+ *
+ * 这里**只读保存值**（`lastCatalog` → 旧字段 `models` → 静态 fallback），
+ * 也就是「从 Trae 刷新」那一刻才写下来的目录快照。这是刻意的：
+ * 后台/选择器的实时拉取（`registerModelDiscovery`、启动时的
+ * `discoverModels`）只喂 DSH 选择器与 wire 映射，**不改**卡片列表 ——
+ * 用户要求「仅手动获取上游模型在启用后才会更新模型列表」。切账号也沿用
+ * 同一快照，直到用户再次手动刷新。
+ *
+ * DSH 选择器那边（`registerModelDiscovery`）才应用选择，走 `derive()`。
+ */
+function catalogModelsFor(deps, region) {
+	return deps.displayModels(region);
+}
+async function poolDoc(deps, region) {
+	const pool = deps.pool?.(region);
+	if (pool === undefined) return {};
+	/**
+	 * **每次都重扫**，而不是「只在池为空时扫」。
+	 *
+	 * 这是「登录成功了，号池里却看不到这个账号」的直接原因：浏览器登录把凭据
+	 * 写到磁盘后，池并不知道；如果池里**已经有**账号（比如桌面端那个），
+	 * 「只在为空时扫」就永远不会把新登录吸收进来 —— 用户看到的就是新账号凭空
+	 * 消失，直到重启 DSH。
+	 *
+	 * 重扫只读本机几个 JSON 文件，不发任何上游请求，所以挂在每次状态读取上
+	 * 是安全的（与 WorkBuddy 池的做法一致）。
+	 */
+	await pool.scan();
+	const now = Date.now();
+	return {
+		pool: {
+			distribution: pool.currentDistribution(),
+			cooling: pool.list().filter((account) => account.cooldownUntilMs > now).length,
+			lastServedId: pool.lastServedId(),
+			creditReserves: pool.creditReservesInOrder(),
+			accounts: pool.list().map((account) => ({
+				id: account.id,
+				label: account.label,
+				cooling: account.cooldownUntilMs > now,
+				rateLimitHits: account.rateLimitHits,
+				disabled: pool.isDisabled(account.id),
+				reserved: pool.creditReserveOf(account.id) > 0 && (pool.creditsOf(account.id) ?? Number.POSITIVE_INFINITY) <= pool.creditReserveOf(account.id),
+				creditReserve: pool.creditReserveOf(account.id),
+				credits: pool.creditsOf(account.id),
+				cooldownUntilMs: account.cooldownUntilMs > now ? account.cooldownUntilMs : undefined
+			}))
+		}
+	};
+}
 async function traeWebUsage(deps, region) {
 	const store = deps.store(region);
 	const enabled = deps.regionEnabled(region);
@@ -4230,6 +4799,7 @@ async function traeWebUsage(deps, region) {
 			status: "signed-out",
 			accounts,
 			enabled,
+			...await poolDoc(deps, region),
 			message: safeMessage(error)
 		};
 	}
@@ -4240,11 +4810,20 @@ async function traeWebUsage(deps, region) {
 		region,
 		enabled,
 		accounts,
-		models: deps.displayModels(region).map((model) => ({
+		/**
+		 * 卡片显示的是**保存的目录快照**（`lastCatalog` → 旧字段 `models` →
+		 * fallback），而不是后台拉到的实时目录。切账号也不会用它覆盖。
+		 *
+		 * 列表只有在「从 Trae 刷新」那一刻才更新（那一刻同时落盘并全量启用），
+		 * 满足「仅手动获取上游模型在启用后才会更新模型列表」。后台/选择器的
+		 * 实时拉取只喂 DSH 选择器与 wire 映射，不经过这里。
+		 */
+		models: catalogModelsFor(deps, region).map((model) => ({
 			...model,
 			...model.input === void 0 ? {} : { input: [...model.input] }
 		})),
 		enabledModelIds: [...deps.enabledModelIds(region)],
+		...await poolDoc(deps, region),
 		...deps.rawDiagnostic === void 0 ? {} : { rawChat: deps.rawDiagnostic(region) }
 	};
 	const client = deps.client(region);
@@ -4420,7 +4999,7 @@ function registerTraeUsageRoute(ctx, deps) {
 				const region = requestRegion(req, res);
 				if (region === void 0) return;
 				try {
-					json(res, 200, { models: await deps.discoverModels(region) });
+					json(res, 200, { models: sanitizeCatalog(await deps.discoverModels(region)) });
 				} catch (error) {
 					json(res, 500, { error: safeMessage(error) });
 				}
@@ -4523,6 +5102,99 @@ function registerTraeUsageRoute(ctx, deps) {
 				}
 			}
 		});
+		/**
+		* Clear every cooldown in one region's pool.
+		*
+		* The WorkBuddy pool has the same escape hatch, and for the same reason: a
+		* cooldown is the pool's own bookkeeping, so a stuck or over-long window is
+		* something the user must be able to clear without restarting DSH.
+		*/
+		const disposeCooldownsReset = ctx.webServer.register({
+			kind: "exact",
+			path: TRAE_COOLDOWNS_RESET_PATH,
+			handler: (req, res) => {
+				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
+				const region = requestRegion(req, res);
+				if (region === void 0) return;
+				const pool = deps.pool?.(region);
+				if (pool === undefined) return json(res, 503, { error: "account pool unavailable" });
+				pool.resetCooldowns();
+				json(res, 200, { cleared: true });
+			}
+		});
+		/**
+		* Take one account out of rotation / put it back.
+		*
+		* Disabling is a USER preference, not a property of the credential, so it
+		* lives on the pool (a rescan rebuilds accounts from disk and would
+		* otherwise drop it) — the same split the WorkBuddy pool makes between its
+		* `disabledIds` (skip at pick time) and `ignoredIds` (skip at scan time).
+		*/
+		const disposePoolAccount = ctx.webServer.register({
+			kind: "exact",
+			path: TRAE_POOL_ACCOUNT_PATH,
+			handler: async (req, res) => {
+				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
+				const region = requestRegion(req, res);
+				if (region === void 0) return;
+				const pool = deps.pool?.(region);
+				if (pool === undefined) return json(res, 503, { error: "account pool unavailable" });
+				let body;
+				try {
+					body = JSON.parse(await readJsonBody(req));
+				} catch {
+					return json(res, 400, { error: "invalid JSON body" });
+				}
+				const accountId = typeof body?.accountId === "string" ? body.accountId : "";
+				if (accountId === "") return json(res, 400, { error: "缺少 accountId" });
+				await pool.scan();
+				if (!pool.list().some((account) => account.id === accountId)) return json(res, 404, { error: "account not found" });
+				const next = new Set(pool.disabledIdsInOrder());
+				if (body?.disabled === true) next.add(accountId);
+				else next.delete(accountId);
+				pool.applyConfig({ disabledAccountIds: [...next] });
+				json(res, 200, { disabledIds: [...next] });
+			}
+		});
+		/**
+		* Set an account's credit floor.
+		*
+		* The pool stops picking an account once its last known general balance is
+		* at or below the floor, so the user keeps a cushion instead of draining
+		* every login to zero. Persisted by the card through the region's settings
+		* slot; this route applies it to the live pool immediately.
+		*/
+		const disposePoolReserve = ctx.webServer.register({
+			kind: "exact",
+			path: TRAE_POOL_RESERVE_PATH,
+			handler: async (req, res) => {
+				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
+				const region = requestRegion(req, res);
+				if (region === void 0) return;
+				const pool = deps.pool?.(region);
+				if (pool === undefined) return json(res, 503, { error: "account pool unavailable" });
+				let body;
+				try {
+					body = JSON.parse(await readJsonBody(req));
+				} catch {
+					return json(res, 400, { error: "invalid JSON body" });
+				}
+				const accountId = typeof body?.accountId === "string" ? body.accountId : "";
+				if (accountId === "") return json(res, 400, { error: "缺少 accountId" });
+				const value = Number(body?.credits);
+				if (!Number.isFinite(value) || value < 0) return json(res, 400, { error: "credits 必须是非负数字" });
+				await pool.scan();
+				if (!pool.list().some((account) => account.id === accountId)) return json(res, 404, { error: "account not found" });
+				const reserves = { ...pool.creditReservesInOrder() };
+				if (value <= 0) delete reserves[accountId];
+				else reserves[accountId] = Math.floor(value);
+				pool.applyConfig({ creditReserves: reserves });
+				json(res, 200, { creditReserves: reserves });
+			}
+		});
 		return () => {
 			disposeCheckin();
 			disposeRefresh();
@@ -4530,6 +5202,9 @@ function registerTraeUsageRoute(ctx, deps) {
 			disposeAccounts();
 			disposeAccountCredits();
 			disposeUsage();
+			disposeCooldownsReset();
+			disposePoolAccount();
+			disposePoolReserve();
 		};
 	}, "dsh-connect-trae: Web usage route");
 }
@@ -4820,7 +5495,20 @@ const regionStateConfig = z.object({
 	lastCatalog: z.array(modelConfig).default([]),
 	enabledModelIds: z.array(z.string()).default([]),
 	imageModelIds: z.array(z.string()).default([]),
-	contextBudgets: z.dict(z.number().step(1).min(1)).default({})
+	contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
+	/**
+	* Account-pool fields, mirroring the WorkBuddy pool's own settings so the two
+	* connectors read and behave the same way. All three are optional: a region
+	* slot written before the pool existed has none of them, and must keep
+	* working exactly as before (the defaults below are the pre-pool behaviour).
+	*/
+	distribution: z.union([
+		"priority",
+		"round-robin",
+		"balanced"
+	]).default("priority").description("How requests are spread across this region's accounts: priority (drain one), round-robin (in order), or balanced (idle-weighted random)"),
+	disabledAccountIds: z.array(z.string()).default([]).description("Trae account ids excluded from the pool (empty = every discovered login participates)"),
+	creditReserves: z.dict(z.number().step(1).min(0)).default({}).description("Per-account credit floor: stop using an account once its general balance reaches this value")
 });
 const accountSelectionConfig = z.object({
 	cn: z.string().description("Selected domestic (CN) account id (never a token)"),
@@ -4970,6 +5658,18 @@ function apply(ctx, config) {
 			edition: unwrapVolatile(config.edition) ?? "auto",
 			refresh: async (credential) => refreshTraeCredential(credential, void 0, await refreshDeviceSafe())
 		});
+		/**
+		* The account pool for this region.
+		*
+		* The upstream clients below still call `store.resolve()` for their own
+		* read-only work (model directory, usage), which keeps binding semantics
+		* intact for those; the CHAT path goes through the pool instead, which
+		* picks an account per request and can rotate away from a cooled one.
+		*/
+		const pool = new TraeAccountPool({
+			store,
+			logger: ctx.logger
+		});
 		const solo = new TraeSoloUpstreamClient({
 			credential: () => store.resolve(),
 			identity,
@@ -4982,6 +5682,11 @@ function apply(ctx, config) {
 		const shim = createTraeShim({
 			catalog,
 			client: delegating,
+			pool,
+			routeChat: (bodyJson, signal, parsed) => routeTraeChat({
+				client: delegating,
+				pool
+			}, bodyJson, signal, parsed),
 			logger: ctx.logger
 		});
 		let rawDiagnostic = () => ({ state: "disabled" });
@@ -5019,9 +5724,26 @@ function apply(ctx, config) {
 		stacks[region] = {
 			region,
 			store,
+			pool,
 			catalog,
 			shim,
 			delegating,
+			/**
+			 * 最近一次从上游拉到的**全量**目录（未经 enabledModelIds 过滤）。
+			 *
+			 * 为什么单独存一份：`catalog` 里放的是 `derive()` 之后的结果 —— 也就是
+			 * **已过滤**的列表，那是给 provider 服务的（DSH 只该看到勾选的模型）。
+			 * 但卡片需要全量，否则用户一取消勾选，那个模型就从列表里消失、再也勾
+			 * 不回来。
+			 *
+			 * WorkBuddy 那边一个 `catalog` 同时扮演两个角色（`current()` 全量给卡片、
+			 * `visible()` 过滤给选择器）；Trae 的 `catalog` 只有过滤后的语义，所以
+			 * 这里补一个全量槽，与 `liveDirectory` 配对使用。
+			 *
+			 * 写入点：discoverModels（每次拉取后）。空数组表示「还没拉到」，
+			 * 此时读的一方退回保存值/fallback。
+			 */
+			liveDirectory: [],
 			usageClient: new TraeUsageClient({
 				credential: () => store.resolve(),
 				deviceId: async () => (await identity()).deviceId
@@ -5044,6 +5766,8 @@ function apply(ctx, config) {
 			},
 			discoverModels: async (signal) => {
 				const merged = mergeTraeModelSources(await withDirectoryRetry(() => remoteCatalog.fetchModels(signal)), await solo.fetchModels(signal));
+				// 全量目录留一份给卡片（catalog 里放的是过滤后的，见 liveDirectory 注释）
+				if (merged.length > 0) stacks[region].liveDirectory = sanitizeCatalog(merged);
 				wire.callableKeys.clear();
 				for (const model of merged) {
 					wire.callableKeys.add(model.id.trim().toLowerCase());
@@ -5094,8 +5818,11 @@ function apply(ctx, config) {
 	}
 	ctx.inject(["webServer"], (webCtx) => registerTraeUsageRoute(webCtx, {
 		store: (region) => stacks[region].store,
+		pool: (region) => stacks[region].pool,
 		client: (region) => stacks[region].usageClient,
 		displayModels: (region) => displayModels(current(), region),
+		/** 实时**全量**目录（卡片显示它；catalog 里那份是过滤后的） */
+		liveModels: (region) => stacks[region]?.liveDirectory ?? [],
 		enabledModelIds: (region) => regionStateOf(current(), region).enabledModelIds ?? [],
 		regionEnabled: (region) => regionEnabled(current(), region),
 		discoverModels: (region, signal) => stacks[region].discoverModels(signal),
@@ -5139,7 +5866,18 @@ function apply(ctx, config) {
 	const applySelection = (value) => {
 		for (const region of REGION_KEYS) {
 			const stack = stacks[region];
+			const slot = regionStateOf(value, region);
 			stack.store.setSource(unwrapVolatile(value.authFile), unwrapVolatile(value.edition) ?? "auto", effectiveAccountFor(region, value));
+			// Account-pool settings: same three knobs as the WorkBuddy pool
+			// (distribution / disabled ids / per-account credit floor).
+			stack.pool.applyConfig({
+				distribution: slot.distribution,
+				disabledAccountIds: slot.disabledAccountIds,
+				creditReserves: unwrapVolatile(slot.creditReserves)
+			});
+			// A disabled-region provider serves no requests, so its pool must not
+			// hold a preferred account that the user cannot see or change.
+			stack.pool.prefer(regionEnabled(value, region) ? effectiveAccountFor(region, value) : undefined);
 			stack.catalog.set(configuredModels(value, region));
 			stack.invalidateAdapter();
 		}
@@ -5191,7 +5929,26 @@ function apply(ctx, config) {
 				if (region === void 0) return [];
 				if (!regionEnabled(current(), region)) return [];
 				const cancellation = signal ?? request.signal;
-				return applyImageSelection(await stacks[region].discoverModels(cancellation), imageSet(current(), region)).map((model) => ({
+				/**
+				 * **必须应用用户选择，不能把原始上游目录直接交出去。**
+				 *
+				 * 这是「模型选择器里每次都是全部模型开启」的根因：这里原先走的是
+				 * `stacks[region].discoverModels(...)` —— 上游实时目录的**原样**，
+				 * 只叠了图片能力（`applyImageSelection`），完全没过 `enabledModelIds`。
+				 * 于是无论用户在卡片上勾了什么，DSH 拿到的一直是全量模型；卡片上
+				 * 那个「已启用 N 个」也就永远对不上 DSH 里看到的。
+				 *
+				 * WorkBuddy 那边给的是 `catalogs[region].visible()`，而 `visible()`
+				 * 会按 `enabledModelIds` 过滤、按 `imageModelIds` 叠图片、按
+				 * `contextBudgets` 压窗口。`derive()` 就是 Trae 侧做这三件事的等价物
+				 * （见 applyImageSelection / deriveCatalog / applyContextBudgets），
+				 * 所以这里必须先拿到实时目录、再经 derive 收口。
+				 *
+				 * 注意顺序：discoverModels 负责刷新 wire 映射（模型名↔上游
+				 * config_name），那是**副作用**，不能因为过滤就跳过，所以先调用它。
+				 */
+				const discovered = await stacks[region].discoverModels(cancellation);
+				return derive(current(), discovered, region).map((model) => ({
 					id: model.id,
 					name: traeModelDisplayName(model),
 					...model.contextWindow === void 0 ? {} : { contextWindow: model.contextWindow },
@@ -5245,4 +6002,4 @@ function apply(ctx, config) {
 	});
 }
 //#endregion
-export { Config, FALLBACK_TRAE_MODELS, FALLBACK_TRAE_MODELS_AI, REGION_GATEWAYS, SseDecoder, TRAE_AI_PROVIDER, TRAE_CHECKIN_PATH, TRAE_CN_AGENT_TASK_PATH, TRAE_CN_TITLE_PATH, TRAE_MODELS_TEST_PATH, TRAE_MODEL_DETAIL_FUNCTIONS, TRAE_MODEL_DETAIL_PATH, TRAE_PAY_BASE, TRAE_PROBE_TIMEOUT_MS, TRAE_PROVIDER, TRAE_PROVIDERS, TRAE_PROVIDER_DISPLAY_NAMES, TRAE_RAW_CHAT_V1_PATH, TRAE_RAW_CHAT_V2_PATH, TRAE_REASONING_EFFORTS, TRAE_REGIONS, TRAE_REGION_PARAM, TRAE_SETTINGS_NS, TRAE_SOLO_CHAT_PATH, TRAE_SOLO_FUNCTION, TRAE_SOLO_MODELS_PATH, TRAE_SOLO_REMOTE_BASE, TRAE_STATE_DB_FILENAME, TRAE_STREAM_IDLE_TIMEOUT_MS, TRAE_USAGE_PATH, TRAE_VERSION_CODE_FALLBACK, TraeCatalog, TraeCredentialStore, TraeDelegatingUpstreamClient, TraeFallbackUpstreamClient, TraeGatedUpstreamClient, TraeRawCapabilityController, TraeRawCapabilityState, TraeRawChatUpstreamClient, TraeSoloBridge, TraeSoloRemoteCatalogClient, TraeSoloUpstreamClient, TraeUsageClient, UnconfiguredTraeUpstreamClient, apply, applyContextBudgets, applyImageSelection, applyReasoningEffort, asVolatile, bridgeTraeSoloStream, buildTraeAgentTaskBody, buildTraeCnHeaders, buildTraeFusionRawChatEnvelope, buildTraeModelDetailRequest, buildTraeRawChatDraft, buildTraeRawChatRuntimeConfig, classifyProbeError, classifyProbeResult, classifyTraeRawChatFailure, createTraeAdapter, createTraeRawGateway, createTraeShim, decodeRawChatChunk, decodeTraeEvent, decryptTraeStorageValue, deriveCatalog, describeIdShape, describeNameShape, discoveredCatalog, fallbackModelsFor, hashTraeRawChatArg, identityHeaders, inject, legacyTraeOwnAuthPath, maskUserPath, mergeTraeModelSources, name, nextRegionEnabled, nextRegionSlots, normalizeTraeCredential, normalizeTraeVersionCode, parseObservedModelConfig, parseReasoningCapability, parseTraeAuthValue, parseTraeCachedModel, parseTraeModelExtraConfigLogLine, parseTraeRawChatBehaviorConfig, parseTraeRemoteModel, parseTraeStorageDocument, pickTraeStorageIdentity, prepareSoloBody, probeBody, probeModelsSequentially, probeOneModel, probeTraeRawChatCapability, rawCapabilityDiagnostic, rawCapabilityFingerprint, readTraeCachedModel, readTraeCliIdentity, readTraeIdentity, refreshTraeCredential, regionEnabled, regionEnabledOf, regionOfCredential, regionOfEdition, regionOfHost, regionOfTraeProvider, regionOfTraeStatusUrl, regionOfUserRegion, regionStateOf, registerTraeUsageRoute, resolveTraeIdentity, resolveTraeRawRuntime, sanitizeCatalog, settingsNamespaceOf, traeEndpoint, traeInputModalities, traeModelDisplayName, traeOwnAuthPath, traeRawChatExtraInfo, traeStateDatabaseCandidates, traeStorageCandidates, traeWebUsage, traeWindowsAppNames, unwrapVolatile, unwrapVolatileDeep, withTraeRegion };
+export { Config, FALLBACK_TRAE_MODELS, FALLBACK_TRAE_MODELS_AI, REGION_GATEWAYS, SseDecoder, TRAE_AI_PROVIDER, TRAE_CHECKIN_PATH, TRAE_CN_AGENT_TASK_PATH, TRAE_CN_TITLE_PATH, TRAE_MODELS_TEST_PATH, TRAE_MODEL_DETAIL_FUNCTIONS, TRAE_MODEL_DETAIL_PATH, TRAE_PAY_BASE, TRAE_PROBE_TIMEOUT_MS, TRAE_PROVIDER, TRAE_COOLDOWNS_RESET_PATH, TRAE_POOL_ACCOUNT_PATH, TRAE_POOL_RESERVE_PATH, TRAE_PROVIDERS, TRAE_PROVIDER_DISPLAY_NAMES, TRAE_RAW_CHAT_V1_PATH, TRAE_RAW_CHAT_V2_PATH, TRAE_REASONING_EFFORTS, TRAE_REGIONS, TRAE_REGION_PARAM, TRAE_SETTINGS_NS, TRAE_SOLO_CHAT_PATH, TRAE_SOLO_FUNCTION, TRAE_SOLO_MODELS_PATH, TRAE_SOLO_REMOTE_BASE, TRAE_STATE_DB_FILENAME, TRAE_STREAM_IDLE_TIMEOUT_MS, TRAE_USAGE_PATH, TRAE_VERSION_CODE_FALLBACK, TraeAccountPool, TraeCatalog, TraeCredentialStore, TraeDelegatingUpstreamClient, TraeFallbackUpstreamClient, TraeGatedUpstreamClient, TraeRawCapabilityController, TraeRawCapabilityState, TraeRawChatUpstreamClient, TraeSoloBridge, TraeSoloRemoteCatalogClient, TraeSoloUpstreamClient, TraeUsageClient, UnconfiguredTraeUpstreamClient, apply, applyContextBudgets, applyImageSelection, applyReasoningEffort, asVolatile, bridgeTraeSoloStream, buildTraeAgentTaskBody, buildTraeCnHeaders, buildTraeFusionRawChatEnvelope, buildTraeModelDetailRequest, buildTraeRawChatDraft, buildTraeRawChatRuntimeConfig, classifyProbeError, classifyProbeResult, classifyTraeRawChatFailure, createTraeAdapter, createTraeRawGateway, createTraeShim, decodeRawChatChunk, decodeTraeEvent, decryptTraeStorageValue, deriveCatalog, describeIdShape, describeNameShape, discoveredCatalog, fallbackModelsFor, hashTraeRawChatArg, identityHeaders, inject, legacyTraeOwnAuthPath, maskUserPath, mergeTraeModelSources, name, nextRegionEnabled, nextRegionSlots, normalizeTraeCredential, normalizeTraeVersionCode, parseObservedModelConfig, parseReasoningCapability, parseTraeAuthValue, parseTraeCachedModel, parseTraeModelExtraConfigLogLine, parseTraeRawChatBehaviorConfig, parseTraeRemoteModel, parseTraeStorageDocument, pickTraeStorageIdentity, prepareSoloBody, probeBody, probeModelsSequentially, probeOneModel, probeTraeRawChatCapability, rawCapabilityDiagnostic, rawCapabilityFingerprint, readTraeCachedModel, readTraeCliIdentity, readTraeIdentity, refreshTraeCredential, regionEnabled, regionEnabledOf, regionOfCredential, regionOfEdition, regionOfHost, regionOfTraeProvider, regionOfTraeStatusUrl, regionOfUserRegion, regionStateOf, registerTraeUsageRoute, resolveTraeIdentity, resolveTraeRawRuntime, sanitizeCatalog, settingsNamespaceOf, traeAccountId, traeEndpoint, traeInputModalities, traeModelDisplayName, traeOwnAccountAuthPath, traeOwnAuthPath, traeRawChatExtraInfo, traeStateDatabaseCandidates, traeStorageCandidates, traeWebUsage, traeWindowsAppNames, unwrapVolatile, unwrapVolatileDeep, withTraeRegion };

@@ -64,12 +64,16 @@ function stripEsmSyntax(source) {
 /**
  * 生成要插进 client.js 的块。
  *
- * 形状是一个箭头函数，调用方传 (react, jsxRuntime)，返回页面组件：
+ * 形状是一个箭头函数，调用方传 (react, jsxRuntime, embedded)，返回页面组件：
  *
- *   const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
+ *   const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
  *     <console.mjs 的函数体，export 已剥掉>
- *     return createConsoleSection({ react, jsxRuntime });
+ *     return createConsoleSection({ react, jsxRuntime, embedded });
  *   };
+ *
+ * `embedded` 是 client.js 从两份 vendored 客户端里**截获**的两张配置卡片
+ * （XD Pool / Trae），形如 `{ pool: {Component, props}, trae: {Component, props} }`。
+ * 页面把它们渲染成前两个标签页，于是配置与查看收在同一个入口。
  *
  * 为什么不用 `new Function(源码字符串)`：
  *   1. Electron 渲染进程的 CSP 可能不含 'unsafe-eval'，那样会抛 EvalError，
@@ -88,14 +92,14 @@ function buildBlock(rawSource) {
   return [
     BEGIN,
     '// 本块由 scripts/gen-console-inline.mjs 生成，请勿手改。',
-    '// 内容：lib/console.mjs —— 管理页组件（账号 / 积分 / 使用记录）。',
+    '// 内容：lib/console.mjs —— 管理页组件（XD Pool / Trae 配置 / 账号 / 积分 / 使用记录）。',
     '// 它是 ES 模块，但此处以**真函数**内联（不是字符串 + eval）：',
     '// client.js 是 classic script 不能顶层 import，而 eval 可能被 CSP 拒绝。',
     '// 改界面请改 lib/console.mjs 后重跑生成脚本；apply.sh 会校验是否同步。',
-    'const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {',
+    'const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {',
     indented,
     '',
-    '  return createConsoleSection({ react, jsxRuntime });',
+    '  return createConsoleSection({ react, jsxRuntime, embedded });',
     '};',
     END,
   ].join('\n');

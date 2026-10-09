@@ -23,10 +23,10 @@
  *       workbuddy-xdpool         国内版
  *       workbuddy-xdpool-global  国际版
  *   - 转发 vendored 的 Config schema，让 DSH 设置页能生成配置表单
- *   - 挂两条只读接口给合并后的四标签页读历史记录
+ *   - 挂两条只读接口给合并后的管理页读历史记录
  *   - 兜底清理热重载时残留的 LLM 注册，避免 DUPLICATE_ADAPTER
  *
- * 界面：全部走 DSH 内置的设置面板（四标签页由 lib/client.js 注册）。
+ * 界面：全部走 DSH 内置的设置面板（六标签页由 lib/client.js 注册）。
  * 凭据：由 vendored xdpool 自己管理，本文件不读不写任何凭据文件。
  */
 
@@ -38,6 +38,8 @@ import { join } from 'node:path';
 // 见 vendor/xdpool/README.md —— 代码原样保留，便于与上游对照升级。
 import * as xdpoolModule from '../vendor/xdpool/lib/index.js';
 import * as creditStore from './credit-store.mjs';
+import * as wbAuth from './wb-auth.mjs';
+import * as traeAuth from './trae-auth.mjs';
 
 export const name = 'wotr-console';
 
@@ -282,6 +284,57 @@ function resolveDshHome(ctx) {
  *
  * 返回 disposer；宿主没有 webServer 时返回 null（功能降级，不报错）。
  */
+/**
+ * 在系统默认浏览器里打开一个 URL。
+ *
+ * 登录必须**在系统浏览器里完成**（而不是插件内嵌页）：邮箱/微信/Google 各种
+ * 登录方式都在服务端下发的那个页面上，插件不该、也做不到代用户填密码。
+ *
+ * 用 `open`（macOS）/ `xdg-open`（Linux）/ `start`（Windows）。失败不抛，
+ * 由调用方把 authUrl 交给前端让用户手动打开 —— 打不开浏览器不该让登录整体失败。
+ */
+async function openInSystemBrowser(url) {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const cmd =
+    process.platform === 'darwin'
+      ? ['open', url]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : ['xdg-open', url];
+  const file = cmd[0];
+  const args = cmd.length > 1 ? cmd[1] : [url];
+  await run(file, Array.isArray(args) ? args : [args]);
+}
+
+/**
+ * 取登录用的上游地址。
+ *
+ * 跟着本机现有凭据的 `domain` 走：跨品牌域的 token 不通用（codebuddy.ai 签发的
+ * 会被 workbuddy.ai 网关拒），池也是按凭据自带的 domain 选上游的，所以登录必须
+ * 打到同一个站，否则新账号的 token 池用不了。读不到就退回 CN 默认站。
+ *
+ * 注意：国际版的授权端点我没能验证（CLI 里没出现 workbuddy.ai 的 endpoint），
+ * 所以这里只是保证与本机现有凭据一致，不代表国际版一定登录成功。
+ */
+async function loginBaseUrl() {
+  const fallback = 'https://www.workbuddy.cn';
+  try {
+    const dirs = xdpoolModule.defaultDesktopAuthDirs?.() ?? [];
+    return await wbAuth.resolveLoginBase(dirs, fallback);
+  } catch {
+    return fallback;
+  }
+}
+
+/** DSH 主目录（与 vendored 的 dshHome 同口径，供 Trae 凭据落盘用） */
+function dshHomeDir() {
+  const env = process.env.DSH_HOME;
+  if (typeof env === 'string' && env !== '') return env;
+  return join(homedir(), '.dsh');
+}
+
 function mountConsoleRoutes(ctx, config) {
   if (!ctx || typeof ctx.inject !== 'function') return null;
 
@@ -380,7 +433,195 @@ function mountConsoleRoutes(ctx, config) {
         }),
       );
 
-      ctx.logger?.info?.('[wotr-console] 管理页接口已挂载（history-summary / sample）');
+      // —— WorkBuddy 浏览器登录：起一次登录 ——
+      //
+      // 协议见 lib/wb-auth.mjs 顶部注释：**不是** OAuth 授权码流程，
+      // 是「服务端发 authUrl → 系统浏览器登录 → 客户端拿 state 轮询换 token」。
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/wb/login/start`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const begun = await wbAuth.beginLogin({
+                fetchImpl: fetch,
+                baseUrl: await loginBaseUrl(),
+                openUrl: openInSystemBrowser,
+              });
+              if (begun.error !== undefined) return json(res, 502, { error: begun.error });
+              json(res, 200, {
+                sessionId: begun.sessionId,
+                authUrl: begun.authUrl,
+                opened: begun.opened === true,
+                ...(begun.openError === null || begun.openError === undefined
+                  ? {}
+                  : { openError: begun.openError }),
+              });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 轮询登录状态 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/wb/login/status`,
+          handler: async (req, res) => {
+            if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+              if (typeof sessionId !== 'string' || sessionId === '') {
+                return json(res, 400, { error: '缺少 session' });
+              }
+              const r = await wbAuth.stepLogin({ fetchImpl: fetch, sessionId });
+              if (r.error !== undefined) return json(res, 400, { error: r.error });
+              if (r.status === 'pending') return json(res, 200, { status: 'pending' });
+              if (r.status === 'failed') return json(res, 200, { status: 'failed', error: r.error });
+
+              // 登录完成 → 落盘凭据，让池下次扫描就能认出这个新账号
+              const dir = await wbAuth.pickAuthDir(
+                xdpoolModule.defaultDesktopAuthDirs?.() ?? [],
+                xdpoolModule.pluginDataDir?.() ?? join(homedir(), '.dsh', 'plugin-data'),
+              );
+              const saved = await wbAuth.saveCredential({
+                dir,
+                credential: r.credential,
+                identity: r.identity,
+                // 用 vendored 自己的算法，保证与池算出的账号 id 完全一致
+                accountIdOf: (identity) => xdpoolModule.workbuddyAccountId(identity),
+              });
+              if (saved.error !== undefined) {
+                return json(res, 500, { status: 'failed', error: saved.error });
+              }
+              // 立刻让池重新扫描，不必等下一次定时
+              try {
+                await xdpoolModule.currentApi?.().pool?.scan?.();
+              } catch {
+                /* 扫描失败不影响本次结果，下次打开管理页也会扫 */
+              }
+              json(res, 200, { status: 'done', accountId: saved.accountId });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 取消登录 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/wb/login/cancel`,
+          handler: (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+              json(res, 200, { cancelled: wbAuth.cancelLogin(sessionId ?? '') });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— Trae 浏览器登录（PKCE + 本机回环回调，与 WorkBuddy 的 state 轮询不同）——
+      //
+      // 回调到达时**在 handler 里同步完成换 token**（AgentHub 同款），
+      // 所以这里 start 之后前端只需轮询 status 读结果。
+      // 手动粘贴兜底：浏览器没跳到回环地址时，整段粘回来换。
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/trae/login/start`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const r = await traeAuth.beginLogin({
+                fetchImpl: fetch,
+                openUrl: openInSystemBrowser,
+              });
+              if (r.ok !== true) return json(res, 502, { error: r.message ?? '登录启动失败' });
+              json(res, 200, { sessionId: r.sessionId, authUrl: r.url, port: r.port, opened: r.opened === true });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/trae/login/status`,
+          // 必须是 async：路由要 await 凭据落盘（见下方注释）
+          handler: async (req, res) => {
+            if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+              if (typeof sessionId !== 'string' || sessionId === '') return json(res, 400, { error: '缺少 session' });
+              const r = traeAuth.stepLogin({ sessionId });
+              if (r.error !== undefined) return json(res, 400, { error: r.error });
+              if (r.status === 'pending') return json(res, 200, { status: 'pending' });
+              if (r.status === 'failed') return json(res, 200, { status: 'failed', error: r.error });
+
+              // 登录完成 → 落盘到 Trae 自己的凭据文件（lib/trae.js 的 store 会读到）
+              //
+              // ⚠ 必须 await：saveTraeCredential 是 async 的。漏掉 await 时路由
+              //   会在写盘完成前就回 200，写失败（磁盘/权限）也被静默吞进
+              //   `saved.error` 之外 —— 表现为「登录显示成功，但号池里没有这个
+              //   账号」，而且日志里什么都看不到。
+              const region = 'cn';
+              const saved = await traeAuth.saveTraeCredential({
+                dshHome: dshHomeDir(),
+                region,
+                edition: 'solo',
+                accessToken: r.accessToken,
+                refreshToken: r.refreshToken,
+                userId: r.identity?.uid ?? '',
+                accountName: r.identity?.name ?? '',
+                expiresAtMs: r.expiresAtMs,
+                refreshExpiresAtMs: r.refreshExpiresAtMs,
+              });
+              if (saved.error !== undefined) {
+                return json(res, 500, { status: 'failed', error: saved.error });
+              }
+              json(res, 200, { status: 'done', region: saved.region, accountId: saved.accountId });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/trae/login/cancel`,
+          handler: (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+              json(res, 200, { cancelled: traeAuth.cancelLogin(sessionId ?? '') });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      ctx.logger?.info?.(
+        '[wotr-console] 管理页接口已挂载（history-summary / sample / wb+trae login）',
+      );
     });
   } catch (e) {
     ctx.logger?.warn?.(

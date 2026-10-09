@@ -1,7 +1,7 @@
 {
   "name": "dsh-wotr-console",
-  "version": "1.0.0",
-  "description": "WorkBuddy + Trae merged into one DSH plugin: the WorkBuddy desktop account/model pool and the Trae connector as two independent providers, plus one settings page with four tabs (WorkBuddy accounts / credits / usage history / Trae accounts).",
+  "version": "1.1.0",
+  "description": "WorkBuddy + Trae merged into one DSH plugin: the WorkBuddy desktop account/model pool and the Trae connector as two independent providers, plus one settings page with five tabs — two configuration tabs (XD Pool / Trae config: provider switch, account binding, model selection and its own multi-account pool) and three read-only tabs (accounts [WorkBuddy + Trae, two columns] / credits / usage history).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kdczyz/dsh-workbuddy-mode.git",
@@ -67,12 +67,13 @@
     }
   },
   "scripts": {
-    "build:console": "node scripts/gen-console-inline.mjs && node scripts/gen-trae-client.mjs && node scripts/gen-xdpool-client.mjs",
+    "build:console": "node scripts/gen-console-inline.mjs && node scripts/gen-xdpool-client.mjs",
     "check:console": "node scripts/gen-console-inline.mjs --check",
-    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs",
+    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs && node test/trae-pool.test.mjs",
     "test:store": "node test/credit-store.test.mjs",
     "test:client": "node test/client-apply.test.mjs",
-    "test:render": "node test/console-render.test.mjs"
+    "test:render": "node test/console-render.test.mjs",
+    "test:pool": "node test/trae-pool.test.mjs"
   },
   "dsh": {
     "bundle": {

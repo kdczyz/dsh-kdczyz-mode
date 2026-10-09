@@ -3,19 +3,23 @@
  *
  * 一个包只能有一个 `./client`：client-modules 是**按包名**建表的
  * （reconcilePackage(packageName) → 一个 graph row），所以两个宿主入口
- * 共用这一个 bundle。它注册三样东西：
+ * 共用这一个 bundle。它只注册**一个**设置入口：`settings.section` 的
+ * 「WOTR 管理」页。
  *
- *   A. 账号池卡片（vendor/xdpool 提供，自注册 id dsh-workbuddy-xdpool）
- *      —— 模型勾选、账号分配策略、积分自动化；order 440
- *   B. Trae 卡片 + 输入框积分读数（vendor/trae/client.js 提供，
- *      自注册 id dsh-connect-trae）—— 与合并前完全一致
- *   C. 四标签页管理页（本文件 + console.mjs）
- *      —— WorkBuddy 账号 / 积分 / 使用记录 / Trae 账号；order 441
+ * 合并后的形态：一个入口、多标签页。
  *
- * A 与 B 都是 `window.__ModuleLoader__.load({id, factory})` 形态的
- * 自注册脚本（它们原本就是独立插件）。这里把它们**原样内联**，
- * 用一次性的加载器替身捕获各自 factory 的产物，再转发它们的 apply ——
- * 上游代码一行都不用改，便于日后对照升级。
+ *   A. XD Pool 标签页   ← 本包自写的 PoolConfigTab（对齐 Trae 配置页样式）
+ *   B. Trae 配置标签页  ← 本包自写的 TraeConfigTab（上游浏览器半边已移除）
+ *   C. WorkBuddy 账号 / 积分 / 使用记录 / Trae 账号（本文件 + console.mjs）
+ *
+ * Trae 的输入框积分读数（conversation.input.left）照旧注册，不受影响。
+ *
+ * vendored 的 xdpool 客户端仍被**内联执行**，但只用于两件事：
+ *   1. 注册它那份 locale 文案（`settings.workbuddy-xdpool`）；
+ *   2. 解析它原本绑定的 settings 作用域（configForms → settingsScope），
+ *      供本包自写的 PoolConfigTab 读写同一份设置文档。
+ * 它注册的 `settings.section`（原独立设置页）被替身 ctx 拦掉 ——
+ * vendored 源码一行都不用改，便于日后逐字节对照升级。
  *
  * 关键事实（都踩过坑）：
  *   1. 本文件是 classic script，**不能有顶层 import/export** ——
@@ -24,10 +28,11 @@
  *   2. jsx-runtime 的签名是 jsx(type, props, key)：children 必须放 props.children。
  *   3. settings.section 的组件 props 里只有 { close }，需要的东西要通过
  *      注册项的 inject 传进去。
- *   4. 两个 section 的 order 不要相同：440（账号池）在前，441（管理页）在后。
- *   5. 注册件的 id 用的是**各半原本的插件 id**，不是合并后的包名 ——
- *      它们自己的 settings 作用域解析（池按 llm-workbuddy-xdpool 精确匹配、
- *      Trae 按 /trae/i 模糊匹配）都依赖这个 id。
+ *   4. XD Pool / Trae 两个配置页的 settings 作用域由本文件解析成**活句柄**
+ *      后经 `embedded.wbSettings` / `embedded.traeSettings` 传给管理页。
+ *   5. vendored 客户端内部注册的 id 仍是各半原本的插件 id（它们自己的
+ *      settings 作用域解析依赖这个 id）；本 bundle 用合并后的包名
+ *      dsh-wotr-console 注册。
  */
 
 //#region BEGIN GENERATED: xdpool client source
@@ -40,13 +45,13 @@ const XDPOOL_CLIENT_SRC = "window.__ModuleLoader__.load({\n\tid: \"dsh-workbuddy
 
 //#region BEGIN GENERATED: console page source
 // 本块由 scripts/gen-console-inline.mjs 生成，请勿手改。
-// 内容：lib/console.mjs —— 管理页组件（账号 / 积分 / 使用记录）。
+// 内容：lib/console.mjs —— 管理页组件（XD Pool / Trae 配置 / 账号 / 积分 / 使用记录）。
 // 它是 ES 模块，但此处以**真函数**内联（不是字符串 + eval）：
 // client.js 是 classic script 不能顶层 import，而 eval 可能被 CSP 拒绝。
 // 改界面请改 lib/console.mjs 后重跑生成脚本；apply.sh 会校验是否同步。
-const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
+const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
   /**
-   * console.mjs — WOTR 管理页（DSH 原生设置页，四标签页）。
+   * console.mjs — WOTR 管理页（DSH 原生设置页，多标签页）。
    *
    * 这是一个**浏览器端**组件模块，由 client.js 引入后注册到 `settings.section`
    * 槽位。它不是独立 Web 页面：不开独立页面、不需要 web/ 目录，
@@ -56,23 +61,55 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
    *   本插件侧      /plugins/dsh-wotr-console/*       （lib/index.js 挂的只读接口）
    *   Trae 侧       /plugins/dsh-connect-trae/*       （lib/trae.js 挂的路由）
    *
-   * 四个区域：
-   *   1. WorkBuddy 账号 —— 本机已登录账号、登录状态、额度、签到，可重新检测/签到
-   *   2. 积分           —— 每个账号的额度总额与积分包明细
-   *   3. 使用记录       —— 按天聚合的积分变化 + 明细表（来自 credit-store 的落盘数据）
-   *   4. Trae 账号      —— Trae 各区域账号、选中状态、可用余额、签到
+   * 五个区域（第一个是**配置**，其余是**查看/配置**）：
+   *   1. XD Pool        —— WorkBuddy 池配置（模型勾选 / 分配策略 / 积分自动化）
+   *   2. Trae 配置      —— 供应商开关、账号绑定、模型勾选与测试（本文件自写）
+   *   3. 账号           —— 左右两列同一套模块样式：WorkBuddy / Trae
+   *   4. 积分           —— 每个账号的额度总额与积分包明细
+   *   5. 使用记录       —— 按天聚合的积分变化 + 明细表（来自 credit-store 的落盘数据）
+   *
+   * XD Pool 标签页同样**本包自写**（PoolConfigTab）：不再嵌入 vendored 的
+   * PoolCard，而是对齐 Trae 配置页这套模块样式直接实现区域切换 / 分配策略 /
+   * 模型勾选 / 账号启停 / 保留积分 / 移出池子 / 签到 / 冷却重置 / 积分自动化
+   * （CN only）。读写走 vendored 已有的路由与设置字段（`distribution` /
+   * `disabledAccountIds` / `modelSelectionCn|Global` / `automation` 等，
+   * 读取/写入语义与上游 PoolCard 逐项一致）。它的 settings 作用域由 client.js
+   * 解析后经 `embedded.wbSettings` 传入。
+   *
+   * Trae 配置标签页同样**本包自写**（TraeConfigTab）：不再嵌入上游
+   * dsh-connect-trae 的浏览器卡片，而是按本页 WorkBuddy 的模块样式直接实现
+   * 供应商开关、账号绑定与模型勾选，读写走 lib/trae.js 已有的路由与
+   * `regions` / `accounts` 两个设置字段（读取/写入语义与上游客户端逐项一致）。
+   * 它的 settings 作用域由 client.js 解析后经 `embedded.traeSettings` 传入。
    *
    * 路由路径是**各半原本的硬编码常量**，与本包改名无关：webServer.register
    * 不把路由绑定到包名，所以合并后这些 URL 原样有效。
-   *
-   * 与两张卡片的区别：卡片管「模型勾选/分配策略/账号绑定」这类配置，
-   * 本页管「看」——账号、额度、历史。两者互不干扰。
    */
 
   /** 与 client.js 共享的 React 运行时 */
-  function createConsoleSection({ react, jsxRuntime }) {
+  function createConsoleSection({ react, jsxRuntime, embedded }) {
     const { useState, useEffect, useCallback, useMemo, useRef, createElement: h } = react;
     const { jsx, jsxs } = jsxRuntime;
+
+    /**
+     * WorkBuddy 池的 settings 作用域 —— **活句柄，不是快照**。
+     *
+     * 句柄形如 `{ get(): scope | null, subscribe(fn): () => void }`；`get()` 返回的
+     * scope 自身带 `getSnapshot()` / `set(field, value)`（与 Trae 半边同形）。
+     * client.js 按 vendored 的解析规则（configForms → settingsScope，
+     * `llm-workbuddy-xdpool` 命名空间探测）拿到作用域后包成句柄传进来，
+     * PoolConfigTab 在**渲染期**读取，写入的读写语义集中在下面那组 pool* 辅助
+     * 函数里 —— 拿不到时标签页整体只读并给出诊断行，绝不静默回弹。
+     */
+    const wbSettings = embedded?.wbSettings ?? null;
+    /**
+     * Trae 半边的 settings 作用域（同一形状：{get,subscribe} 活句柄）。
+     * client.js 按上游 dsh-connect-trae 的解析规则（configForms → settingsScope，
+     * /trae/i 命名空间探测）拿到作用域后包成句柄传进来，TraeConfigTab 在
+     * 渲染期读取并订阅 —— 写入的读写语义集中在下面那组 trae* 辅助函数里。
+     */
+    const traeSettings = embedded?.traeSettings ?? null;
+
 
     /** vendored 账号池的路由前缀（同 vendor/xdpool/lib/index.js 的常量，刻意不改名） */
     const POOL_API = '/plugins/dsh-workbuddy-xdpool';
@@ -84,6 +121,38 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
     const TRAE_REGIONS = [
       { id: 'cn', label: 'Trae 国内版' },
       { id: 'ai', label: 'Trae 国际版' },
+    ];
+    /** WorkBuddy 账号池的两个区域（同 vendored status.regions，固定顺序） */
+    const POOL_REGIONS = [
+      { id: 'cn', label: '国内版' },
+      { id: 'global', label: '国际版' },
+    ];
+    /** WorkBuddy 账号池的默认上下文预算（同 vendored DEFAULT_CONTEXT_BUDGET） */
+    const POOL_DEFAULT_CONTEXT_BUDGET = 2e5;
+    /** 积分自动化各任务的默认小时表（同 vendored DEFAULT_AUTOMATION_HOURS） */
+    const POOL_DEFAULT_AUTOMATION_HOURS = {
+      checkin: [9],
+      report: [10],
+      tasks: [11],
+      streak: [12],
+      travel: [9, 21],
+    };
+    /** 积分自动化任务顺序与中文标签（同 vendored AUTOMATION_JOBS / zh 文案） */
+    const POOL_AUTOMATION_JOBS = [
+      { kind: 'checkin', label: '每日签到' },
+      { kind: 'report', label: '活跃上报' },
+      { kind: 'tasks', label: '任务奖励' },
+      { kind: 'streak', label: '连登奖励' },
+      { kind: 'travel', label: '猫猫旅行' },
+    ];
+    /** 「立即运行」轮询结算的节奏（同 vendored AUTOMATION_POLL_*） */
+    const POOL_AUTOMATION_POLL_MS = 2e3;
+    const POOL_AUTOMATION_POLL_ATTEMPTS = 90;
+    /** 分配策略的展示顺序与中文文案（与 TraeConfigTab 的号池区保持一致） */
+    const POOL_DISTRIBUTIONS = [
+      { id: 'priority', label: '优先模式', hint: '先用完一个账号，用完再换下一个' },
+      { id: 'round-robin', label: '轮换模式', hint: '按顺序轮流使用，积分均匀分摊' },
+      { id: 'balanced', label: '均衡模式', hint: '随机抽取，闲置越久的账号被选中概率越高' },
     ];
 
     const CSS_ID = 'dsh-wotr-console/settings-page';
@@ -136,6 +205,35 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
   .wbc-spark{display:flex;align-items:flex-end;gap:2px;height:40px}
   .wbc-spark-bar{flex:1;min-width:2px;background:var(--dsw-alias-label-primary);opacity:.35;border-radius:1px 1px 0 0}
   .wbc-spark-bar-on{opacity:.9}
+  .wbc-embed{display:flex;flex-direction:column;gap:16px;min-width:0}
+  .wbc-note[data-diagnostic="settings-scope"]{color:var(--dsw-alias-label-error,#e5484d)}
+  /* —— Trae 配置标签页（TraeConfigTab，与账号页同一套模块样式）—— */
+  /* 模型行的勾选框等控件，宽度跟着内容走 */
+  .wbc-check{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary)}
+  .wbc-check input{accent-color:var(--dsw-alias-label-primary)}
+  .wbc-check-disabled{color:var(--dsw-alias-label-secondary)}
+  .wbc-models{display:flex;flex-direction:column;gap:8px;border-top:.5px solid var(--dsw-alias-border-l2);padding-top:10px}
+  .wbc-model{display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dsw-alias-label-primary)}
+  .wbc-model-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wbc-model-meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:11px}
+  .wbc-model-actions{position:sticky;bottom:0;z-index:2;display:flex;gap:8px;justify-content:flex-end;padding:8px 0;background:var(--dsw-alias-bg-layer-1,#17181c);border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+  /* 号池区：保留积分输入框 */
+  .wbc-reserve-input{width:88px;appearance:none;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l2);border-radius:6px;color:var(--dsw-alias-label-primary);font-size:12px;padding:5px 8px;font-variant-numeric:tabular-nums}
+  .wbc-reserve-input:disabled{opacity:.5}
+  /* 探测结果徽章：unknown 是「没测出来」而不是失败，用中性色不用红色 */
+  .wbc-probe{border-radius:4px;font-size:10px;padding:2px 6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary)}
+  .wbc-probe-available{color:var(--dsw-alias-label-success,#30a46c)}
+  .wbc-probe-auth,.wbc-probe-rate_limited{color:var(--dsw-alias-label-error,#e5484d)}
+  /* 列内账号卡片改为单列：两列布局下列宽约 300–500px，
+     沿用 auto-fill/minmax(240px) 会挤成两小张，卡片里的签到文案会折行 */
+  .wbc-cols .wbc-cards{grid-template-columns:1fr}
+  /* 统计小卡（余额/签到这类）在列内可以两两一行，比叠成四层高好得多 */
+  .wbc-sums{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+  .wbc-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px;align-items:start}
+  .wbc-col{display:flex;flex-direction:column;gap:12px;min-width:0}
+  .wbc-col-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:28px}
+  .wbc-col-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}
+  .wbc-col-sub{font-size:11px;color:var(--dsw-alias-label-secondary)}
   `;
 
     function ensureCss() {
@@ -199,109 +297,1988 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
       return `${Math.floor(diff / 86400000)} 天前`;
     }
 
-    //#region 账号页
-    function AccountsTab({ region, onRegion, status, loading, error, onRescan, onCheckin, busyId }) {
+    function fmtCapacity(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '未知';
+      if (value >= 1e6 && value % 1e6 === 0) return `${value / 1e6}M`;
+      if (value >= 1e3 && value % 1e3 === 0) return `${value / 1e3}K`;
+      return String(value);
+    }
+    //#endregion
+
+    //#region Trae 设置读写（TraeConfigTab 用）
+    //
+    // 读取/写入语义逐项对齐上游 dsh-connect-trae 的浏览器卡片
+    // （vendor/trae/client.js 的 regionSlotOf / nextRegionEnabled / writeSettingsField
+    // 等 —— 现上游源码已移出仓库，本段注释保留出处记录）：
+    //
+    //   - `regions` 字段是 { cn: slot, ai: slot } 两槽，slot = {
+    //       enabled, lastCatalog, enabledModelIds, imageModelIds, contextBudgets }；
+    //   - 供应商开关是**opt-out**：只有显式 `false` 才算关（旧配置没有 enabled，
+    //     读出来就是开）；
+    //   - 写入只动目标区域的槽，另一区域的槽原样带过，否则会清掉那边的模型勾选；
+    //   - configForms.set() **resolve 了不等于写进去了**：被拒的写入会重载宿主
+    //     状态后正常返回，必须读回快照确认落地，否则控件会「闪一下又弹回去」。
+    //
+    // 上游客户端在这些地方踩过实打实的坑（见各函数注释），这里照单全收。
+
+    /** 拆掉 volatile 引用（{get(): T} 形态）—— 快照值可能是活引用 */
+    function unwrapVolatile(value) {
+      if (value !== null && typeof value === 'object' && typeof value.get === 'function') return value.get();
+      return value;
+    }
+
+    function unwrapVolatileDeep(value) {
+      if (value === null || typeof value !== 'object') return value;
+      if (typeof value.get === 'function') return unwrapVolatileDeep(value.get());
+      if (Array.isArray(value)) return value.map((entry) => unwrapVolatileDeep(entry));
+      const out = {};
+      for (const key of Object.keys(value)) out[key] = unwrapVolatileDeep(value[key]);
+      return out;
+    }
+
+    /** 从设置值里取 `regions` 两槽（容忍传入整份设置或 regions 本身） */
+    function regionsMapOf(value) {
+      const doc = unwrapVolatileDeep(value);
+      if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) return {};
+      const nested = doc.regions;
+      if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) return nested;
+      return doc;
+    }
+
+    /** 一个区域槽的普通对象形态；任何其它形状读作空槽 */
+    function traeRegionSlotOf(value, region) {
+      const slot = unwrapVolatile(regionsMapOf(value)[region]);
+      return typeof slot === 'object' && slot !== null && !Array.isArray(slot) ? slot : {};
+    }
+
+    /** 供应商开关（opt-out：只有显式 false 才算关） */
+    function traeRegionEnabledOf(value, region) {
+      return traeRegionSlotOf(value, region).enabled !== false;
+    }
+
+    /** 生成下一个 `regions` 值：只动目标区域的槽，其余槽原样保留 */
+    function nextRegionSlots(regions, region, slot) {
+      const doc = unwrapVolatileDeep(regions);
+      return {
+        ...(typeof doc === 'object' && doc !== null && !Array.isArray(doc) ? doc : {}),
+        [region]: slot,
+      };
+    }
+
+    /** 生成下一个 `accounts` 值：只改目标区域的绑定 */
+    function traeNextAccounts(accounts, region, accountId) {
+      const doc = unwrapVolatileDeep(accounts);
+      return {
+        ...(typeof doc === 'object' && doc !== null && !Array.isArray(doc) ? doc : {}),
+        [region]: accountId,
+      };
+    }
+
+    /**
+     * 写一个设置字段并**读回确认落地**。
+     *
+     * `configForms.set()` resolve 了不等于写进去了：被拒的写入会重载宿主状态后
+     * 正常返回，await 成功而文档没变 —— 上游客户端曾因此「看起来保存了，
+     * 值又悄悄弹回去」。读回不匹配就抛错，让调用方把失败显示出来。
+     */
+    async function writeTraeField(scope, field, value, landed) {
+      const label = `trae: settings 字段 "${field}" 未能写入`;
+      if ((await scope.set(field, value)) === false) throw new Error(`${label}（宿主拒绝）`);
+      if (!landed(unwrapVolatileDeep(scope.getSnapshot().value))) throw new Error(label);
+    }
+
+    /** 一键测试的探测结论标签 */
+    const TRAE_PROBE_LABELS = {
+      available: '可用',
+      gated: '需要更高档位',
+      unsupported: '上游不提供',
+      rate_limited: '被限流',
+      auth: '登录凭据被拒',
+      unknown: '本次未测出',
+    };
+    //#endregion
+
+    //#region WorkBuddy 池设置读写（PoolConfigTab 用）
+    //
+    // 读取/写入语义逐项对齐 vendored 客户端 vendor/xdpool/lib/client.js 的
+    // PoolCard（现仅作逐字节对照，不再嵌入渲染）：
+    //
+    //   - `distribution` / `disabledAccountIds` / `automation` 是**顶层**设置键；
+    //     模型勾选按区域分键：`modelSelectionCn` / `modelSelectionGlobal`；
+    //   - 模型保存是**整段覆盖**：{ enabledModelIds, imageModelIds, contextBudgets,
+    //     reasoningEfforts, maxMode }，漏一个键就会清掉那边的既有值；
+    //   - 保存前拒绝空启用列表（否则选择器里一个模型都没有，用户无从恢复）；
+    //   - `configForms.set()` resolve 了不等于写进去了，所以写完必须刷新状态
+    //     读回，确认落地后才丢弃草稿；
+    //   - 自动化只在 CN 生效（国际版没有这套接口），未配置时按默认小时表补齐。
+
+    /** 取池作用域对象：句柄 → scope（兼容直接传 scope 的旧形状） */
+    function poolScopeOf(handle) {
+      const scope = typeof handle?.get === 'function' ? handle.get() : handle;
+      return typeof scope?.get === 'function' ? scope.get() : scope;
+    }
+
+    /** 该作用域当前是否可写（拿不到快照按只读处理） */
+    function poolWritable(scopeObj) {
+      try {
+        return scopeObj?.getSnapshot?.().writable === true;
+      } catch {
+        return false;
+      }
+    }
+
+    /** 已提交的模型勾选按区域分键（同 vendored modelSelectionKeyFor） */
+    function poolSelectionKey(region) {
+      return region === 'global' ? 'modelSelectionGlobal' : 'modelSelectionCn';
+    }
+
+    /** 从 status 构造模型草稿（同 vendored draftFromStatus） */
+    function poolDraftFromStatus(status) {
+      const selection = status?.selection ?? {};
+      const enabled = selection.enabledModelIds;
+      const images = selection.imageModelIds;
+      const budgets = selection.contextBudgets;
+      const efforts = selection.reasoningEfforts;
+      const out = {};
+      for (const model of asArray(status?.models)) {
+        const entry = {
+          enabled: enabled === undefined || enabled.includes(model.id),
+          images: images === undefined ? model.supportsImages === true : images.includes(model.id),
+        };
+        const budget = budgets?.[model.id];
+        if (budget !== undefined) entry.budget = budget;
+        const effort = efforts?.[model.id];
+        if (effort !== undefined) entry.effort = effort;
+        out[model.id] = entry;
+      }
+      return out;
+    }
+
+    /** 草稿与已提交值是否有差异（同 vendored draftIsDirty） */
+    function poolDraftIsDirty(status, draft) {
+      const selection = status?.selection ?? {};
+      const models = asArray(status?.models);
+      const enabled = new Set(
+        selection.enabledModelIds ?? models.filter((m) => m.enabled).map((m) => m.id),
+      );
+      const images = new Set(
+        selection.imageModelIds ?? models.filter((m) => m.supportsImages).map((m) => m.id),
+      );
+      const budgets = selection.contextBudgets ?? {};
+      const efforts = selection.reasoningEfforts ?? {};
+      for (const model of models) {
+        const entry = draft[model.id];
+        if (entry === undefined) continue;
+        if (entry.enabled !== enabled.has(model.id)) return true;
+        if (entry.images !== images.has(model.id)) return true;
+        if ((budgets[model.id] ?? model.nativeContextWindow) !== (entry.budget ?? model.nativeContextWindow)) {
+          return true;
+        }
+        if ((efforts[model.id] ?? '') !== (entry.effort ?? '')) return true;
+      }
+      return false;
+    }
+
+    /** 某任务已配置的小时表（同 vendored automationHours） */
+    function poolAutomationHours(status, kind) {
+      const automation = status?.automation;
+      if (automation === undefined || automation === null) return [];
+      switch (kind) {
+        case 'report':
+          return automation.reportHours;
+        case 'tasks':
+          return automation.taskHours;
+        case 'checkin':
+          return automation.checkinHours;
+        case 'streak':
+          return automation.streakHours;
+        case 'travel':
+          return automation.travelHours;
+        default:
+          return [];
+      }
+    }
+
+    /** 某任务上次运行记录（同 vendored automationJob） */
+    function poolAutomationJob(status, kind) {
+      return status?.automation?.jobs?.[kind];
+    }
+
+    /** 小时表：已配置且非空则原样使用，否则回落默认（同 vendored hoursOrDefault） */
+    function poolHoursOrDefault(configured, fallback) {
+      return Array.isArray(configured) && configured.length > 0 ? [...configured] : [...fallback];
+    }
+
+    /** 今日自动化合计（同 vendored automationTotals） */
+    function poolAutomationTotals(status) {
+      return Object.values(status?.automation?.earningsToday ?? {}).reduce(
+        (sum, entry) => ({
+          credit: sum.credit + (entry?.credit ?? 0),
+          energy: sum.energy + (entry?.energy ?? 0),
+          claimed: sum.claimed + (entry?.claimed ?? 0),
+          checkinCredit: sum.checkinCredit + (entry?.checkinCredit ?? 0),
+          bonusCredit: sum.bonusCredit + (entry?.bonusCredit ?? 0),
+          travelCredit: sum.travelCredit + (entry?.travelCredit ?? 0),
+        }),
+        { credit: 0, energy: 0, claimed: 0, checkinCredit: 0, bonusCredit: 0, travelCredit: 0 },
+      );
+    }
+
+    /** 任务运行结论 → 中文摘要 */
+    function poolAutomationNote(job) {
+      if (job === undefined || job === null) return '还没跑过';
+      const parts = [];
+      if (typeof job.credit === 'number') parts.push(`+${fmtNum(job.credit)} 积分`);
+      if (typeof job.energy === 'number' && job.energy > 0) parts.push(`+${fmtNum(job.energy)} 能量`);
+      if (typeof job.claimed === 'number' && job.claimed > 0) parts.push(`${fmtNum(job.claimed)} 个奖励`);
+      const when = typeof job.at === 'number' ? fmtRelative(job.at) : null;
+      const body = parts.length > 0 ? parts.join(' · ') : '已完成';
+      return when === null ? body : `${body}（${when}）`;
+    }
+    //#endregion
+
+    //#region XD Pool 配置页（自写，对齐 Trae 配置页）
+    /**
+     * XD Pool 标签页 —— **本包自写**，替代 vendored 的 PoolCard。
+     *
+     * 与 Trae 配置页同一套模块样式（列头 / 统计行 / 账号卡 / 空态都走共用组件），
+     * 功能与上游 PoolCard 逐项对齐：
+     *
+     *   - 区域切换（cn / global），账号与模型目录都随区域走
+     *   - 分配策略（`distribution`，顶层设置键，写后刷新）
+     *   - 模型勾选（`modelSelectionCn|Global` 整段覆盖 + Max 模式 + 上下文预算）
+     *   - 账号启停（`disabledAccountIds`）/ 保留积分 / 移出池子 / 恢复
+     *   - 每日签到（POST /checkin）与冷却重置（POST /cooldowns/reset）
+     *   - 积分自动化（**仅 CN**）：开关写整个 `automation` 对象，可立即运行并轮询结算
+     *
+     * 状态由父级 WotrPage 进页即拉（`status` / `loading` / `error`），
+     * 本组件只负责渲染与写入，写完一律 `onRefresh()` 读回确认。
+     */
+    function PoolConfigTab({ wbSettings, region, onRegion, status, loading, error, onRefresh, onRescan }) {
+      const scopeObj = poolScopeOf(wbSettings);
+      const writable = poolWritable(scopeObj);
+
+      // —— 本地状态（hook 顺序固定，勿插队）——
+      const [writeError, setWriteError] = useState(null);
+      const [savedNote, setSavedNote] = useState(null);
+      /** 正在进行的写入标记：'distribution' | 'models' | 'automation' | 'cooldowns' | 'checkin-<id>' | ... */
+      const [busy, setBusy] = useState(null);
+      /** 保留积分输入草稿，按账号 id 分键 */
+      const [reserveDraft, setReserveDraft] = useState({});
+      /** 模型草稿，按区域分键（切换区域互不串味） */
+      const [draftByRegion, setDraftByRegion] = useState({});
+      /** Max 模式草稿，同样按区域分键 */
+      const [maxModeByRegion, setMaxModeByRegion] = useState({});
+      /** 「立即运行」正在跑的任务（'all' 或某 kind） */
+      const [automationRun, setAutomationRun] = useState(null);
+
       const accounts = asArray(status?.accounts);
+      const models = asArray(status?.models);
+      const ignored = asArray(status?.ignored);
+      const selection = status?.selection ?? {};
+      const distribution = status?.distribution ?? 'priority';
+      const automation = status?.automation;
+      const cooling = accounts.filter((a) => a.cooling === true).length;
+      const usable = accounts.filter((a) => a.cooling !== true && a.disabled !== true).length;
+      const automationOn = automation?.enabled === true;
+
+      const draft = draftByRegion[region];
+      const modelBase = draft ?? poolDraftFromStatus(status);
+      const enabledCount = Object.values(modelBase).filter((e) => e.enabled === true).length;
+      const savedMaxMode = selection.maxMode === true;
+      const maxMode = maxModeByRegion[region] ?? savedMaxMode;
+      const modelsDirty =
+        draft !== undefined && (poolDraftIsDirty(status, draft) || maxMode !== savedMaxMode);
+
+      const setDraft = (next) =>
+        setDraftByRegion((prev) => ({ ...prev, [region]: next }));
+      const dropDraft = () =>
+        setDraftByRegion((prev) => {
+          if (prev[region] === undefined) return prev;
+          const copy = { ...prev };
+          delete copy[region];
+          return copy;
+        });
+      const setMaxMode = (next) =>
+        setMaxModeByRegion((prev) => ({ ...prev, [region]: next }));
+
+      /**
+       * 写一个设置字段。
+       *
+       * `configForms.set()` resolve 了不等于写进去了：被拒的写入会正常返回
+       * （`false` 表示宿主明确拒绝），所以返回值必须检查 —— 否则用户看到
+       * 「保存成功」而值悄悄弹回去，正是上游踩过的那个坑。
+       */
+      const writeField = async (field, value) => {
+        const accepted = await scopeObj.set(field, value);
+        if (accepted === false) throw new Error(`设置字段 "${field}" 被宿主拒绝`);
+      };
+
+      /** 统一收口：写入前清提示，写入后刷新，异常转成可见文案 */
+      const run = async (marker, fn, note) => {
+        setBusy(marker);
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          await fn();
+          if (note !== undefined && note !== null) setSavedNote(note);
+          await onRefresh();
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setBusy(null);
+        }
+      };
+
+      // —— 分配策略 ——
+      const onDistribution = (next) => {
+        if (!writable) return;
+        return run('distribution', () => writeField('distribution', next), '分配策略已保存');
+      };
+
+      // —— 账号启停 ——
+      const onToggleDisabled = (accountId, disabled) => {
+        if (!writable) return;
+        const current = accounts.filter((a) => a.disabled === true).map((a) => a.id);
+        const next = disabled
+          ? [...new Set([...current, accountId])]
+          : current.filter((id) => id !== accountId);
+        return run(accountId, () => writeField('disabledAccountIds', next), disabled ? '已停用该账号' : '已重新启用该账号');
+      };
+
+      // —— 移出池子 / 恢复 ——
+      const onIgnore = (accountId, ignoredNext) => {
+        return run(`ignore-${accountId}`, () =>
+          fetchJson(`${POOL_API}/accounts/ignored`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId, ignored: ignoredNext }),
+          }), ignoredNext ? '已移出账号池' : '已恢复到账号池');
+      };
+
+      // —— 保留积分 ——
+      const onSaveReserve = (accountId) => {
+        const parsed = Number.parseInt(reserveDraft[accountId] ?? '', 10);
+        const value = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+        return run(`reserve-${accountId}`, () =>
+          fetchJson(`${POOL_API}/accounts/credit-reserve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId, reserve: value }),
+          }), value > 0 ? `已保留 ${value} 积分` : '已取消保留');
+      };
+
+      // —— 冷却重置 ——
+      const onResetCooldowns = () => {
+        return run('cooldowns', () => fetchJson(`${POOL_API}/cooldowns/reset`, { method: 'POST' }), '冷却已清除');
+      };
+
+      // —— 签到 ——
+      const onCheckin = (accountId) => {
+        return run(`checkin-${accountId}`, () =>
+          fetchJson(`${POOL_API}/checkin`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId }),
+          }), '签到完成');
+      };
+
+      // —— 自动化开关：整段写 automation（小时表原样带过，缺省补默认）——
+      const onToggleAutomation = (enabled) => {
+        if (!writable) return;
+        return run('automation', () =>
+          writeField('automation', {
+            checkinHours: poolHoursOrDefault(automation?.checkinHours, POOL_DEFAULT_AUTOMATION_HOURS.checkin),
+            reportHours: poolHoursOrDefault(automation?.reportHours, POOL_DEFAULT_AUTOMATION_HOURS.report),
+            taskHours: poolHoursOrDefault(automation?.taskHours, POOL_DEFAULT_AUTOMATION_HOURS.tasks),
+            streakHours: poolHoursOrDefault(automation?.streakHours, POOL_DEFAULT_AUTOMATION_HOURS.streak),
+            travelHours: poolHoursOrDefault(automation?.travelHours, POOL_DEFAULT_AUTOMATION_HOURS.travel),
+            enabled,
+          }), enabled ? '已开启积分自动化' : '已关闭积分自动化');
+      };
+
+      // —— 立即运行：POST 后轮询 runInProgress 直到结算（同 vendored）——
+      const onRunAutomation = async (job) => {
+        setAutomationRun(job);
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          const body = await fetchJson(`${POOL_API}/automation/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ job }),
+          });
+          if (body?.started === false) setSavedNote('已有一轮在运行，稍后查看结果');
+          let settled = false;
+          for (let attempt = 0; attempt < POOL_AUTOMATION_POLL_ATTEMPTS; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, POOL_AUTOMATION_POLL_MS));
+            const next = await onRefresh();
+            if (next?.automation?.runInProgress === false) {
+              settled = true;
+              break;
+            }
+          }
+          await onRefresh();
+          setSavedNote(settled ? '自动化已跑完' : '运行时间较长，可稍后刷新查看');
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setAutomationRun(null);
+        }
+      };
+
+      // —— 模型勾选 ——
+      const editModel = (id, patch) => {
+        const base = draft ?? poolDraftFromStatus(status);
+        const entry = base[id];
+        if (entry === undefined) return;
+        setWriteError(null);
+        setSavedNote(null);
+        setDraft({ ...base, [id]: { ...entry, ...patch } });
+      };
+      const discardModels = () => {
+        dropDraft();
+        setMaxModeByRegion((prev) => {
+          if (prev[region] === undefined) return prev;
+          const copy = { ...prev };
+          delete copy[region];
+          return copy;
+        });
+        setWriteError(null);
+        setSavedNote(null);
+      };
+      const enableAllModels = () => {
+        const next = {};
+        for (const model of models) {
+          const prev = (draft ?? poolDraftFromStatus(status))[model.id] ?? {};
+          next[model.id] = { ...prev, enabled: true };
+        }
+        setDraft(next);
+      };
+      const saveModels = async () => {
+        if (!writable) return;
+        if (enabledCount === 0) {
+          setWriteError('至少要启用一个模型。');
+          return;
+        }
+        setBusy('models');
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          const enabledModelIds = [];
+          const imageModelIds = [];
+          const contextBudgets = {};
+          const reasoningEfforts = {};
+          for (const model of models) {
+            const entry = modelBase[model.id];
+            if (entry === undefined) continue;
+            if (entry.enabled === true) enabledModelIds.push(model.id);
+            if (entry.images === true) imageModelIds.push(model.id);
+            if (entry.budget !== undefined) contextBudgets[model.id] = entry.budget;
+            if (entry.effort !== undefined) {
+              const offered = asArray(model.supportedEfforts);
+              if (entry.effort === 'off' || offered.includes(entry.effort)) {
+                reasoningEfforts[model.id] = entry.effort;
+              }
+            }
+          }
+          await writeField(poolSelectionKey(region), {
+            enabledModelIds,
+            imageModelIds,
+            contextBudgets,
+            reasoningEfforts,
+            maxMode,
+          });
+          // 先读回确认，再丢弃草稿（顺序反了会「闪一下又弹回去」）
+          await onRefresh();
+          dropDraft();
+          setMaxModeByRegion((prev) => {
+            if (prev[region] === undefined) return prev;
+            const copy = { ...prev };
+            delete copy[region];
+            return copy;
+          });
+          setSavedNote('模型选择已保存');
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setBusy(null);
+        }
+      };
+
+      const totals = poolAutomationTotals(status);
+      const dirty = modelsDirty;
+
+      return jsxs('div', {
+        className: 'wbc-body',
+        children: [
+          jsx(ColumnHead, {
+            title: 'WorkBuddy 池',
+            tabs: POOL_REGIONS,
+            activeTab: region,
+            onTab: onRegion,
+            actions: [
+              {
+                label: loading ? '检测中…' : '重新检测',
+                disabled: loading,
+                onClick: typeof onRescan === 'function' ? onRescan : onRefresh,
+              },
+            ],
+          }),
+          !writable
+            ? jsx('div', {
+                className: 'wbc-note',
+                'data-diagnostic': 'settings-scope',
+                children: '设置作用域不可写 —— 配置为只读，无法保存勾选。',
+              })
+            : null,
+          error !== null && error !== undefined
+            ? jsx('div', { className: 'wbc-err', children: `读取失败：${error}` })
+            : null,
+          writeError !== null
+            ? jsx('div', { className: 'wbc-err', children: `设置未能保存：${writeError}` })
+            : null,
+          savedNote !== null ? jsx('div', { className: 'wbc-note', children: savedNote }) : null,
+          status === null && loading
+            ? jsx('div', { className: 'wbc-note', children: '正在读取账号池状态…' })
+            : null,
+          status === null
+            ? null
+            : jsx(StatsRow, {
+                items: [
+                  { label: '账号', value: fmtNum(accounts.length), sub: '个已登录' },
+                  { label: '正常', value: fmtNum(usable), sub: '可轮换' },
+                  { label: '冷却中', value: fmtNum(cooling), sub: '被限流' },
+                  {
+                    label: '分配策略',
+                    value:
+                      POOL_DISTRIBUTIONS.find((d) => d.id === distribution)?.label ?? distribution,
+                    sub: '当前',
+                    small: true,
+                  },
+                ],
+              }),
+          status !== null && accounts.length === 0
+            ? jsx(EmptyBox, {
+                lines: [
+                  '这边还没有检测到已登录的 WorkBuddy 账号。',
+                  '请先在 WorkBuddy 桌面版里登录，再点上面的「重新检测」。',
+                ],
+              })
+            : null,
+          // —— 分配策略 ——
+          status !== null && accounts.length > 0
+            ? jsxs('div', {
+                className: 'wbc-models',
+                children: [
+                  jsxs('div', {
+                    className: 'wbc-bar',
+                    children: [
+                      jsx('span', { className: 'wbc-col-title', children: '账号使用方式' }),
+                      jsx('div', { className: 'wbc-spacer' }),
+                      ...POOL_DISTRIBUTIONS.map((d) =>
+                        jsx(
+                          'button',
+                          {
+                            type: 'button',
+                            className: distribution === d.id ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
+                            disabled: !writable || busy === 'distribution',
+                            title: d.hint,
+                            onClick: () => onDistribution(d.id),
+                            children: d.label,
+                          },
+                          d.id,
+                        ),
+                      ),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: busy === 'cooldowns',
+                        onClick: onResetCooldowns,
+                        children: busy === 'cooldowns' ? '正在清除…' : '清除所有冷却',
+                      }),
+                    ],
+                  }),
+                  jsx('div', {
+                    className: 'wbc-note',
+                    children:
+                      '同区域的多个 WorkBuddy 登录构成一个号池；被限流或额度耗尽的账号会自动冷却并换下一个。',
+                  }),
+                  jsx('div', {
+                    className: 'wbc-cards',
+                    children: accounts.map((a) =>
+                      jsx(
+                        AccountCard,
+                        {
+                          name: a.nickname || a.label || a.id,
+                          dim: a.cooling === true || a.disabled === true,
+                          tags: [
+                            a.cooling === true
+                              ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' }
+                              : { text: '正常', cls: 'wbc-tag wbc-tag-on' },
+                            a.disabled === true ? { text: '已停用', cls: 'wbc-tag' } : null,
+                            a.reserved === true ? { text: '已保留·暂停', cls: 'wbc-tag' } : null,
+                          ],
+                          rows: [
+                            { k: '触发限流', v: `${fmtNum(a.rateLimitHits ?? 0)} 次` },
+                            a.cooldownUntil !== undefined
+                              ? { k: '冷却至', v: fmtTime(a.cooldownUntil) }
+                              : null,
+                          a.credits !== undefined ? { k: '通用余额', v: fmtNum(a.credits) } : null,
+                          a.creditReserve !== undefined && a.creditReserve > 0
+                            ? { k: '保留积分', v: fmtNum(a.creditReserve) }
+                            : null,
+                        ],
+                        action:
+                          a.cooling !== true
+                            ? {
+                                label: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
+                                disabled: busy === `checkin-${a.id}`,
+                                onClick: () => onCheckin(a.id),
+                              }
+                            : null,
+                      },
+                      String(a.id ?? a.label),
+                    ),
+                  ),
+                }),
+                // 每账号的启停 / 保留 / 移出（一行一个账号，紧凑条形控件）
+                jsx('div', {
+                  className: 'wbc-bar',
+                  children: jsx('span', { className: 'wbc-col-sub', children: '账号设置' }),
+                }),
+                ...accounts.map((a) =>
+                    jsxs(
+                      'div',
+                      {
+                        className: 'wbc-bar',
+                        children: [
+                          jsx('span', { className: 'wbc-k', children: a.nickname || a.label || a.id }),
+                          jsx('label', {
+                            className: 'wbc-check',
+                            children: [
+                              jsx('input', {
+                                type: 'checkbox',
+                                checked: a.disabled !== true,
+                                disabled: !writable || busy === a.id,
+                                onChange: (e) => onToggleDisabled(a.id, e.target.checked !== true),
+                              }),
+                              jsx('span', { children: '参与轮换' }),
+                            ],
+                          }),
+                          jsx('input', {
+                            type: 'number',
+                            min: 0,
+                            step: 1,
+                            className: 'wbc-reserve-input',
+                            placeholder: '保留积分',
+                            value: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
+                            disabled: !writable || busy === `reserve-${a.id}`,
+                            onChange: (e) =>
+                              setReserveDraft((prev) => ({ ...prev, [a.id]: e.target.value })),
+                          }),
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn',
+                            disabled: !writable || busy === `reserve-${a.id}`,
+                            onClick: () => onSaveReserve(a.id),
+                            children: busy === `reserve-${a.id}` ? '保存中…' : '保存保留',
+                          }),
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn',
+                            disabled: busy === `ignore-${a.id}`,
+                            onClick: () => onIgnore(a.id, true),
+                            children: '移出池子',
+                          }),
+                        ],
+                      },
+                      `ctl-${a.id}`,
+                    ),
+                ),
+                ],
+              })
+            : null,
+          // —— 已移出池子的账号 ——
+          ignored.length > 0
+            ? jsxs('div', {
+                className: 'wbc-models',
+                children: [
+                  jsxs('div', {
+                    className: 'wbc-bar',
+                    children: [
+                      jsx('span', { className: 'wbc-col-title', children: '已移出账号池' }),
+                      jsx('span', {
+                        className: 'wbc-col-sub',
+                        children: `${ignored.length} 个账号不再参与轮换`,
+                      }),
+                    ],
+                  }),
+                  ...ignored.map((entry) =>
+                    jsxs(
+                      'div',
+                      {
+                        className: 'wbc-bar',
+                        children: [
+                          jsx('span', { className: 'wbc-k', children: entry.label ?? entry.id }),
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn',
+                            disabled: busy === `ignore-${entry.id}`,
+                            onClick: () => onIgnore(entry.id, false),
+                            children: '恢复',
+                          }),
+                        ],
+                      },
+                      `ignored-${entry.id}`,
+                    ),
+                  ),
+                ],
+              })
+            : null,
+          // —— 积分自动化（仅 CN：国际版没有这套接口，同 vendored 的 activeRegion 判断）——
+          region === 'cn' && automation !== undefined && automation !== null
+            ? jsxs('div', {
+                className: 'wbc-models',
+                children: [
+                  jsxs('div', {
+                    className: 'wbc-bar',
+                    children: [
+                      jsx('span', { className: 'wbc-col-title', children: '积分自动化' }),
+                      jsx('div', { className: 'wbc-spacer' }),
+                      jsx('label', {
+                        className: 'wbc-check',
+                        children: [
+                          jsx('input', {
+                            type: 'checkbox',
+                            checked: automationOn,
+                            disabled: !writable || busy === 'automation',
+                            onChange: (e) => onToggleAutomation(e.target.checked),
+                          }),
+                          jsx('span', { children: automationOn ? '已开启' : '已关闭' }),
+                        ],
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn wbc-btn-primary',
+                        disabled: automationRun !== null,
+                        onClick: () => onRunAutomation('all'),
+                        children: automationRun !== null ? '运行中…' : '立即运行',
+                      }),
+                    ],
+                  }),
+                  jsx('div', {
+                    className: 'wbc-note',
+                    children: automationOn
+                      ? '每天自动签到、上报活跃、领取任务奖励与连登奖励，并照看猫猫旅行。'
+                      : '已关闭：不会替你发起任何后台请求。',
+                  }),
+                  jsx(StatsRow, {
+                    items: [
+                      { label: '今日自动化', value: `+${fmtNum(totals.credit)}`, sub: '积分合计' },
+                      { label: '任务奖励', value: `+${fmtNum(totals.checkinCredit)}`, sub: '签到' },
+                      { label: '连登奖励', value: `+${fmtNum(totals.bonusCredit)}`, sub: '连登' },
+                      { label: '猫猫旅行', value: `+${fmtNum(totals.travelCredit)}`, sub: '旅行' },
+                    ],
+                  }),
+                  ...POOL_AUTOMATION_JOBS.map((job) => {
+                    const rec = poolAutomationJob(status, job.kind);
+                    const hours = asArray(poolAutomationHours(status, job.kind));
+                    return jsxs(
+                      'div',
+                      {
+                        className: 'wbc-bar',
+                        children: [
+                          jsx('span', { className: 'wbc-k', children: job.label }),
+                          jsx('span', {
+                            className: 'wbc-col-sub',
+                            children:
+                              hours.length === 0
+                                ? '当天不跑'
+                                : hours.map((hour) => `${String(hour).padStart(2, '0')}:00`).join(' / '),
+                          }),
+                          jsx('div', { className: 'wbc-spacer' }),
+                          jsx('span', { className: 'wbc-col-sub', children: poolAutomationNote(rec) }),
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn',
+                            disabled: automationRun !== null,
+                            onClick: () => onRunAutomation(job.kind),
+                            children: automationRun === job.kind ? '运行中…' : '运行',
+                          }),
+                        ],
+                      },
+                      `job-${job.kind}`,
+                    );
+                  }),
+                ],
+              })
+            : null,
+          // —— 模型目录 ——
+          models.length > 0
+            ? jsxs('div', {
+                className: 'wbc-models',
+                children: [
+                  jsxs('div', {
+                    className: 'wbc-bar',
+                    children: [
+                      jsx('span', { className: 'wbc-col-title', children: '模型' }),
+                      jsx('span', {
+                        className: 'wbc-col-sub',
+                        children: `已启用 ${enabledCount} / ${models.length}`,
+                      }),
+                      jsx('div', { className: 'wbc-spacer' }),
+                      jsx('label', {
+                        className: 'wbc-check',
+                        children: [
+                          jsx('input', {
+                            type: 'checkbox',
+                            checked: maxMode,
+                            disabled: !writable,
+                            onChange: (e) => setMaxMode(e.target.checked),
+                          }),
+                          jsx('span', { children: 'Max 模式（满上下文 + 最强思考）' }),
+                        ],
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: !writable,
+                        onClick: enableAllModels,
+                        children: '一键启用所有模型',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: !dirty || busy === 'models',
+                        onClick: discardModels,
+                        children: '放弃修改',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn wbc-btn-primary',
+                        disabled: !writable || busy === 'models' || enabledCount === 0,
+                        onClick: saveModels,
+                        children: busy === 'models' ? '保存中…' : '保存',
+                      }),
+                    ],
+                  }),
+                  jsx('div', {
+                    className: 'wbc-cols',
+                    children: models.map((model) => {
+                      const entry = modelBase[model.id] ?? { enabled: false, images: false };
+                      const native = model.nativeContextWindow ?? model.contextWindow;
+                      const capped = typeof native === 'number' && native > POOL_DEFAULT_CONTEXT_BUDGET;
+                      return jsxs(
+                        'div',
+                        {
+                          className: 'wbc-col',
+                          children: [
+                            jsxs('label', {
+                              className: 'wbc-check',
+                              children: [
+                                jsx('input', {
+                                  type: 'checkbox',
+                                  checked: entry.enabled === true,
+                                  disabled: !writable,
+                                  onChange: (e) => editModel(model.id, { enabled: e.target.checked }),
+                                }),
+                                jsx('span', { children: model.name ?? model.id }),
+                              ],
+                            }),
+                            jsx('div', {
+                              className: 'wbc-model-meta',
+                              children: [
+                                `上下文 ${fmtCapacity(native)}`,
+                                model.maxTokens !== undefined ? `输出 ${fmtCapacity(model.maxTokens)}` : null,
+                                asArray(model.supportedEfforts).length > 0
+                                  ? `推理强度：${asArray(model.supportedEfforts).join(' / ')}`
+                                  : null,
+                              ].filter(Boolean),
+                            }),
+                            model.supportsImages === true
+                              ? jsx('label', {
+                                  className: 'wbc-check',
+                                  children: [
+                                    jsx('input', {
+                                      type: 'checkbox',
+                                      checked: entry.images === true,
+                                      disabled: !writable || entry.enabled !== true,
+                                      onChange: (e) => editModel(model.id, { images: e.target.checked }),
+                                    }),
+                                    jsx('span', { children: '支持图片' }),
+                                  ],
+                                })
+                              : null,
+                            capped
+                              ? jsx('label', {
+                                  className: 'wbc-check',
+                                  children: [
+                                    jsx('input', {
+                                      type: 'radio',
+                                      name: `budget-${region}-${model.id}`,
+                                      checked: entry.budget === POOL_DEFAULT_CONTEXT_BUDGET,
+                                      disabled: !writable,
+                                      onChange: () => editModel(model.id, { budget: POOL_DEFAULT_CONTEXT_BUDGET }),
+                                    }),
+                                    jsx('span', { children: `限制到 ${fmtCapacity(POOL_DEFAULT_CONTEXT_BUDGET)}` }),
+                                  ],
+                                })
+                              : null,
+                          ],
+                        },
+                        model.id,
+                      );
+                    }),
+                  }),
+                ],
+              })
+            : null,
+        ],
+      });
+    }
+    //#endregion
+
+    //#region Trae 配置页（自写，按 WorkBuddy 模块样式）
+
+    /**
+     * Trae 配置标签页 —— **本包自写**，替代上游 dsh-connect-trae 的浏览器卡片。
+     *
+     * 结构与账号页右列同一套模块（列头 / 统计行 / 账号卡 / 空态都走共用组件），
+     * 外加一块模型勾选区。功能与上游卡片逐项对齐：
+     *
+     *   - 供应商开关（`regions.<region>.enabled`，opt-out，关掉后该区域的模型
+     *     从 DSH 选择器里消失，账号与勾选保留，重新打开即恢复）
+     *   - 账号绑定（`accounts.<region>`，只在当前区域生效，不动另一区域）
+     *   - 模型勾选（`regions.<region>.enabledModelIds`）与一键可用性测试
+     *     （走 /models/test，**会消耗少量配额**）
+     *   - 「从 Trae 刷新」拉取最新目录，立即落盘 lastCatalog 并自动全量启用
+     *
+     * 所有设置写入都经 writeTraeField 读回确认；作用域缺失/只读时控件禁用并
+     * 给出诊断行（与 PoolConfigTab 同款提示），**绝不静默回弹**。
+     */
+    function TraeConfigTab({ scopeSlot }) {
+      // scopeSlot 是 client.js 包好的 {get,subscribe} 活句柄；这里在渲染期直接
+      // 读句柄当前值，设置写入后 loadUsage / 后续渲染自然取到新快照。
+      const scope = typeof scopeSlot?.get === 'function' ? scopeSlot.get() : scopeSlot;
+      const scopeObj = typeof scope?.get === 'function' ? scope.get() : scope;
+      const writable = scopeObj?.getSnapshot?.().writable === true;
+
+      const [region, setRegion] = useState('cn');
+      const [usage, setUsage] = useState(null);
+      const [usageLoading, setUsageLoading] = useState(true);
+      const [usageError, setUsageError] = useState(null);
+
+      // 模型勾选草稿：null = 未改动（跟随已保存值），否则 { enabledIds: Set }。
+      // 与上游一致只草稿化勾选本身；目录/预算等高级字段本页不暴露。
+      const [draft, setDraft] = useState(null);
+      const [saving, setSaving] = useState(false);
+      const [writeError, setWriteError] = useState(null);
+      const [savedNote, setSavedNote] = useState(null);
+
+      // 设置文档变化（含本页自己的写入）→ 丢弃草稿回到已保存状态
+      const [settingsRev, setSettingsRev] = useState(0);
+      useEffect(() => {
+        if (scopeObj === null || scopeObj === undefined || typeof scopeObj.subscribe !== 'function') {
+          return undefined;
+        }
+        return scopeObj.subscribe(() => setSettingsRev((v) => v + 1));
+      }, [scopeObj]);
+
+      /** 该区域供应商是否开启（opt-out，读已提交的设置文档） */
+      const regionOn = traeRegionEnabledOf(
+        scopeObj === null || scopeObj === undefined ? undefined : scopeObj.getSnapshot().value,
+        region,
+      );
+
+      const loadUsage = useCallback(
+        async (which) => {
+          const target = which ?? region;
+          setUsageLoading(true);
+          setUsageError(null);
+          try {
+            const data = await fetchJson(`${TRAE_API}/usage?region=${target}`);
+            setUsage(data);
+          } catch (e) {
+            setUsageError(e?.message ?? String(e));
+            setUsage(null);
+          } finally {
+            setUsageLoading(false);
+          }
+        },
+        [region],
+      );
+
+      useEffect(() => {
+        loadUsage(region);
+      }, [loadUsage, settingsRev]);
+
+      const savedModels = asArray(usage?.models);
+      const savedEnabledIds = asArray(usage?.enabledModelIds);
+      const enabledSet = draft?.enabledIds ?? new Set(savedEnabledIds);
+      const dirty = draft !== null;
+
+      const toggleModel = (id) => {
+        setWriteError(null);
+        setSavedNote(null);
+        setDraft((prev) => {
+          const base = prev?.enabledIds ?? new Set(savedEnabledIds);
+          const next = new Set(base);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return { enabledIds: next };
+        });
+      };
+
+      const discardModels = () => {
+        setDraft(null);
+        setWriteError(null);
+        setSavedNote(null);
+      };
+
+      /** 一键启用所有模型：把目录里的模型全部勾进草稿（仍需「保存」落盘） */
+      const enableAllModels = () => {
+        setWriteError(null);
+        setSavedNote(null);
+        setDraft({ enabledIds: new Set(savedModels.map((model) => model.id)) });
+      };
+
+      /** 保存模型勾选：只写本区域的槽，带上「从 Trae 刷新」得来的目录快照 */
+      const saveModels = async () => {
+        if (scopeObj === undefined || scopeObj === null || !writable) return;
+        if (usage?.status !== 'signed-in') return;
+        setSaving(true);
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          const snapValue = scopeObj.getSnapshot().value;
+          const catalog = savedModels.map((model) => ({
+            ...model,
+            input: ['text'],
+            ...(model.multimodal === undefined ? {} : { multimodal: model.multimodal === true }),
+          }));
+          const slot = {
+            enabled: traeRegionEnabledOf(snapValue, region),
+            lastCatalog: catalog,
+            enabledModelIds: [...enabledSet],
+            imageModelIds: asArray(traeRegionSlotOf(snapValue, region).imageModelIds).filter(
+              (id) => enabledSet.has(id),
+            ),
+            contextBudgets: traeRegionSlotOf(snapValue, region).contextBudgets ?? {},
+          };
+          await writeTraeField(
+            scopeObj,
+            'regions',
+            nextRegionSlots(regionsMapOf(snapValue), region, slot),
+            (readBack) => {
+              const ids = traeRegionSlotOf(readBack, region).enabledModelIds;
+              return Array.isArray(ids) && ids.length === slot.enabledModelIds.length
+                && slot.enabledModelIds.every((id) => ids.includes(id));
+            },
+          );
+          setDraft(null);
+          setSavedNote('模型选择已保存');
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      /**
+       * 从 Trae 刷新实时目录：拉取即落盘 —— 列表更新 + 所有模型自动全启用。
+       *
+       * 不再「并入草稿等保存」：上游一旦到手，就同时把 `lastCatalog`（新列表）
+       * 和 `enabledModelIds`（fresh 全部 id）写进本区域槽并读回确认，无需用户
+       * 再点一次「保存」。图片能力仍沿用用户既有的 imageModelIds 勾选。
+       */
+      const refreshModels = async () => {
+        setWriteError(null);
+        setSavedNote(null);
+        if (scopeObj === undefined || scopeObj === null || !writable) return;
+        if (usage?.status !== 'signed-in') {
+          setWriteError('尚未登录 Trae，无法刷新目录');
+          return;
+        }
+        setSaving(true);
+        try {
+          const body = await fetchJson(`${TRAE_API}/models/refresh?region=${region}`, { method: 'POST' });
+          const fresh = asArray(body?.models);
+          if (fresh.length === 0) throw new Error('Trae 未返回任何模型');
+          const freshIds = new Set(fresh.map((m) => m.id));
+          const snapValue = scopeObj.getSnapshot().value;
+          const catalog = fresh.map((model) => ({
+            ...model,
+            input: ['text'],
+            ...(model.multimodal === undefined ? {} : { multimodal: model.multimodal === true }),
+          }));
+          const slot = {
+            enabled: traeRegionEnabledOf(snapValue, region),
+            lastCatalog: catalog,
+            enabledModelIds: [...freshIds],
+            imageModelIds: asArray(traeRegionSlotOf(snapValue, region).imageModelIds).filter(
+              (id) => freshIds.has(id),
+            ),
+            contextBudgets: traeRegionSlotOf(snapValue, region).contextBudgets ?? {},
+          };
+          await writeTraeField(
+            scopeObj,
+            'regions',
+            nextRegionSlots(regionsMapOf(snapValue), region, slot),
+            (readBack) => {
+              const ids = traeRegionSlotOf(readBack, region).enabledModelIds;
+              return Array.isArray(ids) && ids.length === slot.enabledModelIds.length
+                && slot.enabledModelIds.every((id) => ids.includes(id));
+            },
+          );
+          setDraft(null);
+          setSavedNote(`已刷新：${fresh.length} 个模型，已全部启用`);
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      /** 一键测试已启用模型：每个模型一条最小消息，逐条更新徽章（会耗少量配额） */
+      const [probes, setProbes] = useState({});
+      const [testing, setTesting] = useState(null); // {done,total}
+      const [testError, setTestError] = useState(null);
+      const [testSummary, setTestSummary] = useState(null);
+      const alive = useRef(true);
+      useEffect(() => () => { alive.current = false; }, []);
+
+      const testEnabledModels = async () => {
+        const ids = [...enabledSet];
+        setTestError(null);
+        setTestSummary(null);
+        if (ids.length === 0) {
+          setTestError('请先启用至少一个模型。');
+          return;
+        }
+        setTesting({ done: 0, total: ids.length });
+        let available = 0;
+        try {
+          for (const id of ids) {
+            if (!alive.current) return;
+            const body = await fetchJson(`${TRAE_API}/models/test?region=${region}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ids: [id] }),
+            });
+            if (!alive.current) return;
+            const verdict = asArray(body?.results)[0];
+            if (verdict !== undefined) {
+              setProbes((prev) => ({ ...prev, [id]: verdict }));
+              if (verdict.verdict === 'available') available += 1;
+              if (verdict.verdict === 'auth') {
+                setTesting(null);
+                setTestError(`登录凭据被拒，已停止测试：${verdict.detail ?? ''}`);
+                return;
+              }
+            }
+            setTesting((prev) => (prev === null ? null : { ...prev, done: prev.done + 1 }));
+          }
+          setTesting(null);
+          setTestSummary(`${ids.length} 个里有 ${available} 个正常应答。`);
+        } catch (e) {
+          setTesting(null);
+          setTestError(`测试失败：${e?.message ?? String(e)}`);
+        }
+      };
+
+      /** 账号绑定：写 accounts.<region>，语义与上游 switchAccount 一致 */
+      const [switching, setSwitching] = useState(null);
+      const onSwitchAccount = async (accountId) => {
+        if (scopeObj === undefined || scopeObj === null || !writable) return;
+        setSwitching(accountId);
+        setWriteError(null);
+        try {
+          const value = scopeObj.getSnapshot().value;
+          const accounts = traeRegionSlotOf(value, 'accounts');
+          await writeTraeField(
+            scopeObj,
+            'accounts',
+            traeNextAccounts(accounts, region, accountId),
+            (readBack) => unwrapVolatileDeep(traeNextAccounts(accounts, region, accountId)[region])
+              === unwrapVolatileDeep(readBack)?.accounts?.[region],
+          );
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setSwitching(null);
+        }
+      };
+
+      /**
+       * 号池管理（对齐 XD Pool 的三件套）。
+       *
+       * 分配策略与停用/保留额度都写在 `regions.<region>` 槽里（与 WorkBuddy 池的
+       * 配置同形），所以每次写入都只动目标区域的槽，另一区域的号池设置不受影响。
+       * 清除冷却是**运行时状态**（不落盘），走专门的路由 —— 和 WorkBuddy 一致，
+       * 冷却是号池自己的记账，卡住时用户需要一个不用重启 DSH 的出路。
+       */
+      const poolDoc = usage?.pool ?? null;
+      const poolAccounts = asArray(poolDoc?.accounts);
+
+      /** 写号池字段：只改目标区域槽的对应键，槽内其余字段原样带过 */
+      const writePoolField = async (patch, landed, note) => {
+        if (scopeObj === null || scopeObj === undefined || !writable) return;
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          const value = scopeObj.getSnapshot().value;
+          const slot = { ...traeRegionSlotOf(value, region), ...patch };
+          await writeTraeField(scopeObj, 'regions', nextRegionSlots(regionsMapOf(value), region, slot), landed);
+          setSavedNote(note);
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        }
+      };
+
+      const [savingPool, setSavingPool] = useState(null);
+
+      const onDistribution = (next) => {
+        setSavingPool('distribution');
+        writePoolField({ distribution: next }, (readBack) =>
+          traeRegionSlotOf(readBack, region).distribution === next, '已保存分配策略')
+          .finally(() => setSavingPool(null));
+      };
+
+      const onToggleDisabled = (accountId, disabled) => {
+        setSavingPool(accountId);
+        const currentIds = asArray(traeRegionSlotOf(scopeObj?.getSnapshot?.().value, region).disabledAccountIds);
+        const next = disabled
+          ? [...new Set([...currentIds, accountId])]
+          : currentIds.filter((id) => id !== accountId);
+        writePoolField({ disabledAccountIds: next }, (readBack) =>
+          JSON.stringify(traeRegionSlotOf(readBack, region).disabledAccountIds ?? []) === JSON.stringify(next),
+          disabled ? '已停用该账号' : '已重新启用该账号')
+          .finally(() => setSavingPool(null));
+      };
+
+      const [reserveDraft, setReserveDraft] = useState({});
+      const onSaveReserve = (accountId) => {
+        const parsed = Number.parseInt(reserveDraft[accountId] ?? '', 10);
+        const value = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+        setSavingPool(`reserve-${accountId}`);
+        const current = traeRegionSlotOf(scopeObj?.getSnapshot?.().value, region).creditReserves ?? {};
+        const next = { ...current };
+        if (value <= 0) delete next[accountId];
+        else next[accountId] = value;
+        writePoolField({ creditReserves: next }, (readBack) => {
+          const saved = traeRegionSlotOf(readBack, region).creditReserves ?? {};
+          return (saved[accountId] ?? 0) === value;
+        }, value > 0 ? `已保留 ${value} 积分` : '已取消保留')
+          .finally(() => setSavingPool(null));
+      };
+
+      const onResetCooldowns = async () => {
+        setSavingPool('cooldowns');
+        setWriteError(null);
+        try {
+          await fetchJson(`${TRAE_API}/cooldowns/reset?region=${region}`, { method: 'POST' });
+          setSavedNote('冷却已清除');
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setSavingPool(null);
+        }
+      };
+
+      /** 供应商开关：只改 enabled，其余字段原样保留（关掉不丢勾选） */
+      const [togglingRegion, setTogglingRegion] = useState(null);
+      const onToggleRegion = async (next) => {
+        if (scopeObj === undefined || scopeObj === null || !writable) return;
+        setTogglingRegion(region);
+        setWriteError(null);
+        try {
+          const value = scopeObj.getSnapshot().value;
+          await writeTraeField(
+            scopeObj,
+            'regions',
+            nextRegionSlots(regionsMapOf(value), region, {
+              ...traeRegionSlotOf(value, region),
+              enabled: next,
+            }),
+            (readBack) => traeRegionSlotOf(readBack, region).enabled === next,
+          );
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setTogglingRegion(null);
+        }
+      };
+
+      const accounts = asArray(usage?.accounts);
+      const signedIn = usage?.status === 'signed-in';
+      const current = accounts.find((a) => a.selected === true) ?? null;
+
       return jsxs('div', {
         className: 'wbc-body',
         children: [
           jsxs('div', {
-            className: 'wbc-bar',
+            className: 'wbc-col-head',
             children: [
-              jsx('button', {
-                type: 'button',
-                className: region === 'cn' ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                onClick: () => onRegion('cn'),
-                children: '国内版',
-              }),
-              jsx('button', {
-                type: 'button',
-                className: region === 'global' ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                onClick: () => onRegion('global'),
-                children: '国际版',
+              ...TRAE_REGIONS.map((r) =>
+                jsx(
+                  'button',
+                  {
+                    type: 'button',
+                    className: region === r.id ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
+                    onClick: () => {
+                      setRegion(r.id);
+                      setDraft(null);
+                      setWriteError(null);
+                      setSavedNote(null);
+                    },
+                    children: r.label,
+                  },
+                  r.id,
+                ),
+              ),
+              jsx('label', {
+                className: 'wbc-check',
+                children: [
+                  jsx('input', {
+                    type: 'checkbox',
+                    checked: regionOn,
+                    disabled: !writable || togglingRegion !== null,
+                    onChange: (e) => onToggleRegion(e.target.checked),
+                  }),
+                  jsx('span', { children: '向 DSH 提供该供应商' }),
+                ],
               }),
               jsx('div', { className: 'wbc-spacer' }),
               jsx('button', {
                 type: 'button',
                 className: 'wbc-btn',
-                disabled: loading,
-                onClick: onRescan,
-                children: loading ? '检测中…' : '重新检测本机账号',
+                disabled: usageLoading,
+                onClick: () => loadUsage(),
+                children: usageLoading ? '刷新中…' : '刷新用量',
               }),
             ],
           }),
+          regionOn === false
+            ? jsx('div', {
+                className: 'wbc-note',
+                children: '该供应商已关闭：它的模型不会提供给 DSH。账号与模型设置都会保留，勾选上方复选框即可恢复。',
+              })
+            : null,
+          !writable
+            ? jsx('div', {
+                className: 'wbc-note',
+                'data-diagnostic': 'settings-scope',
+                children: '设置作用域不可写 —— 配置为只读，无法保存勾选。',
+              })
+            : null,
+          usageError !== null
+            ? jsx('div', { className: 'wbc-err', children: `读取失败：${usageError}` })
+            : null,
+          writeError !== null
+            ? jsx('div', { className: 'wbc-err', children: `设置未能保存：${writeError}` })
+            : null,
+          savedNote !== null ? jsx('div', { className: 'wbc-note', children: savedNote }) : null,
+          usage === null && usageLoading
+            ? jsx('div', { className: 'wbc-note', children: '正在读取 Trae 账号…' })
+            : null,
+          usage !== null && !signedIn
+            ? jsx(EmptyBox, {
+                lines: [
+                  `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
+                  '请在 Trae 客户端里登录，或用「账号」页右列的「添加账号」在浏览器里登录。',
+                ],
+              })
+            : null,
+          signedIn
+            ? jsx(StatsRow, {
+                items: [
+                  { label: '当前账号', value: usage.accountName ?? current?.accountName ?? '–', sub: `已检测到 ${accounts.length} 个登录`, small: true },
+                  { label: '通用余额', value: fmtNum(usage.credits?.generalAvailable), sub: 'general' },
+                  { label: '工作余额', value: fmtNum(usage.credits?.workAvailable), sub: 'work' },
+                  {
+                    label: '签到',
+                    value:
+                      usage.checkin?.checkedIn === true
+                        ? '今日已签到'
+                        : usage.checkin?.enabled === false
+                          ? '无签到活动'
+                          : '可签到',
+                    sub: usage.checkin?.credits !== undefined ? `+${fmtNum(usage.checkin.credits)} 积分` : null,
+                    small: true,
+                  },
+                ],
+              })
+            : null,
+          signedIn && accounts.length > 1
+            ? jsx('div', {
+                className: 'wbc-cards',
+                children: accounts.map((a) =>
+                  jsx(
+                    AccountCard,
+                    {
+                      name: a.accountName ?? a.id ?? '(未命名)',
+                      dim: a.selected !== true,
+                      tags: [
+                        a.selected === true
+                          ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
+                          : { text: '备用', cls: 'wbc-tag' },
+                      ],
+                      rows: [{ k: '账号 id', v: String(a.id ?? '–') }],
+                      action:
+                        a.selected === true
+                          ? null
+                          : {
+                              label: switching === a.id ? '切换中…' : '切换到此账号',
+                              disabled: switching !== null || !writable,
+                              onClick: () => onSwitchAccount(a.id),
+                            },
+                    },
+                    String(a.id ?? a.accountName),
+                  ),
+                ),
+              })
+            : null,
+          /**
+           * 号池区：与 XD Pool 同一套控件（分配策略 / 账号启停 / 保留积分 / 清除冷却）。
+           *
+           * 数据来自 /usage 文档里新增的 pool 段（服务端直接读号池状态，不额外发
+           * 上游请求），勾选后的写入走 regions.<region> 槽。
+           */
+          poolAccounts.length > 0
+            ? jsxs('div', {
+                className: 'wbc-models',
+                children: [
+                  jsxs('div', {
+                    className: 'wbc-bar',
+                    children: [
+                      jsx('span', { className: 'wbc-col-title', children: '账号使用方式' }),
+                      jsx('div', { className: 'wbc-spacer' }),
+                      ...[
+                        { id: 'priority', label: '优先模式', hint: '先用完一个账号，用完再换下一个' },
+                        { id: 'round-robin', label: '轮换模式', hint: '按顺序轮流使用，积分均匀分摊' },
+                        { id: 'balanced', label: '均衡模式', hint: '随机抽取，闲置越久的账号被选中概率越高' },
+                      ].map((d) =>
+                        jsx(
+                          'button',
+                          {
+                            type: 'button',
+                            className: poolDoc?.distribution === d.id ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
+                            disabled: !writable || savingPool !== null,
+                            title: d.hint,
+                            onClick: () => onDistribution(d.id),
+                            children: d.label,
+                          },
+                          d.id,
+                        ),
+                      ),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: savingPool !== null,
+                        onClick: onResetCooldowns,
+                        children: savingPool === 'cooldowns' ? '正在清除…' : '清除所有冷却',
+                      }),
+                    ],
+                  }),
+                  jsx('div', {
+                    className: 'wbc-note',
+                    children:
+                      '同区域的多个 Trae 登录构成一个号池；被限流或额度耗尽的账号会自动冷却并换下一个。',
+                  }),
+                  jsx('div', {
+                    className: 'wbc-cards',
+                    children: poolAccounts.map((a) =>
+                      jsxs(
+                        'div',
+                        {
+                          className: a.disabled === true || a.reserved === true ? 'wbc-card wbc-card-off' : 'wbc-card',
+                          children: [
+                            jsxs('div', {
+                              className: 'wbc-card-head',
+                              children: [
+                                jsx('span', { className: 'wbc-name', children: a.label ?? a.id }),
+                                a.cooling === true
+                                  ? jsx('span', { className: 'wbc-tag wbc-tag-warn', children: '冷却中' })
+                                  : null,
+                                a.disabled === true
+                                  ? jsx('span', { className: 'wbc-tag', children: '已停用' })
+                                  : jsx('span', { className: 'wbc-tag wbc-tag-on', children: '在轮换中' }),
+                                poolDoc?.lastServedId === a.id
+                                  ? jsx('span', { className: 'wbc-tag wbc-tag-on', children: '当前使用' })
+                                  : null,
+                                a.reserved === true
+                                  ? jsx('span', { className: 'wbc-tag', children: '已保留·暂停' })
+                                  : null,
+                              ],
+                            }),
+                            jsx(KV, {
+                              k: '触发限流',
+                              v: `${fmtNum(a.rateLimitHits ?? 0)} 次`,
+                            }),
+                            a.cooldownUntilMs !== undefined
+                              ? jsx(KV, { k: '冷却至', v: fmtTime(a.cooldownUntilMs) })
+                              : null,
+                            a.credits !== undefined
+                              ? jsx(KV, { k: '通用余额', v: fmtNum(a.credits) })
+                              : null,
+                            // 保留积分：失焦提交太激进，改成显式保存（WorkBuddy 卡片
+                            // 也是这么改的 —— 一次写入就是一次 settings 写 + 一次刷新）
+                            jsxs('div', {
+                              className: 'wbc-bar',
+                              children: [
+                                jsx('input', {
+                                  type: 'number',
+                                  min: 0,
+                                  step: 1,
+                                  className: 'wbc-reserve-input',
+                                  placeholder: '保留积分',
+                                  value: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
+                                  disabled: !writable || savingPool === `reserve-${a.id}`,
+                                  onChange: (e) =>
+                                    setReserveDraft((prev) => ({ ...prev, [a.id]: e.target.value })),
+                                  onKeyDown: (e) => {
+                                    if (e.key === 'Enter') onSaveReserve(a.id);
+                                  },
+                                }),
+                                jsx('button', {
+                                  type: 'button',
+                                  className: 'wbc-btn',
+                                  disabled: !writable || savingPool === `reserve-${a.id}`,
+                                  onClick: () => onSaveReserve(a.id),
+                                  children: savingPool === `reserve-${a.id}` ? '保存中…' : '保存',
+                                }),
+                                jsx('div', { className: 'wbc-spacer' }),
+                                jsx('button', {
+                                  type: 'button',
+                                  className: 'wbc-btn',
+                                  disabled: !writable || savingPool === a.id,
+                                  onClick: () => onToggleDisabled(a.id, a.disabled !== true),
+                                  children:
+                                    savingPool === a.id
+                                      ? '保存中…'
+                                      : a.disabled === true
+                                        ? '重新启用'
+                                        : '停用',
+                                }),
+                              ],
+                            }),
+                          ],
+                        },
+                        a.id,
+                      ),
+                    ),
+                  }),
+                ],
+              })
+            : null,
+          signedIn
+            ? jsxs('div', {
+                className: 'wbc-models',
+                children: [
+                  jsxs('div', {
+                    className: 'wbc-bar',
+                    children: [
+                      jsx('span', { className: 'wbc-col-title', children: '模型' }),
+                      jsx('span', {
+                        className: 'wbc-col-sub',
+                        children: `已启用 ${enabledSet.size} 个 · 实时目录 ${savedModels.length} 个`,
+                      }),
+                      jsx('div', { className: 'wbc-spacer' }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: savedModels.length === 0 || !writable || saving,
+                        title: '把目录里的所有模型一次性全部勾选（仍需点保存落盘）。',
+                        onClick: enableAllModels,
+                        children: '一键启用所有模型',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: usageLoading || saving || usage?.status !== 'signed-in',
+                        title: '拉取 Trae 最新模型目录，立即更新列表并自动启用全部模型。',
+                        onClick: refreshModels,
+                        children: saving ? '刷新中…' : '从 Trae 刷新',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: enabledSet.size === 0 || testing !== null,
+                        title: '给每个已启用模型发一条最小消息，看哪些真的能应答。会消耗少量额度。',
+                        onClick: testEnabledModels,
+                        children:
+                          testing !== null ? `正在测试 ${testing.done}/${testing.total}…` : '一键测试启用模型',
+                      }),
+                    ],
+                  }),
+                  jsx('div', {
+                    className: 'wbc-note',
+                    children: '一键测试会给每个已启用模型发一条最小消息（消耗少量额度）。',
+                  }),
+                  testSummary !== null ? jsx('div', { className: 'wbc-note', children: testSummary }) : null,
+                  testError !== null ? jsx('div', { className: 'wbc-err', children: testError }) : null,
+                  savedModels.length === 0
+                    ? jsx('div', { className: 'wbc-note', children: '暂无模型目录，先点「从 Trae 刷新」。' })
+                    : jsx('div', {
+                        children: savedModels.map((model) => {
+                          const probe = probes[model.id];
+                          return jsxs(
+                            'div',
+                            {
+                              className: 'wbc-model',
+                              children: [
+                                jsx('label', {
+                                  className: 'wbc-check',
+                                  children: [
+                                    jsx('input', {
+                                      type: 'checkbox',
+                                      checked: enabledSet.has(model.id),
+                                      disabled: !writable || saving,
+                                      onChange: () => toggleModel(model.id),
+                                    }),
+                                    jsx('span', {
+                                      className: 'wbc-model-name',
+                                      children: [
+                                        model.name,
+                                        typeof model.creditMultiplier === 'number'
+                                          ? ` · x${model.creditMultiplier.toFixed(2)}`
+                                          : null,
+                                      ],
+                                    }),
+                                  ],
+                                }),
+                                jsx('span', {
+                                  className: 'wbc-model-meta',
+                                  children: [
+                                    `最大上下文 ${fmtCapacity(model.maxContextWindow ?? model.contextWindow)}`,
+                                    model.maxTokens !== undefined ? `输出 ${fmtCapacity(model.maxTokens)}` : null,
+                                    model.reasoning?.supported?.length
+                                      ? `推理强度：${model.reasoning.supported.join(' / ')}`
+                                      : null,
+                                  ].filter(Boolean),
+                                }),
+                                probe === undefined
+                                  ? null
+                                  : jsx('span', {
+                                      className: `wbc-probe wbc-probe-${probe.verdict}`,
+                                      title: probe.detail,
+                                      children: TRAE_PROBE_LABELS[probe.verdict] ?? probe.verdict,
+                                    }),
+                              ],
+                            },
+                            model.id,
+                          );
+                        }),
+                      }),
+                  dirty
+                    ? jsxs('div', {
+                        className: 'wbc-model-actions',
+                        children: [
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn',
+                            disabled: saving,
+                            onClick: discardModels,
+                            children: '放弃修改',
+                          }),
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn wbc-btn-primary',
+                            disabled: saving || enabledSet.size === 0,
+                            onClick: saveModels,
+                            children: saving ? '保存中…' : '保存',
+                          }),
+                        ],
+                      })
+                    : null,
+                ],
+              })
+            : null,
+        ],
+      });
+    }
+    //#endregion
+
+    //#region 共用模块（账号页两列同一套样式）
+    /**
+     * 账号页两列共用的几种「模块」。
+     *
+     * 抽出来的目的就是让左右两列长得**完全一样**：同一套列头、同一套统计小卡、
+     * 同一套账号卡、同一套空态。先前两列各写各的，于是 WorkBuddy 侧没有统计行、
+     * 卡片字段与操作按钮的位置也和 Trae 侧对不齐，并排一眼就能看出是两套东西。
+     *
+     * 这些组件刻意做成「无状态、只吃 props」：状态仍归 WotrPage 里各自那一份，
+     * 两列的独立性（见 AccountsTab 注释）不受影响。
+     */
+
+    /** 列头：标题 + 区域切换 + 右侧操作按钮。两列共用。 */
+    function ColumnHead({ title, tabs, activeTab, onTab, actions }) {
+      return jsxs('div', {
+        className: 'wbc-col-head',
+        children: [
+          jsx('span', { className: 'wbc-col-title', children: title }),
+          ...asArray(tabs).map((r) =>
+            jsx(
+              'button',
+              {
+                type: 'button',
+                className: activeTab === r.id ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
+                onClick: () => onTab(r.id),
+                children: r.label,
+              },
+              r.id,
+            ),
+          ),
+          jsx('div', { className: 'wbc-spacer' }),
+          ...asArray(actions).map((a, i) =>
+            jsx(
+              'button',
+              {
+                type: 'button',
+                className: 'wbc-btn',
+                disabled: a?.disabled === true,
+                onClick: a?.onClick,
+                children: a?.label,
+              },
+              `col-action-${i}`,
+            ),
+          ),
+        ],
+      });
+    }
+
+    /** 统计小卡一行（列内两两一行，见 CSS 的 .wbc-sums）。两列共用。 */
+    function StatsRow({ items }) {
+      return jsx('div', {
+        className: 'wbc-sums',
+        children: asArray(items).map((it, i) =>
+          jsxs(
+            'div',
+            {
+              className: 'wbc-sum',
+              children: [
+                jsx('div', { className: 'wbc-sum-label', children: it.label }),
+                jsx('div', {
+                  className: 'wbc-sum-value',
+                  style: it.small === true ? { fontSize: '15px' } : undefined,
+                  children: it.value,
+                }),
+                it.sub === undefined || it.sub === null
+                  ? null
+                  : jsx('div', { className: 'wbc-sum-sub', children: it.sub }),
+              ],
+            },
+            `stat-${i}`,
+          ),
+        ),
+      });
+    }
+
+    /** 键值行：账号卡里的明细（额度 / 签到 / 令牌到期…）都用它。两列共用。 */
+    function KV({ k, v }) {
+      return jsxs('div', {
+        className: 'wbc-kv',
+        children: [
+          jsx('span', { className: 'wbc-k', children: k }),
+          jsx('span', { className: 'wbc-v', children: v }),
+        ],
+      });
+    }
+
+    /** 空态：虚线框 + 若干行说明。两列共用。 */
+    function EmptyBox({ lines }) {
+      return jsx('div', {
+        className: 'wbc-empty',
+        children: asArray(lines)
+          .filter((x) => x !== null && x !== undefined)
+          .map((line, i) => jsx('div', { children: line }, `empty-${i}`)),
+      });
+    }
+
+    /**
+     * 账号卡：两列同一套骨架。
+     *
+     *   head   名称 + 若干状态标签
+     *   rows   KV 明细
+     *   action 卡片底部一个按钮（WorkBuddy 是「签到领取」、Trae 是「签到」）
+     *
+     * `dim` 为 true 时整卡降透明度（停用 / 备用账号）。
+     */
+    function AccountCard({ name, tags, rows, action, dim }) {
+      return jsxs('div', {
+        className: dim === true ? 'wbc-card wbc-card-off' : 'wbc-card',
+        children: [
+          jsxs('div', {
+            className: 'wbc-card-head',
+            children: [
+              jsx('span', { className: 'wbc-name', children: name }),
+              ...asArray(tags)
+                .filter((tag) => tag !== null && tag !== undefined)
+                .map((tag, i) =>
+                  jsx('span', { className: tag.cls ?? 'wbc-tag', children: tag.text }, `tag-${i}`),
+                ),
+            ],
+          }),
+          ...asArray(rows)
+            .filter((r) => r !== null && r !== undefined)
+            .map((r, i) => jsx(KV, { k: r.k, v: r.v }, `row-${i}`)),
+          action === null || action === undefined
+            ? null
+            : jsx('button', {
+                type: 'button',
+                className: 'wbc-btn',
+                disabled: action.disabled === true,
+                onClick: action.onClick,
+                children: action.label,
+              }),
+        ],
+      });
+    }
+    //#endregion
+
+    //#region 账号页（左列：WorkBuddy）
+    /**
+     * 左列：WorkBuddy 账号。
+     *
+     * 只返回**列**（`wbc-col`），不套 `wbc-body` —— 外层由 AccountsTab 排成两列。
+     * 骨架与右列 Trae **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块），
+     * 只是数据字段与操作按钮的实际内容不同。
+     */
+    function WorkBuddyAccountsPanel({
+      region,
+      onRegion,
+      status,
+      loading,
+      error,
+      onRescan,
+      onCheckin,
+      busyId,
+      onAddAccount,
+      login,
+    }) {
+      const accounts = asArray(status?.accounts);
+      const cooling = accounts.filter((a) => a.cooling === true).length;
+      const usable = accounts.filter((a) => a.cooling !== true && a.disabled !== true).length;
+      const totalCredits = accounts.reduce(
+        (sum, a) => sum + (typeof a.credits?.total === 'number' ? a.credits.total : 0),
+        0,
+      );
+
+      return jsxs('div', {
+        className: 'wbc-col',
+        children: [
+          jsx(ColumnHead, {
+            title: 'WorkBuddy',
+            tabs: [
+              { id: 'cn', label: '国内版' },
+              { id: 'global', label: '国际版' },
+            ],
+            activeTab: region,
+            onTab: onRegion,
+            actions: [
+              { label: loading ? '检测中…' : '重新检测', disabled: loading, onClick: onRescan },
+              ...(typeof onAddAccount === 'function'
+                ? [
+                    {
+                      label: login?.pending === true ? '登录中…' : '添加账号',
+                      disabled: login?.pending === true,
+                      onClick: onAddAccount,
+                    },
+                  ]
+                : []),
+            ],
+          }),
+          // 登录进行中的提示：告诉用户去浏览器完成，别以为卡住了
+          login?.pending === true
+            ? jsxs('div', {
+                className: 'wbc-note',
+                children: [
+                  jsx('div', { children: '已在浏览器打开登录页，请在里面完成登录后回到这里。' }),
+                  login.opened === false
+                    ? jsxs('div', {
+                        children: [
+                          '浏览器没能自动打开，请手动访问：',
+                          jsx('a', {
+                            href: login.authUrl,
+                            target: '_blank',
+                            rel: 'noreferrer',
+                            children: login.authUrl,
+                          }),
+                        ],
+                      })
+                    : null,
+                ],
+              })
+            : null,
           error !== null
             ? jsx('div', { className: 'wbc-err', children: `读取失败：${error}` })
             : null,
+          login?.error !== undefined && login?.error !== null
+            ? jsx('div', { className: 'wbc-err', children: `添加账号失败：${login.error}` })
+            : null,
+          status === null && loading
+            ? jsx('div', { className: 'wbc-note', children: '正在读取 WorkBuddy 账号…' })
+            : null,
+          status === null
+            ? null
+            : jsx(StatsRow, {
+                items: [
+                  { label: '账号', value: fmtNum(accounts.length), sub: '个已登录' },
+                  { label: '正常', value: fmtNum(usable), sub: '可轮换' },
+                  { label: '冷却中', value: fmtNum(cooling), sub: '被限流' },
+                  { label: '总积分', value: fmtNum(totalCredits), sub: '合计' },
+                ],
+              }),
           accounts.length === 0
-            ? jsx('div', {
-                className: 'wbc-empty',
-                children: [
-                  jsx('div', { children: '这边还没有检测到已登录的 WorkBuddy 账号。' }),
-                  jsx('div', {
-                    children: '请在 WorkBuddy 桌面版里登录，然后点上面的「重新检测本机账号」。',
-                  }),
+            ? jsx(EmptyBox, {
+                lines: [
+                  '这边还没有检测到已登录的 WorkBuddy 账号。',
+                  '可以点上面的「添加账号」在浏览器里登录一个，也可以先在 WorkBuddy 桌面版里登录再点「重新检测」。',
                 ],
               })
             : jsx('div', {
                 className: 'wbc-cards',
                 children: accounts.map((a) =>
-                  jsxs(
-                    'div',
+                  jsx(
+                    AccountCard,
                     {
-                      className: a.cooling || a.disabled ? 'wbc-card wbc-card-off' : 'wbc-card',
-                      children: [
-                        jsxs('div', {
-                          className: 'wbc-card-head',
-                          children: [
-                            jsx('span', { className: 'wbc-name', children: a.nickname || a.label || a.id }),
-                            a.cooling
-                              ? jsx('span', { className: 'wbc-tag wbc-tag-warn', children: '冷却中' })
-                              : jsx('span', { className: 'wbc-tag wbc-tag-on', children: '正常' }),
-                            a.disabled ? jsx('span', { className: 'wbc-tag', children: '已停用' }) : null,
-                          ],
-                        }),
-                        jsxs('div', {
-                          className: 'wbc-kv',
-                          children: [
-                            jsx('span', { className: 'wbc-k', children: '额度' }),
-                            jsx('span', { className: 'wbc-v', children: fmtNum(a.credits?.total) }),
-                          ],
-                        }),
-                        jsxs('div', {
-                          className: 'wbc-kv',
-                          children: [
-                            jsx('span', { className: 'wbc-k', children: '签到' }),
-                            jsx('span', {
-                              className: 'wbc-v',
-                              children:
-                                a.checkin === undefined
-                                  ? a.checkinError
-                                    ? '不可用'
-                                    : '–'
-                                  : a.checkin.todayCheckedIn
-                                    ? `今日已签 · 连签 ${a.checkin.streakDays ?? 0} 天`
-                                    : `未签到 · 连签 ${a.checkin.streakDays ?? 0} 天`,
-                            }),
-                          ],
-                        }),
-                        a.expiresAt
-                          ? jsxs('div', {
-                              className: 'wbc-kv',
-                              children: [
-                                jsx('span', { className: 'wbc-k', children: '令牌到期' }),
-                                jsx('span', { className: 'wbc-v', children: fmtTime(Date.parse(a.expiresAt)) }),
-                              ],
-                            })
-                          : null,
-                        jsx('button', {
-                          type: 'button',
-                          className: 'wbc-btn',
-                          disabled: busyId === a.id || a.cooling === true,
-                          onClick: () => onCheckin(a.id),
-                          children: busyId === a.id ? '签到中…' : '签到领取',
-                        }),
+                      name: a.nickname || a.label || a.id,
+                      dim: a.cooling === true || a.disabled === true,
+                      tags: [
+                        a.cooling
+                          ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' }
+                          : { text: '正常', cls: 'wbc-tag wbc-tag-on' },
+                        a.disabled ? { text: '已停用', cls: 'wbc-tag' } : null,
                       ],
+                      rows: [
+                        { k: '额度', v: fmtNum(a.credits?.total) },
+                        {
+                          k: '签到',
+                          v:
+                            a.checkin === undefined
+                              ? a.checkinError
+                                ? '不可用'
+                                : '–'
+                              : a.checkin.todayCheckedIn
+                                ? `今日已签 · 连签 ${a.checkin.streakDays ?? 0} 天`
+                                : `未签到 · 连签 ${a.checkin.streakDays ?? 0} 天`,
+                        },
+                        a.expiresAt
+                          ? { k: '令牌到期', v: fmtTime(Date.parse(a.expiresAt)) }
+                          : null,
+                      ],
+                      action: {
+                        label: busyId === a.id ? '签到中…' : '签到领取',
+                        disabled: busyId === a.id || a.cooling === true,
+                        onClick: () => onCheckin(a.id),
+                      },
                     },
                     a.id,
                   ),
@@ -544,9 +2521,14 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
     }
     //#endregion
 
-    //#region Trae 账号页
+    //#region 账号页（右列：Trae）
     /**
-     * Trae 账号页。
+     * 右列：Trae 账号。
+     *
+     * 骨架与左列 WorkBuddy **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块）；
+     * 卡片底部的按钮只出现在**当前绑定**的那张卡上 —— 签到路由是按区域结算当前账号的
+     * （`POST /checkin?region=…`），没有「给任意账号签到」的接口，所以不给备用账号
+     * 摆一个按不动的按钮。
      *
      * 数据来自 lib/trae.js 已有的三条路由（合并前就存在，路径未改）：
      *   GET  /plugins/dsh-connect-trae/usage?region=cn|ai
@@ -556,136 +2538,100 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
      *   POST /plugins/dsh-connect-trae/checkin?region=…
      *        对当前绑定账号领取每日签到
      *
-     * 只读为主：账号绑定与模型勾选在 Trae 卡片里改，本页不重复那套控件。
+     * 只读为主：账号绑定与模型勾选在 Trae 配置标签页里改，本列不重复那套控件。
      * 切换区域时**两个区域各拉一次**也很贵（credits 是实时计费调用），
      * 所以只在真正切到某个区域时才拉它。
      */
-    function TraeTab({ region, onRegion, status, credits, loading, error, onRescan, onCheckin, busy }) {
+    function TraeAccountsPanel({
+      region,
+      onRegion,
+      status,
+      credits,
+      loading,
+      error,
+      onRescan,
+      onCheckin,
+      busy,
+      onAddAccount,
+      login,
+    }) {
       const accounts = asArray(status?.accounts);
       const selected = accounts.find((a) => a.selected === true) ?? null;
       const current = status?.accountName ?? selected?.accountName ?? null;
+      const signedIn = status?.status === 'signed-in';
+
       return jsxs('div', {
-        className: 'wbc-body',
+        className: 'wbc-col',
         children: [
-          jsxs('div', {
-            className: 'wbc-bar',
-            children: [
-              ...TRAE_REGIONS.map((r) =>
-                jsx(
-                  'button',
-                  {
-                    type: 'button',
-                    className: region === r.id ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                    onClick: () => onRegion(r.id),
-                    children: r.label,
-                  },
-                  r.id,
-                ),
-              ),
-              jsx('div', { className: 'wbc-spacer' }),
-              jsx('button', {
-                type: 'button',
-                className: 'wbc-btn',
-                disabled: loading,
-                onClick: onRescan,
-                children: loading ? '检测中…' : '重新检测本机账号',
-              }),
-              jsx('button', {
-                type: 'button',
-                className: 'wbc-btn',
-                disabled: loading || busy || status?.status !== 'signed-in',
-                onClick: onCheckin,
-                children: busy ? '签到中…' : '签到',
-              }),
+          jsx(ColumnHead, {
+            title: 'Trae',
+            tabs: TRAE_REGIONS,
+            activeTab: region,
+            onTab: onRegion,
+            actions: [
+              { label: loading ? '检测中…' : '重新检测', disabled: loading, onClick: onRescan },
+              ...(typeof onAddAccount === 'function'
+                ? [
+                    {
+                      label: login?.pending === true ? '登录中…' : '添加账号',
+                      disabled: login?.pending === true,
+                      onClick: onAddAccount,
+                    },
+                  ]
+                : []),
             ],
           }),
-          error !== null
-            ? jsx('div', { className: 'wbc-err', children: `读取失败：${error}` })
-            : null,
-          status === null && loading
-            ? jsx('div', { className: 'wbc-note', children: '正在读取 Trae 账号…' })
-            : null,
-          status !== null && status.status !== 'signed-in'
+          login?.pending === true
             ? jsxs('div', {
-                className: 'wbc-empty',
+                className: 'wbc-note',
                 children: [
-                  jsx('div', {
-                    children: `这边还没有检测到可用的 Trae ${
-                      region === 'ai' ? '国际版' : '国内版'
-                    }登录。`,
-                  }),
-                  jsx('div', {
-                    children: '请在 Trae 客户端里登录，然后点上面的「重新检测本机账号」。',
-                  }),
-                  status?.message !== void 0
-                    ? jsx('div', { children: `（${String(status.message)}）` })
+                  jsx('div', { children: '已在浏览器打开官方授权页，登录后自动回到这里。' }),
+                  login.opened === false
+                    ? jsxs('div', {
+                        children: [
+                          '浏览器没能自动打开，请手动访问：',
+                          jsx('a', { href: login.authUrl, target: '_blank', rel: 'noreferrer', children: login.authUrl }),
+                        ],
+                      })
                     : null,
                 ],
               })
             : null,
-          status?.status === 'signed-in'
-            ? jsxs('div', {
-                className: 'wbc-cards',
-                children: [
-                  jsxs('div', {
-                    className: 'wbc-sum',
-                    children: [
-                      jsx('div', { className: 'wbc-sum-label', children: '当前账号' }),
-                      jsx('div', {
-                        className: 'wbc-sum-value',
-                        style: { fontSize: '15px' },
-                        children: current ?? '–',
-                      }),
-                      jsx('div', {
-                        className: 'wbc-sum-sub',
-                        children: `已检测到 ${accounts.length} 个登录`,
-                      }),
-                    ],
-                  }),
-                  jsxs('div', {
-                    className: 'wbc-sum',
-                    children: [
-                      jsx('div', { className: 'wbc-sum-label', children: '通用余额' }),
-                      jsx('div', {
-                        className: 'wbc-sum-value',
-                        children: fmtNum(credits?.generalAvailable),
-                      }),
-                      jsx('div', { className: 'wbc-sum-sub', children: 'general' }),
-                    ],
-                  }),
-                  jsxs('div', {
-                    className: 'wbc-sum',
-                    children: [
-                      jsx('div', { className: 'wbc-sum-label', children: '工作余额' }),
-                      jsx('div', {
-                        className: 'wbc-sum-value',
-                        children: fmtNum(credits?.workAvailable),
-                      }),
-                      jsx('div', { className: 'wbc-sum-sub', children: 'work' }),
-                    ],
-                  }),
-                  jsxs('div', {
-                    className: 'wbc-sum',
-                    children: [
-                      jsx('div', { className: 'wbc-sum-label', children: '签到' }),
-                      jsx('div', {
-                        className: 'wbc-sum-value',
-                        style: { fontSize: '15px' },
-                        children:
-                          status.checkin?.checkedIn === true
-                            ? '今日已签到'
-                            : status.checkin?.enabled === false
-                              ? '无签到活动'
-                              : '可签到',
-                      }),
-                      status.checkin?.credits !== void 0
-                        ? jsx('div', {
-                            className: 'wbc-sum-sub',
-                            children: `+${fmtNum(status.checkin.credits)} 积分`,
-                          })
-                        : null,
-                    ],
-                  }),
+          error !== null
+            ? jsx('div', { className: 'wbc-err', children: `读取失败：${error}` })
+            : null,
+          login?.error !== undefined && login?.error !== null
+            ? jsx('div', { className: 'wbc-err', children: `添加账号失败：${login.error}` })
+            : null,
+          status === null && loading
+            ? jsx('div', { className: 'wbc-note', children: '正在读取 Trae 账号…' })
+            : null,
+          status !== null && !signedIn
+            ? jsx(EmptyBox, {
+                lines: [
+                  `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
+                  '请在 Trae 客户端里登录，然后点上面的「重新检测」。',
+                  status?.message !== void 0 ? `（${String(status.message)}）` : null,
+                ],
+              })
+            : null,
+          signedIn
+            ? jsx(StatsRow, {
+                items: [
+                  { label: '当前账号', value: current ?? '–', sub: `已检测到 ${accounts.length} 个登录`, small: true },
+                  { label: '通用余额', value: fmtNum(credits?.generalAvailable), sub: 'general' },
+                  { label: '工作余额', value: fmtNum(credits?.workAvailable), sub: 'work' },
+                  {
+                    label: '签到',
+                    value:
+                      status.checkin?.checkedIn === true
+                        ? '今日已签到'
+                        : status.checkin?.enabled === false
+                          ? '无签到活动'
+                          : '可签到',
+                    sub: status.checkin?.credits !== void 0 ? `+${fmtNum(status.checkin.credits)} 积分` : null,
+                    small: true,
+                  },
                 ],
               })
             : null,
@@ -693,59 +2639,46 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
             ? jsx('div', { className: 'wbc-err', children: `余额读取失败：${status.creditsError}` })
             : null,
           accounts.length > 0
-            ? jsxs('div', {
+            ? jsx('div', {
                 className: 'wbc-cards',
                 children: accounts.map((a) =>
-                  jsxs(
-                    'div',
+                  jsx(
+                    AccountCard,
                     {
-                      className: a.selected === true ? 'wbc-card' : 'wbc-card wbc-card-off',
-                      children: [
-                        jsxs('div', {
-                          className: 'wbc-card-head',
-                          children: [
-                            jsx('div', {
-                              className: 'wbc-name',
-                              children: a.accountName ?? a.id ?? '(未命名)',
-                            }),
-                            jsx('div', {
-                              className: a.selected === true ? 'wbc-tag wbc-tag-on' : 'wbc-tag',
-                              children: a.selected === true ? '当前使用' : '备用',
-                            }),
-                            a.edition !== void 0
-                              ? jsx('div', { className: 'wbc-tag', children: String(a.edition) })
-                              : null,
-                          ],
-                        }),
-                        jsxs('div', {
-                          className: 'wbc-kv',
-                          children: [
-                            jsx('div', { className: 'wbc-k', children: '账号 id' }),
-                            jsx('div', { className: 'wbc-v', children: String(a.id ?? '–') }),
-                          ],
-                        }),
-                        a.tokenExpiresAtMs !== void 0
-                          ? jsxs('div', {
-                              className: 'wbc-kv',
-                              children: [
-                                jsx('div', { className: 'wbc-k', children: '令牌到期' }),
-                                jsx('div', {
-                                  className: 'wbc-v',
-                                  children: fmtTime(a.tokenExpiresAtMs),
-                                }),
-                              ],
-                            })
-                          : null,
-                        a.source !== void 0
-                          ? jsxs('div', {
-                              className: 'wbc-kv',
-                              children: [
-                                jsx('div', { className: 'wbc-k', children: '来源' }),
-                                jsx('div', { className: 'wbc-v', children: String(a.source) }),
-                              ],
-                            })
-                          : null,
+                      name: a.accountName ?? a.id ?? '(未命名)',
+                      dim: a.selected !== true,
+                      tags: [
+                        a.selected === true
+                          ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
+                          : { text: '备用', cls: 'wbc-tag' },
+                        a.edition !== void 0 ? { text: String(a.edition), cls: 'wbc-tag' } : null,
                       ],
+                      // 与左列 WorkBuddy 同款字段：额度 / 可用 / 令牌到期 / 区域。
+                      // Trae 的余额是**整体**的（只结算当前绑定账号），所以只有
+                      // selected 那个有数，其余显示 –（不编造数字）。
+                      rows: [
+                        {
+                          k: '额度',
+                          v: a.selected === true && credits ? fmtNum(credits.total) : '–',
+                        },
+                        {
+                          k: '可用',
+                          v: a.selected === true && credits ? fmtNum(credits.available) : '–',
+                        },
+                        a.tokenExpiresAtMs !== void 0
+                          ? { k: '令牌到期', v: fmtTime(a.tokenExpiresAtMs) }
+                          : null,
+                        { k: '区域', v: a.region === 'ai' ? '国际版' : '国内版' },
+                      ],
+                      // 只有当前绑定账号能签到（路由按区域结算当前账号）
+                      action:
+                        a.selected === true && signedIn
+                          ? {
+                              label: busy ? '签到中…' : '签到',
+                              disabled: loading || busy,
+                              onClick: onCheckin,
+                            }
+                          : null,
                     },
                     String(a.id ?? a.accountName),
                   ),
@@ -757,11 +2690,33 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
     }
     //#endregion
 
+    //#region 账号页（两列合并）
+    /**
+     * 账号页：WorkBuddy 与 Trae 并排两列。
+     *
+     * 两侧各自管自己的区域、加载、错误与签到，互不影响 —— 两列的状态在
+     * WotrPage 里就是分开的，这里只是把它们放进同一个网格。
+     *
+     * 布局：`repeat(auto-fit, minmax(300px, 1fr))`。
+     * 面板窄（设置对话框默认宽度）时自动**塌成一列**上下排列，
+     * 不会把两张卡片挤到没法看。两列合计可用宽度够时才是真正的左右两列。
+     */
+    function AccountsTab({ wb, trae }) {
+      return jsx('div', {
+        className: 'wbc-cols',
+        children: [
+          jsx(WorkBuddyAccountsPanel, wb),
+          jsx(TraeAccountsPanel, trae),
+        ],
+      });
+    }
+    //#endregion
+
     /** 设置页主组件。props 来自 slots 契约：{ close, ...inject 的返回值 } */
     function WotrPage(props) {
       ensureCss();
 
-      const [tab, setTab] = useState('wb-accounts');
+      const [tab, setTab] = useState('pool-config');
       const [region, setRegion] = useState('cn');
       const [status, setStatus] = useState(null);
       const [summary, setSummary] = useState(null);
@@ -779,14 +2734,27 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
       const [traeError, setTraeError] = useState(null);
       const [traeBusy, setTraeBusy] = useState(false);
 
+      /**
+       * 「浏览器登录添加账号」的进行状态。
+       *
+       * 只有 WorkBuddy 侧有（Trae 的登录协议还没查清，见 lib/wb-auth.mjs 注释）。
+       * pending 期间列头按钮转「登录中…」并提示用户去浏览器完成，
+       * 避免用户以为点了没反应。
+       */
+      const [login, setLogin] = useState(null);
+      // Trae 侧自己的登录状态（与 WorkBuddy 分开：两家的登录流程完全不同）
+      const [traeLogin, setTraeLogin] = useState(null);
+
       const loadStatus = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
           const data = await fetchJson(`${POOL_API}/status?region=${region}`);
           setStatus(data);
+          return data;
         } catch (e) {
           setError(e?.message ?? String(e));
+          return null;
         } finally {
           setLoading(false);
         }
@@ -880,10 +2848,14 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
       }, [traeRegion]);
 
       /**
-       * 第一次切到 Trae 标签页时才拉它。
+       * 第一次切到「账号」标签页时才拉 Trae。
        *
-       * 用 ref 记住「已经拉过」，这样在 Trae 页里来回切 WorkBuddy 的标签
+       * 用 ref 记住「已经拉过」，这样在标签页之间来回切
        * 不会反复触发实时计费读；切 Trae 自己的区域走 onTraeRegion。
+       *
+       * 为什么仍然懒加载：WorkBuddy 那半的状态进页就拉（便宜），
+       * 而 Trae 的 `/usage` 里的 credits 是一次**实时计费调用**。
+       * 账号页现在是两列并排，但没打开它之前不该花这笔钱。
        *
        * 位置要求：本 effect 必须排在 `loadTrae` 的 `const` 定义**之后**。
        * 早先它写在前面的 useRef/useEffect 区块里，依赖数组 `[tab, loadTrae]`
@@ -893,7 +2865,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
        */
       const traeLoaded = useRef(false);
       useEffect(() => {
-        if (tab !== 'trae-accounts' || traeLoaded.current) return;
+        if (tab !== 'accounts' || traeLoaded.current) return;
         traeLoaded.current = true;
         loadTrae();
       }, [tab, loadTrae]);
@@ -931,11 +2903,174 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
         }
       }, [traeRegion, loadTrae]);
 
+      /**
+       * 打开一次「浏览器登录」来添加一个 WorkBuddy 账号。
+       *
+       * 协议要点（详见 lib/wb-auth.mjs）：**不是** OAuth 授权码流程，
+       * 是「服务端发 authUrl → 浏览器登录 → 拿 state 轮询换 token」。
+       * 所以这里没有本地回调服务，也不需要 redirect_uri；轮询由服务端推进，
+       * 前端只负责「打开页面 + 问进度 + 显示结果」。
+       *
+       * 只有 WorkBuddy 侧有这个入口：Trae 的登录协议我没查到可信端点，
+       * 宁可不给按钮，也不放一个按下去必失败的假功能。
+       */
+      const loginAlive = useRef(true);
+      // 进行中的登录会话 id（WorkBuddy / Trae 各自一份）
+      const loginSessionRef = useRef(null);
+      useEffect(() => () => { loginAlive.current = false; }, []);
+
+      const onAddAccount = useCallback(async () => {
+        setLogin({ pending: true });
+        try {
+          const started = await fetchJson(`${SELF_API}/wb/login/start`, { method: 'POST' });
+          if (started?.error !== undefined) {
+            setLogin({ error: started.error });
+            return;
+          }
+          loginSessionRef.current = started.sessionId;
+          const authUrl = started.authUrl;
+          /**
+           * **不要**无条件再开一个标签页。
+           *
+           * 服务端 `beginLogin` 已经用 `openInSystemBrowser` 打开过系统浏览器了
+           * （`opened === true` 就是它成功的回执）。这里再 `window.open` 一次，
+           * 用户点一下「添加账号」会看到**两个**登录页 —— 其中一个的回调还不
+           * 一定被这次会话接住，正是「连着弹出好几个页面」的直接原因。
+           *
+           * 只有服务端**没打开成功**时才由前端补开（例如宿主禁了子进程），
+           * 下面照常给出可手动打开的链接作为兜底。
+           */
+          if (started.opened !== true) {
+            try {
+              if (typeof window !== 'undefined' && typeof window.open === 'function') {
+                window.open(authUrl, '_blank', 'noopener');
+              }
+            } catch {
+              /* 弹窗被拦下时走手动打开 */
+            }
+          }
+          setLogin({ pending: true, authUrl, opened: started.opened === true });
+
+          const deadline = Date.now() + 5 * 60 * 1000;
+          while (loginAlive.current && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const st = await fetchJson(
+              `${SELF_API}/wb/login/status?session=${encodeURIComponent(started.sessionId)}`,
+            );
+            if (!loginAlive.current) return;
+            if (st?.error !== undefined) {
+              setLogin({ error: st.error });
+              return;
+            }
+            if (st?.status === 'done') {
+              loginSessionRef.current = null;
+              setLogin(null);
+              // 凭据已落盘，让池重新扫描，新账号立刻出现在左列
+              await loadStatus();
+              return;
+            }
+            if (st?.status === 'failed') {
+              setLogin({ error: st.error ?? '登录失败' });
+              return;
+            }
+          }
+          if (!loginAlive.current) return;
+          setLogin({ error: '登录超时：请重试' });
+          try {
+            await fetchJson(
+              `${SELF_API}/wb/login/cancel?session=${encodeURIComponent(started.sessionId)}`,
+              { method: 'POST' },
+            );
+          } catch {
+            /* 取消失败无所谓，服务端会话有自己的超时 */
+          }
+        } catch (e) {
+          setLogin({ error: e?.message ?? String(e) });
+        }
+      }, [loadStatus]);
+
+
+      /**
+       * Trae 的「浏览器登录」。
+       *
+       * 与 WorkBuddy 不同：Trae 是**真** PKCE 授权码流程，回调走本机回环 HTTP
+       * （lib/trae-auth.mjs 起的服务），所以这里同样只负责「打开页面 + 轮询 + 展示」。
+       *
+       * 回调完全自动：授权页登录完成后浏览器自己跳回环地址，插件收到即换 token 入池，
+       * 用户不需要复制粘贴任何东西（与 WorkBuddy 的 state 轮询一样都是自动回调）。
+       */
+      const onTraeAddAccount = useCallback(async () => {
+        setTraeLogin({ pending: true });
+        try {
+          const started = await fetchJson(`${SELF_API}/trae/login/start`, { method: 'POST' });
+          if (started?.error !== undefined) {
+            setTraeLogin({ error: started.error });
+            return;
+          }
+          /**
+           * 与 WorkBuddy 侧同一条规则：服务端已经用系统浏览器打开过了
+           * （`opened === true`），前端**不要**再开一个标签页。
+           *
+           * Trae 这一侧尤其明显：官方授权页自己还会先空参探测回调地址再跳转，
+           * 于是「服务端开的 1 个 + 前端开的 1 个 + 官方页的多跳」叠在一起，
+           * 用户看到的就是连着好几个页面。
+           */
+          if (started.opened !== true) {
+            try {
+              if (typeof window !== 'undefined' && typeof window.open === 'function') {
+                window.open(started.authUrl, '_blank', 'noopener');
+              }
+            } catch {
+              /* 弹窗被拦下时走手动打开 */
+            }
+          }
+          setTraeLogin({ pending: true, authUrl: started.authUrl, opened: started.opened === true });
+
+          const deadline = Date.now() + 3 * 60 * 1000;
+          while (loginAlive.current && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const st = await fetchJson(
+              `${SELF_API}/trae/login/status?session=${encodeURIComponent(started.sessionId)}`,
+            );
+            if (!loginAlive.current) return;
+            if (st?.error !== undefined) {
+              setTraeLogin({ error: st.error });
+              return;
+            }
+            if (st?.status === 'done') {
+              setTraeLogin(null);
+              // 凭据已写入 .trae-auth.<region>.<accountId>.json，让 Trae 侧重读。
+              // 号池每次读状态都会重扫凭据目录，所以新账号会立刻出现在号池区。
+              await loadTrae();
+              return;
+            }
+            if (st?.status === 'failed') {
+              setTraeLogin({ error: st.error ?? '登录失败' });
+              return;
+            }
+          }
+          if (!loginAlive.current) return;
+          setTraeLogin({ error: '登录超时：请重试' });
+          try {
+            await fetchJson(
+              `${SELF_API}/trae/login/cancel?session=${encodeURIComponent(started.sessionId)}`,
+              { method: 'POST' },
+            );
+          } catch {
+            /* 服务端会话有自己的超时 */
+          }
+        } catch (e) {
+          setTraeLogin({ error: e?.message ?? String(e) });
+        }
+      }, [loadTrae]);
+
+
       const tabs = [
-        { id: 'wb-accounts', label: 'WorkBuddy 账号' },
+        { id: 'pool-config', label: 'XD Pool' },
+        { id: 'trae-config', label: 'Trae 配置' },
+        { id: 'accounts', label: '账号' },
         { id: 'wb-credits', label: '积分' },
         { id: 'wb-history', label: '使用记录' },
-        { id: 'trae-accounts', label: 'Trae 账号' },
       ];
 
       return jsxs('div', {
@@ -948,7 +3083,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
               jsx('div', {
                 className: 'wbc-desc',
                 children:
-                  '查看本机已登录的 WorkBuddy 与 Trae 账号、额度与使用记录。登录请在本机对应客户端里完成，本页只读取它们的登录状态。',
+                  '配置并查看 WorkBuddy 账号池与 Trae 接入：模型勾选、分配策略、账号与额度、积分与使用记录。WorkBuddy 与 Trae 都可以直接在浏览器里登录添加（「账号」页左右两列的「添加账号」）；其余仍读取本机客户端已有的登录。',
               }),
             ],
           }),
@@ -967,34 +3102,53 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
               ),
             ),
           }),
-          tab === 'wb-accounts'
-            ? jsx(AccountsTab, {
+          tab === 'pool-config'
+            ? jsx(PoolConfigTab, {
+                wbSettings,
                 region,
                 onRegion: setRegion,
                 status,
                 loading,
                 error,
+                onRefresh: loadStatus,
                 onRescan,
-                onCheckin,
-                busyId,
+              })
+            : null,
+          tab === 'trae-config'
+            ? jsx(TraeConfigTab, { scopeSlot: traeSettings })
+            : null,
+          tab === 'accounts'
+            ? jsx(AccountsTab, {
+                wb: {
+                  region,
+                  onRegion: setRegion,
+                  status,
+                  loading,
+                  error,
+                  onRescan,
+                  onCheckin,
+                  busyId,
+                  onAddAccount,
+                  login,
+                },
+                trae: {
+                  region: traeRegion,
+                  onRegion: onTraeRegion,
+                  status: traeStatus,
+                  credits: traeStatus?.credits,
+                  loading: traeLoading,
+                  error: traeError,
+                  onRescan: onTraeRescan,
+                  onCheckin: onTraeCheckin,
+                  busy: traeBusy,
+                  onAddAccount: onTraeAddAccount,
+                  login: traeLogin,
+                },
               })
             : null,
           tab === 'wb-credits' ? jsx(CreditsTab, { status, summary, loading }) : null,
           tab === 'wb-history'
             ? jsx(HistoryTab, { summary, loading: summaryLoading })
-            : null,
-          tab === 'trae-accounts'
-            ? jsx(TraeTab, {
-                region: traeRegion,
-                onRegion: onTraeRegion,
-                status: traeStatus,
-                credits: traeStatus?.credits,
-                loading: traeLoading,
-                error: traeError,
-                onRescan: onTraeRescan,
-                onCheckin: onTraeCheckin,
-                busy: traeBusy,
-              })
             : null,
         ],
       });
@@ -1004,22 +3158,15 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime) => {
   }
 
 
-  return createConsoleSection({ react, jsxRuntime });
+  return createConsoleSection({ react, jsxRuntime, embedded });
 };
 //#endregion GENERATED: console page source
 
-//#region BEGIN GENERATED: trae client source
-// 本块由 scripts/gen-trae-client.mjs 生成，请勿手改。
-// 内容：vendor/trae/client.js（原样内联，MIT, (c) dingminhua — 上游 dsh-connect-trae）
-// 用途：在本 bundle 内执行一次，捕获它 factory 的产物并转发 apply，
-//       这样 Trae 的设置卡片与输入框积分读数就并入了本插件，无需改动上游代码。
-const TRAE_CLIENT_SRC = "window.__ModuleLoader__.load({\n\tid: \"dsh-connect-trae\",\n\tfactory: (require) => {\n\t\tvar module = { exports: {} };\n\t\tvar exports = module.exports;\n\t\tObject.defineProperty(exports, Symbol.toStringTag, { value: \"Module\" });\n\t\tlet react = require(\"react\");\n\t\tlet react_jsx_runtime = require(\"react/jsx-runtime\");\n\t\tlet react_dom = require(\"react-dom\");\n\t\t//#region src/status-paths.ts\n\t\t/** Plugin-owned usage endpoint consumed by its browser half. */\n\t\tconst TRAE_USAGE_PATH = \"/plugins/dsh-connect-trae/usage\";\n\t\t/** Plugin-owned live model refresh endpoint. */\n\t\tconst TRAE_MODELS_REFRESH_PATH = \"/plugins/dsh-connect-trae/models/refresh\";\n\t\t/**\n\t\t* Plugin-owned availability probe: POST the model ids to test, get one verdict\n\t\t* per model. Unlike every read-only sibling this route SPENDS quota — a real\n\t\t* (minimal) chat call per model — so it is user-initiated only, and the card\n\t\t* labels the button as consuming a small amount.\n\t\t*/\n\t\tconst TRAE_MODELS_TEST_PATH = \"/plugins/dsh-connect-trae/models/test\";\n\t\t/** Plugin-owned local account rescan endpoint. */\n\t\tconst TRAE_ACCOUNTS_REFRESH_PATH = \"/plugins/dsh-connect-trae/accounts/refresh\";\n\t\t/**\n\t\t* General balance of EVERY account in a region, for the composer panel's table.\n\t\t*\n\t\t* Separate from the usage route on purpose: the usage document backs the\n\t\t* 5-minute readout, and multiplying its upstream reads by the account count\n\t\t* would charge a healthy account for something it never looks at — the same\n\t\t* principle that keeps `creditAlternatives` firing only when a balance hits\n\t\t* zero. This one is paid when the panel is actually opened, which is the only\n\t\t* place the table is shown.\n\t\t*/\n\t\tconst TRAE_ACCOUNT_CREDITS_PATH = \"/plugins/dsh-connect-trae/account-credits\";\n\t\t/**\n\t\t* Plugin-owned daily check-in claim endpoint. POST, loopback-only, and the only\n\t\t* route in this plugin that changes upstream account state.\n\t\t*/\n\t\tconst TRAE_CHECKIN_PATH = \"/plugins/dsh-connect-trae/checkin\";\n\t\t/** Query parameter naming the region a card request addresses. */\n\t\tconst TRAE_REGION_PARAM = \"region\";\n\t\t/** Every region, in card tab order. */\n\t\tconst TRAE_REGIONS = [\"cn\", \"ai\"];\n\t\t/**\n\t\t* Address one region's status route. The two regions are separate provider\n\t\t* stacks; every card request carries the region whose tab the user is on.\n\t\t*/\n\t\tfunction withTraeRegion(path, region) {\n\t\t\treturn `${path}?${TRAE_REGION_PARAM}=${region}`;\n\t\t}\n\t\t/**\n\t\t* Peel ONE `{get(): T}` live reference, the shape DSH 0.1.7 delivers a\n\t\t* volatile-marked settings field as (see {@link unwrapVolatileDeep}).\n\t\t*/\n\t\tfunction unwrapVolatile(value) {\n\t\t\tif (value !== null && typeof value === \"object\" && typeof value.get === \"function\") return value.get();\n\t\t\treturn value;\n\t\t}\n\t\t/**\n\t\t* Deep copy of a value with every `{get(): T}` live reference replaced by the\n\t\t* value it resolves to.\n\t\t*\n\t\t* DSH 0.1.7 hands volatile-marked fields back as live references, and a live\n\t\t* reference is still `typeof === 'object'` — so it passes a naive object check\n\t\t* and every lookup on it is `undefined`. Worse, spreading one (`{ ...ref }`)\n\t\t* does NOT read the field: it produces `{ get: <function> }`. Any merge that\n\t\t* spreads a resolved field to preserve its siblings — the card's \"write one\n\t\t* region, keep the other\" write, or the account map's spread — would otherwise\n\t\t* DROP every sibling and leak a function into the document.\n\t\t*\n\t\t* Both halves therefore unwrap before touching a resolved field. This lives in\n\t\t* the node-free host↔client bridge because the browser half needs it too.\n\t\t*\n\t\t* Non-reference values are recursed into so a nested volatile field is caught\n\t\t* as well; arrays and objects are rebuilt rather than mutated, so the caller's\n\t\t* value is never touched.\n\t\t*/\n\t\tfunction unwrapVolatileDeep(value) {\n\t\t\tif (value === null || typeof value !== \"object\") return value;\n\t\t\tif (typeof value.get === \"function\") return unwrapVolatileDeep(value.get());\n\t\t\tif (Array.isArray(value)) return value.map((entry) => unwrapVolatileDeep(entry));\n\t\t\tconst source = value;\n\t\t\tconst out = {};\n\t\t\tfor (const key of Object.keys(source)) out[key] = unwrapVolatileDeep(source[key]);\n\t\t\treturn out;\n\t\t}\n\t\t/**\n\t\t* Read the per-region account selections out of a settings value.\n\t\t*\n\t\t* SHARED because `accounts` now has TWO writers: the card, and the composer\n\t\t* panel's account table (2.14.0). Two writers of one field must use one merge\n\t\t* rule, or they drift — and the rule is not obvious.\n\t\t*\n\t\t* Deep-unwraps first: on DSH 0.1.7 a volatile field arrives as a `{get(): T}`\n\t\t* live reference, which passes the `typeof === 'object'` check and would be\n\t\t* returned as if it were the map. Every lookup on it is then `undefined`, and\n\t\t* the merge (`{ ...configured, [region]: id }`) would spread a reference into\n\t\t* `{get: <function>}` — dropping the other region's selection and leaking a\n\t\t* function into the settings document.\n\t\t*/\n\t\tfunction configuredAccountsOf(configured) {\n\t\t\tconst accounts = unwrapVolatileDeep(configured)?.accounts;\n\t\t\treturn typeof accounts === \"object\" && accounts !== null ? accounts : {};\n\t\t}\n\t\t/**\n\t\t* Build the next `regions` settings value for the card's save. The write\n\t\t* targets ONLY the signed-in account's region slot; every other region's slot\n\t\t* is carried over untouched, so switching accounts never clobbers the other\n\t\t* region's picks. Tolerates any stored shape (absent, non-object) by starting\n\t\t* from an empty document.\n\t\t*/\n\t\tfunction nextRegionSlots(regions, region, slot) {\n\t\t\tconst unwrapped = unwrapVolatileDeep(regions);\n\t\t\treturn {\n\t\t\t\t...typeof unwrapped === \"object\" && unwrapped !== null && !Array.isArray(unwrapped) ? unwrapped : {},\n\t\t\t\t[region]: slot\n\t\t\t};\n\t\t}\n\t\t/**\n\t\t* Narrow a settings value to the `regions` map. Accepts EITHER the whole\n\t\t* settings section (`{ regions: {...}, ... }`) or the `regions` map itself, and\n\t\t* unwraps the former. This tolerance is deliberate: passing the whole section\n\t\t* where the map was expected was a real shipped bug — the lookup then read\n\t\t* `section['cn']` (absent), so the card's checkbox reported `true` forever and\n\t\t* clicking it appeared to do nothing even though the write succeeded.\n\t\t*\n\t\t* Unwraps live references first: on DSH 0.1.7 the `regions` field arrives as a\n\t\t* `{get(): T}` reference, which passes the `typeof === 'object'` check below\n\t\t* and would otherwise be returned as if it were the map — making every region\n\t\t* read back as absent (and the enabled flag read as \"on\" forever).\n\t\t*/\n\t\tfunction regionsMapOf(value) {\n\t\t\tconst unwrapped = unwrapVolatileDeep(value);\n\t\t\tif (typeof unwrapped !== \"object\" || unwrapped === null || Array.isArray(unwrapped)) return {};\n\t\t\tconst record = unwrapped;\n\t\t\tconst nested = record[\"regions\"];\n\t\t\tif (typeof nested === \"object\" && nested !== null && !Array.isArray(nested)) return nested;\n\t\t\treturn record;\n\t\t}\n\t\t/** One region's stored slot as a plain object; any other shape reads as empty. */\n\t\tfunction regionSlotOf(value, region) {\n\t\t\tconst slot = unwrapVolatile(regionsMapOf(value)[region]);\n\t\t\treturn typeof slot === \"object\" && slot !== null && !Array.isArray(slot) ? slot : {};\n\t\t}\n\t\t/**\n\t\t* Whether one region's provider is switched on. Opt-out semantics: only an\n\t\t* explicit `false` disables it, so a config written before this switch existed\n\t\t* (and the pre-region-split flat fields, which never carry `enabled`) keep both\n\t\t* providers running exactly as before. The Host reads the same rule through\n\t\t* `regionStateOf`, so card and Host can never disagree about a region's state.\n\t\t*\n\t\t* `value` may be the whole settings section or the `regions` map (see\n\t\t* {@link regionsMapOf}).\n\t\t*/\n\t\tfunction regionEnabledOf(value, region) {\n\t\t\treturn regionSlotOf(value, region)[\"enabled\"] !== false;\n\t\t}\n\t\t/**\n\t\t* Build the next `regions` settings value for a provider on/off toggle. ONLY\n\t\t* the target region's `enabled` flag changes: every other field of that slot\n\t\t* (its directory, selection, image opt-ins, context budgets) and every other\n\t\t* region's slot are carried over verbatim, so switching a provider off never\n\t\t* discards the user's model picks and switching it back on restores them.\n\t\t*\n\t\t* This is deliberately separate from {@link nextRegionSlots}: that helper\n\t\t* writes a whole slot from a signed-in tab's draft, while this one must work\n\t\t* for a region that is signed OUT — which is precisely the region a user wants\n\t\t* to switch off (no international install, no international account).\n\t\t*\n\t\t* `value` may be the whole settings section or the `regions` map; the RETURN\n\t\t* value is always the `regions` map, i.e. exactly what `settingsScope.set(\n\t\t* 'regions', ...)` needs.\n\t\t*/\n\t\tfunction nextRegionEnabled(value, region, enabled) {\n\t\t\treturn nextRegionSlots(regionsMapOf(value), region, {\n\t\t\t\t...regionSlotOf(value, region),\n\t\t\t\tenabled\n\t\t\t});\n\t\t}\n\t\t/**\n\t\t* Whether Trae's plan identity says this account is on a paying plan.\n\t\t*\n\t\t* `has_package` alone is NOT that question — it reports whether a package\n\t\t* entitlement row exists, and a member can be on a plan without one (issue\n\t\t* #19: a Pro account rendered as \"No active package\"). Trae spells the plan in\n\t\t* `user_pay_identity_str`, so this reads that field, and only the exact word\n\t\t* `Free` counts as free: an unknown or future tier name is treated as paid,\n\t\t* because claiming \"Free\" for a tier we simply do not recognise is the more\n\t\t* damaging of the two errors.\n\t\t*/\n\t\tfunction traePlanIsPaid(payIdentityStr) {\n\t\t\tconst tier = payIdentityStr?.trim();\n\t\t\treturn tier !== void 0 && tier !== \"\" && !/^free$/i.test(tier);\n\t\t}\n\t\t//#endregion\n\t\t//#region src/client/icon.ts\n\t\t/**\n\t\t* Plugin icon (LD brand logo, 64px) shared across the LaoDing plugin family.\n\t\t* Same data URI used by `dsh-subagent-default-model` so the external image\n\t\t* stays consistent.\n\t\t*/\n\t\tconst TRAE_PLUGIN_ICON = \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAXGUlEQVR4nH1bC7BdVXn+1tr7nHPvzb3JvUloSAQp0JHWoAMttKOCFrWU8irQSbCTQYG21IahnTJUUTsM0FJhZCzCSIcKImOpDkhrhQ5YC7ROB3lUBU3EyCuBFBIIedzcx3ntvTr/a621TwIns3PO3mfvddf/+v7v/9c6DvYKoYBz1cZNYfJpVBcNBm7dcIhj3TBM15VzqAE6XAWEGggVADroOl0byDW+PtRr9E732rl9r2PxOMNsrCogVE7PA0Kge4Lcz5/TGI6v00UaK+h98u4QUA9quIDg4Pe2i2LTsknc++mzZu9cv37VHNaFAveSJICj/9aFUNzrXHXSTwdnznl/Y+X9MaEP1D0A/ToKaUdDASoAK0YVYcLad/G88S6C1aQcOkI2Nj9HylBFBRMYqPUeFp6EDXQfKcIUoud6LQQP59rwrsBEOdhy9KGDK/7j9mUPmBKcCf++Z4YbF6eKLw+6QFioKl/DoYILlXMsHE2KPCCzwlsqoNb3oUw4Kq+2a0k4G4MtXOX3J4HNyulzUkC0eqYI8ZAaQZQSAh9080Qx1m7jHStnL/3B3ctvXbcuFOwBH/p5OG12DA/29leV6wcHeI8hadE1rBldl/6ACs7WMEuz0PIcKawe0Gdzeyf36eTzcOHxVAEpTEQB0QtY0PRZPMYsX+t3tSqBxkteYeHh6qqu6yIsmVhaHHtE7/fu/8fJhzzF/OywunXQR+DJOO9pkLp2NJ64pIXhaOxb/IfmJM29PemSJ+NSzJP1s2dhwmucJ6uaoIYFzVjnkFDhLRTkb2XC03gQTKDrZNjSV1icXwzPv9y99Z5Hw6R/psQnqoniyLBQ1d65IoGiDqZuHwWwzyFzx8xl5RDBZR4uCZc9E8fS+8TdSfHZ2KxAel6VwEIYZiflxC9NKToeKcKrAcjV2d2DK3xYqOcXJ478ytf2fcL3htWGegAaSZGeBnKixWgVPXRiZpEomLq4Kcri2RCc7zN3NWuq5XlOJLwqjq9liqlHlEfzSveIdVk0Fjh5kVjdjKLneniCtcEg7N492FBWAWvrHpwLzgmYUfySi+VorcJFBE6I7jIAjFnC3DybePKE5ClxLLsPI0q3kNAsYJ4g1wjkzDuju4nQJrx6RxRe/7YHfFX3MOyHtaUHloaKcqa4rcQTDWxubHnZ0lESNoaGXad7+RmLc7GMxbS4s8Y82S3mdhMshR+Po4pk181jkx22afHc8hL3plNTjOGDjEfu7pxfWkpcyA02Ofo6xpylPsMCi3eNTROShVawM0H4+4bXaGqzcTKQzc8j6VGPkb9tFtU56bwlBdK9ZMQMKNgolMtVKepFcq6hBMAzQJAQ6srG9iwNJRfN0LtWd64z1qZjRPDieBYQkyNTqFpCsoYoKQFoFt8xhA5icZ2fXWOwY4GScsT95Tv7XoSnd0ehgLJBSPSdkdhYWbSeAk2eCSzuScDs/qQo9dpRZarVWWm5ZRuxn8YRRabYtiwhn5PVRXD9js8FzM2rowKII7MnOJSR2GSZJMVUckfzjIjKMe2p5fOsENGfPESR38AwB8AsZTUBUV025TwWVEAsubSl6gYA8rU6eUMmvE2ErjMrQEDZQGkewGI6TcqPAhlT1hHBBV0xZC/R3B09JFmdXDESrIz5GRPMlWQA6kNAoVbjf7FAyq1vsW8xrt+rImI4aEiwIuqAMjI9y/8Z5RSAS+f04P4uTcihozDLaO6kZup2gSWFIXjm3plb75sHxkugMKzAgWmQcYmsTvqrgPkuMOgHFAhY0gnolDJfOgTM0t/xMcYTJeZz9QZRgHiUd5AQIHe2fNqIY3o4xiEw3wc++A6HvzweWNbWtKmsrF853PFEwDd/LEqoVOiYQQLQ7QGXn+Zw3okOhc9i1tw8umpS7mBQ4PW9Ab/YVuHxTTV+8EyF7TsqTHQCxtsBlVWSUVBViGYHcnMDQvaUyAv03wmPDcP8ECiy2lwOKl4CFz2+AoYDx1b73rkOayaVfUXziRMu9oGTbg54cz9pNlV9FEJzi8CJv+zwwOWWoZvZfXSst3rteDPgXx4e4LZv9fDS9grLlzotkclDakmXJCCFTswAdC5eZQqphwErZgr40QInAh4XHMbsHGt6ugSmWuLZwyqwlclFhwqOrSJgZky+izydc7bj+1ZPy7P9AT2nz/MR+PuK/g6/50fg8QdDGffQFQ4b13fwyFcmccl5HczOUgVYoXTcAGEBSWBzdRY4hoLUBvGeQGFgrM84gMWglq/mwszXqcSlAahgdi57l8/Mr9gaxiqbnZwheZMU23Lw88zN0zWff5ZzCpeyAApqTNWkjBorljnceMUEbvnMEqK0qIc1A6UAnYQS5/6Md4jTNxlhGUkKRYYBHmHCiEewJxQjzmmenFdphiXsZ0aKstogvmwkEiqwYml6MmS6kQkQKcUlICsIY6hyDAEbzupgZgr448/OouyI5Y3t8YgGfq5OIaHfeiZDWXclFizWw1OmF0lRQ4A8UWevnPTEsTNFjoQ7fV0UDq3SoSyBVgmU/FmOVsuz9VmfrCUBMPIMut4f1Dj9tzv4wqcmORzIvW1qwgOcYIC5vB0gzAClQW1EGuJXkgql2MlyuTHFhg4OAlrm8vRxtHrMFUhRV4trv/hawK3fqbF/QSwoYwSUPuCwlcDJ7y3wgeMKFHAYDgN7gOmwLBwGgxobzhnH/z7Txz9/exErpz2HK1teUZ+tTSGXZYZCFGAc3eqBZsESmZs1L0e92HK5TikSKA2N2CMY8QATfuvOgLOvqrBlW0CnyOioeWVF1/v4rXd7/M2fjeGEtQWGFO+FpkzFFPKOv/7zKXz/sR5m99foUJ2rRRNhhwCfAqBOxQkbVObHKSv14UZb2KnFdBAl5CdxvMwDcnotrTsW/vW9wPnXVdi2M+DwQ4DVK4CZSWDFVDp+aRkwNR7wxE8GOOuyWdz3vT7K0jMGyN8ToKTzFTMel2yYwPxcAJe56voR/eO7tOscY0Ls2GSFkJW+Nue8QTn6agJD6gta5mhwf7mHhCdesOGGCpu3AmMthzv+qsTHf6fArj0SP5YGKXNQZpleArRcjU9ePYdHnxgwPrAStK1EXkBhvO7scRx+aIleL2SWTzFP1qdQYkCs6dx66COob/28mB61GjzACwhmc9Q2rxnt/9GfUGwY1g4XfbHG488GjLWAmzYWOOU4zwAoKG6KteYG8YSAdunQKQM+dcMc9uwLbHnRv9Baumf5dIGPnNTB4jx5gQjNgisNLuH0Gr07ygKpjpdKsFnWGiuMXtLwfaPDpoRk/dFqjcYht6Q7P3lzhQefqvn87y4usOEjkgpjYlHhyT2psjMLErOcHANe3DbAXfd1xfUZVzRH6qMf/VA7E15JkfECdX9TiB+11ughDcisQGr4+wEfDqzrtegRxAau+aca3/gvEejK8z0uOcNhsUfWtAJGviOhrWKLXRwujgImx4Fvf3cR3V7gLGBRyDnfBbxnbQurVlImqJlEmdtLSpS/I9dACpD0l+I+sTjLCNbLe3sekHlEJry5/tJxh/98usZtDwo1vfTsAp/+mMeA0hrnPssalgl0PtoEEUYn18fbDltfHmLzlgEcs0MtiZ0oY+UKjyPWlBj0lRVGy3s+J2VQreKZIGUWq7MFDMEBaW01yMyoC7iRwmikG0zaZo5BcTwE9s0FXPS7Hp+/2DO356rQquKsvy9NDWV2yuXlM4Eb0O8FbN4ieTnCheIAKWLNao9qKPm/gJdD6bfhQkHlMLE9QmouF7Mlq1geM/hpO2xU/oNciT2K2B0Wik1/cHYu4Jz3O9y80bNXCOAJfnCzRAeguUhxbF0e7eLwMyIUKeW1HRkoWS9QXzPTnmWQvoOkQMED5Q8UDnDUE0ytLVv6jtbTyae6IP8T2qczNhKbAymLWP4nwXp94IhVDv9wWcGWoBRHHD/Fr8NPn6/Q8lpFpqCKwEgCGLsjF+4umOs3nZJeS8Y8ilrSHV0kazPqq6J5BRQylsgR4z2rALXhmWWkt8CAZvES49/aYDTZXsDxRzksnaDcTqAnz5DLtkqPux8c4LuPDTjfE9rnq0ziFUpotJfH4WFdjthUSbOjMdjFSXCtWg0EyyC9DU+fWcNq6UaDMq7tExJn6fFt3J+vKmPkZog9p4wqhoc6Dwvf8vjOfw9w+RcXucNj7e+0kpPa4wZmHDg1sHK5FAVCBXRgndb8XB2boj4TmBkgW9+AsLIOr/X6m/TX1uxjiyz3AOvjNQODMcVqb1GKrtrQ83qRQoCEf+SpITbeQJsSrLcnbhOR2zVZnBU0pXc46ghRAI+phMzGf3NnjRYBLOEPK8DzOxMheqcqFF5DIF+dyRZIYkhEgpJiNmn7wGIokhlLXWzNlEeHKvyTm4f4o+sWsdgNWHuUx2RHlG2KYDfniSaGyIUMMb4Zz/k+F5pGpyKp263x6v9VaBOztNyv40RmqGsG3o30+SMQZvXBAQsdb/UaJVTRdaVHZ2sPY22HzS9WuPDaLnbuqnHWySUe+vIU/uCjbcxRIUPpylKfeQMjuLTHF+drHH9sC2tWlxxGRKJiFADY/nKFXTsqjLUpE2jsx3Qq6C8A6CQEuP2V1wCNNfpmamvG/wg6amzLOmESPh+D0P7FVwMuuHoRW7dXOP19JW79zDjaLWBqQsLGipXo9jpZa2tTuG742EQmtKZSpcU/+VEf3fmANhVDbHnJGpEa8zUnxVK+o8N4fFx/H2F/MSXl3VvrBzhqUUmIJHdNedyAcfvrARdc08WzL9U4+bgSt181jjEFP1tljiVsrOHFAzothz27a5xx6jhOfn8HVUVU12YkvUR6/c/DPXQKEi4VPkyIuDrMiqNA3pbz/tGV29j3N68QetLweWuKKEOjdjMpsMX8Sb6nt2VLgCd/VuHMK4Z44ZUK7z26wJ1Xj2N6ynGKHOvYjhR6XumrKpFkbBfAnjcrrD2mhc9dORXpb5wJhULh8dzPB9j0wwEmlxDZMM9JyC9VoGQmz7wgU0Bc089dfqRCPKApqqsutCRGrarTf8PhjT0Bu2cDdu8L2LOvxu69AbP7A3a8UeEXWyu86zCPr187jjWHNFtclvqoFUZkiRRKf6/fDdj1eoXf/PUObrtlBstnpIVH1aB5IydBB3zr6wvodym/Sy9AKG8qi1NPgOixk7XBfJ0ub2o2lJBVdY2YsK6MFiWfO9/jnSuBHz1HHuGFSmuKC5XH6uUOHz+jhdUrndQChSiBXtTEoLRHQFj1a47bibbDrxxR4twzx7Bh/QTKlvCHKLzyf+oSbX66j0f/vYtlU1K/MAFSdyceEIVXAxdxeVy5fwPtRxHd9vw0GqBqIn4zWhpw4akeF5769gmDeADFr1mOXq/urHkN8Nyzx3DGKR20yoBDVhQ4+siSFUVWr014fZCUTue9bsCXrtsfOQIxWxNamiAKiOwZojxPHmBr75a/Y2hpP988pMEHYsfT1u0TEaFTyvMCS9m9htTWpIwlMMWuw8JizV3do99Z4PNXTnHLK9UXQemz4/rBhmW84naYw99fuw/PbR5g5XTBniwIT9bWuHcS+8YraAAfGyIZBlgGyHd45fv4UsTZW+rGmB7KghoVQkqK/J1XeEiIlLRJWRQ+DzzSx8+2DHHqB9osfK9Xs9DkKZRdpAucApDcXsb2uOX6WTz0r4tYQcIPc0HT59QBSpmgsBCILa98BSfb0jKa7jMAOEhTJOmGU2C85BCoINEvyT9IwHbL49WdFW68bZ6Xu9afPcZ3m+KUPFiASQiQkkuP/ftr3PS3s3j4/i73Aql+sc4vC6+rQIL2Qs+NY6QQqG0zZEZYLC2mYowfokVN1n6dGg/NV8YPzF1iBORlFK36BLS956XuP/3sPjy7ZYDL/2QJjv3VEr2+FDK8yKrZIa0byvS//0gPt39pDttfqHiVF4NEm2PDU0tgvpZ7AdMXMUZpW1Kb+4GaqY8+twpgx96A+x4PuPjDsmB54GukX3DQl1yfXwDuf7SHm766gJdfGeIPf38c11wxxd91aO/BQV673qjw1BMDPPhvi3j6yT7GSoeZZbKIa2UyNb3yJqitBebub6tPnosj22010rsf3exEgDNRAld9o8aPX3B412rdB2xgl1Hf0CiEMseoA3r9gG3bK/xw0wAvbB1iqkMkyeOw1QW+9s0FDAeCFeIwAYNewK5dNV7ZWmHb80O8uaNmUrR0Uqo6WgITmptITlRAg1LnZMiIEODec8MwkDV4707+A4isCHJD2cNr3GDfHLi/Z3v4448Xsj38EiepEOLqTru8RaDdHeDtLrZldn6/LnHbhLlNpwQmAB3vMNFxGOPtNZrmaqvzpbYXzm/ARyWvl4YIdYbU/Rn4CFMqYGq5ly0yVqUdUMnZ6q4Bl94zM2E9xGztTxc045aavK1Of1wxxQWiqDULYJuj6G/QEje7byAl6IT1YAF0H7HsKpUmjVV4eakcra6rwlIP6DJYtkbA6Ri8P0CB1jYv5u2lvBoULsfnnJpG9vCyIEqWZHeJrjJn48adGrzzSyZgGxek2ySeZqFjz3FjNd/vo0JKw8QEVgVqt0iKH1sDlBTKy+r6TLBx6nwFuPGefpMTc79Z3RRkPXw+H21njVSPcQ9fanXbWLymb/1/29RgkKmNTRuLBVXrxx0m+lkENmVY7S/zEWtrb9BWiRxlgZGCJ+a9PLHlfEDBTP2hsTFRdpVJNWdPx21qWVPDWtP5ik+j4Zn176wFzoWN9fcyoDNhI+dXppkA0XoCTQLEPCAIdhxk5Tur+nWPsChKYzxH97h/37aqm+z2Sw7ZvGRa5x5c3IuUlBBbVBYWBlymuEx4Gyuv74X4pDTXYILWD8ja4zRKYVR49Fcdxg3invt8yUsVJCRPHshrBWNZ+R49UYLt5tYfRcR6Xy0c3Ta5dJ6/Zd/vCNjlxCcueCa2l1pgGQDGzpIVSEPMyq6w5q+wzOoNUIzu0uz0SFhkHlHTiq4InO4zr9ENSjHO841N2e5ui3PrBTZQPFlagC0Jb54Vd4pZqNiOttgPoI4AZn1ZYLPzLoQatS2CNmod3T3W7Asc+Puc5D1JKRbpRJnFYgZAI9iQub7EvY9gxc9yW1vW+HgME3KkwSkNDs0EVnXqWqARIG3X1y3XDq0xbPbTS4q7vVcCN7qwGWM73/HV3P0t7iwImoOhlMZpe0rc8q7tblaE9vxzJaTCJa3nC/iZp6QFTgNGi/0mC9TvOTukUNLUG8Y6hZte7e/2l52Iu8ar6qXalR6hrhq5P0+LI7/DaYBgrHnMve1HEhYu6RkWgq2bvKDJ3cVGOfhZLOdYkaq8xPIYX2zVV72uyPBEN01XnTDuy2WLL33w+rG7/PpT3NyvrQ4bx9tww8qT1ejHNHFPQEJ6Ke0E1LJd2FmhR90g04xpP+tfKCjmYKaWIU/ImhcpTpXi2q7UfLeH9fXVqSVsTNiMD+Rh4uraDT2mlpXu8BNaG1etcnN+3T2huPcvWg8dubS6dHJJUfD6bFVXrq5rrw3+tCaXOuGmBENzAzHpu0tvL63uNj8bykdeoCkt8QHL+SqAkRxz60wJcQ9BFh6p7CX8CYEQLtShKocTfmbpRLHs3d1LT7u+9dA99tNZ+yHxBTcNztz0mr9x74I/hnZXhD7F/PCAn6bJz+U0vrPr7K5VJUJZf5/v040NDcG02LGGJVmfOsuxdifg03U9vUZHrPz0fl7p5caGjNkiEmTFUXBooUDbjWGs5TE+Pdyy6vjqijO+MPYACb+efjwdiYsqIewMk+d8tbro1b1uXXehPrYahmn+hZmGgtefqsalNFvU1BpAhM8QXhUlCmgCmihAUnBUQixk6J2eSYqwvM9Iz5sfrApM7LDF7W651oILbef3Tky0Nk2vcfeed0dxp3Nu7h6EYr2sgOL/Aa5OuMdnE5sWAAAAAElFTkSuQmCC\";\n\t\t//#endregion\n\t\t//#region src/client/styles.ts\n\t\t/**\n\t\t* Client styles for the Trae plugin card.\n\t\t* Copied verbatim from `dsh-subagent-default-model`'s SETTINGS_CSS so the two\n\t\t* plugins share one external-presentation language (same card shell, same\n\t\t* button primitives, same `--dsw-alias-*` token palette).\n\t\t*/\n\t\tconst TRAE_CARD_CSS = `\n.dsm-plugin-card{border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}\n.dsm-plugin-card:hover{border-color:var(--dsw-alias-label-dimmed,#777)}\n.dsm-plugin-card-open{background:var(--dsw-alias-bg-layer-2,#25262b);border-color:var(--dsw-alias-label-dimmed,#777)}\n.dsm-plugin-card-header{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:transparent;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}\n.dsm-plugin-card-header:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:-2px}\n.dsm-plugin-card-head{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}\n.dsm-plugin-card-title{color:var(--dsw-alias-label-primary,#e6e6e6);font-size:15px;font-weight:600;line-height:1.4}\n.dsm-plugin-card-description{color:var(--dsw-alias-label-tertiary,#999);font-size:13px;line-height:1.5}\n/* Pure-CSS caret: the host primitives' chevron icon names are not part of any\n   stable contract across DSH releases, so no static import is used — a border\n   caret in the plugin's own CSS is version-proof. */\n.dsm-plugin-card-chevron{color:var(--dsw-alias-label-tertiary,#999);flex:none;width:16px;height:16px;position:relative;transition:transform .16s}\n.dsm-plugin-card-chevron::before{content:\"\";display:block;position:absolute;left:4px;top:5px;width:7px;height:7px;border-right:1.6px solid currentColor;border-bottom:1.6px solid currentColor;transform:rotate(45deg)}\n.dsm-plugin-card-chevron-open{transform:rotate(180deg)}\n.dsm-plugin-card-body{border-top:1px solid var(--dsw-alias-border-l2,#36373b);margin:0 16px;padding:0 0 8px}\n.dsm-plugin-card-icon{width:32px;height:32px;flex:none;border-radius:7px}\n.dsm-plugin-card-body .dsm-model-settings{margin:0;padding:12px 0 0;background:transparent;border:0;border-radius:0}\n.dsm-btn{appearance:none;font:inherit;cursor:pointer;border:1px solid transparent;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}\n.dsm-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}\n.dsm-btn:disabled{opacity:.4;cursor:default}\n.dsm-btn-outline{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:transparent;font-weight:500}\n.dsm-btn-outline:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed);background:rgba(255,255,255,.04)}\n.dsm-btn-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}\n.dsm-btn-primary:hover:not(:disabled){opacity:.9}\n.dsm-trae-mainui-switch{display:flex;justify-content:flex-end;padding:0 2px 8px}\n.dsm-trae-mainui-switch-label{display:inline-flex;align-items:center;gap:6px;font-size:13px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0);white-space:nowrap;cursor:pointer}\n.dsm-trae-mainui-switch-label input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}\n.dsm-trae-mainui-switch-label:has(input:disabled){opacity:.6;cursor:default}\n.dsm-trae-usage{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px}\n.dsm-trae-tabs{display:flex;gap:6px;padding:4px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}\n.dsm-trae-tab-cell{display:flex;align-items:center;gap:2px;flex:1;min-width:0}\n.dsm-trae-tab{appearance:none;font:inherit;cursor:pointer;flex:1;min-width:0;border:0;border-radius:7px;padding:7px 10px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:500;line-height:18px;background:transparent;transition:color .15s,background .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.dsm-trae-tab:hover:not(:disabled):not(.dsm-trae-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}\n.dsm-trae-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}\n.dsm-trae-tab-active{color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-2,#232529);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l2,#3a3d45)}\n.dsm-trae-tab-off{opacity:.55}\n.dsm-trae-tab-switch{display:inline-flex;align-items:center;flex:none;padding:0 8px 0 2px;cursor:pointer}\n.dsm-trae-tab-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}\n.dsm-trae-tab-switch input:disabled{cursor:not-allowed}\n.dsm-trae-tab-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:baseline}\n.dsm-trae-tab-hint{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}\n.dsm-trae-tab-off-notice{margin:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:12px;line-height:18px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}\n.dsm-trae-usage-account{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#24262c)}\n.dsm-trae-usage-account-copy{display:flex;flex-direction:column;gap:3px;min-width:0}\n.dsm-trae-usage-expiry{padding-left:19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}\n.dsm-trae-account-picker{display:block}\n.dsm-trae-usage-select-wrap{position:relative}\n.dsm-trae-usage-select{appearance:none;width:100%;font:inherit;padding:10px 34px 10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-3,#2a2c33);cursor:pointer;transition:border-color .15s,box-shadow .15s}\n.dsm-trae-usage-select:focus-visible{outline:none;border-color:var(--dsw-alias-brand-primary,#5686fe);box-shadow:0 0 0 3px rgba(86,134,254,.22)}\n.dsm-trae-usage-select:disabled{opacity:.6;cursor:default}\n.dsm-trae-usage-select-wrap::after{content:\"\";position:absolute;top:50%;right:12px;width:7px;height:7px;transform:translateY(-65%) rotate(45deg);border-right:1.6px solid var(--dsw-alias-label-secondary,#c6c9d0);border-bottom:1.6px solid var(--dsw-alias-label-secondary,#c6c9d0);pointer-events:none}\n.dsm-trae-mark{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:5px;font-size:11px;font-weight:700;color:#111;background:linear-gradient(135deg,#ffd36e,#ffb84d);margin-right:6px}\n.dsm-trae-usage-list{display:flex;flex-direction:column;gap:10px}\n.dsm-trae-usage-text{margin:0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-secondary,#b8b8b8)}\n.dsm-trae-usage-error{margin:0;font-size:14px;line-height:22px;color:var(--dsw-alias-state-error-primary,#ef4444)}\n.dsm-trae-usage-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}\n.dsm-trae-usage-status{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6)}\n.dsm-trae-usage-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:2px}\n.dsm-trae-usage-stats-two{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}\n.dsm-trae-usage-stat{position:relative;display:flex;flex-direction:column;gap:9px;padding:16px 16px 14px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#24262c);overflow:hidden;min-width:0}\n.dsm-trae-usage-stat::before{content:\"\";position:absolute;top:0;left:0;right:0;height:3px;opacity:.9}\n.dsm-trae-usage-stat-work::before{background:#9ca2aa}\n.dsm-trae-usage-stat-general::before{background:#4d9b6d}\n.dsm-trae-usage-stat-head{display:flex;align-items:center;gap:7px;min-width:0}\n.dsm-trae-usage-stat-label{font-size:13px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.dsm-trae-usage-stat-badge{margin-left:auto;flex:0 0 auto;padding:2px 8px;border-radius:999px;font-size:11px;line-height:15px;font-weight:600;letter-spacing:.2px}\n.dsm-trae-usage-stat-badge-off{color:#aeb3bb;background:rgba(174,179,187,.11)}\n.dsm-trae-usage-stat-badge-on{color:#3f8d60;background:rgba(63,141,96,.13)}\n.dsm-trae-usage-stat-value{font-size:32px;line-height:36px;font-weight:700;letter-spacing:-.5px;white-space:nowrap;font-variant-numeric:tabular-nums}\n.dsm-trae-usage-stat-value-general{color:#3f8d60}\n.dsm-trae-usage-stat-value-work{color:#9298a0}\n.dsm-trae-usage-stat-hint{margin:2px 0 0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#9aa0a8)}\n.dsm-trae-models{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}\n.dsm-trae-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}\n.dsm-trae-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}\n.dsm-trae-models-summary{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}\n.dsm-trae-model-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;overflow:hidden}\n.dsm-trae-model{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;padding:10px 12px;background:var(--dsw-alias-bg-layer-2,#232529);transition:opacity .16s}\n.dsm-trae-model-disabled{opacity:.55}\n.dsm-trae-model+.dsm-trae-model{border-top:1px solid var(--dsw-alias-border-l2,#36373b)}\n.dsm-trae-model-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}\n.dsm-trae-model-enabled{display:flex;align-items:center;gap:8px;min-width:0;cursor:pointer}\n.dsm-trae-model-enabled input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe);flex:none}\n.dsm-trae-model-copy{display:flex;align-items:baseline;gap:8px;min-width:0}\n.dsm-trae-model-name{display:inline-flex;align-items:baseline;gap:7px;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;font-weight:500;line-height:19px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n.dsm-trae-model-name-rate{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:400;line-height:16px;flex:none}\n/* The two head actions sit together; the probe one SPENDS quota, so it carries\n   the hint tooltip rather than looking like its read-only sibling. */\n/* The sidebar-credit switch. Two instances share this style: the card's own\n   row at the top and the copy beside the model actions (2.9.3). Without it the\n   checkbox rendered unstyled and read as absent — the whole reason the switch\n   looked missing. */\n.dsm-trae-models-actions{display:flex;align-items:center;gap:8px;flex:none}\n}\n.dsm-trae-usage-alternative{display:flex;align-items:flex-start;gap:10px;margin-top:10px;padding:10px 12px;border:1px solid var(--dsw-alias-state-warning-border,#7a5b12);border-radius:10px;background:var(--dsw-alias-state-warning-bg,#2a2313)}\n.dsm-trae-usage-alternative-text{margin:0;flex:1 1 auto;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e6e6e6)}\n.dsm-trae-usage-switch-button{flex:0 0 auto;padding:5px 10px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2c2f36);color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px;line-height:16px;cursor:pointer}\n.dsm-trae-usage-switch-button:hover:not(:disabled){background:var(--dsw-alias-bg-layer-4,#333740)}\n.dsm-trae-usage-switch-button:disabled{opacity:.5;cursor:not-allowed}\n.dsm-trae-usage-note{margin:8px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}\n.dsm-trae-models-hint{margin:4px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}\n/* Verdict badge. Only a real refusal is coloured as a warning; an unknown\n   verdict stays neutral because an inconclusive probe is not evidence against\n   the model. */\n.dsm-trae-model-probe{flex:none;border-radius:999px;padding:1px 7px;font-size:10px;font-weight:500;line-height:15px;white-space:nowrap}\n.dsm-trae-model-probe-available{color:var(--dsw-alias-state-success-primary,#22a06b);border:1px solid color-mix(in srgb,var(--dsw-alias-state-success-primary,#22a06b) 40%,transparent)}\n.dsm-trae-model-probe-gated,.dsm-trae-model-probe-unsupported{color:var(--dsw-alias-state-warning-primary,#d98f20);border:1px solid color-mix(in srgb,var(--dsw-alias-state-warning-primary,#d98f20) 40%,transparent)}\n.dsm-trae-model-probe-auth{color:var(--dsw-alias-state-error-primary,#d92d20);border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary,#d92d20) 40%,transparent)}\n.dsm-trae-model-probe-rate-limited,.dsm-trae-model-probe-unknown{color:var(--dsw-alias-label-tertiary,#999);border:1px solid color-mix(in srgb,var(--dsw-alias-label-tertiary,#999) 35%,transparent)}\n.dsm-trae-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}\n.dsm-trae-model-options{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex:none}\n.dsm-trae-model-image{display:inline-flex;align-items:center;gap:4px;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px;cursor:pointer}\n.dsm-trae-model-image input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}\n.dsm-trae-context-budget{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}\n.dsm-trae-context-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}\n.dsm-trae-context-budget input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}\n.dsm-trae-model-capability-note{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}\n.dsm-trae-model-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px}\n.dsm-trae-model-actions-buttons{display:flex;align-items:center;justify-content:flex-end;gap:8px}\n.dsm-trae-usage-cheer{display:inline-flex;align-items:center;gap:4px;flex:none;text-decoration:underline;text-underline-offset:2px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;line-height:1.5;transition:color .16s}\n.dsm-trae-usage-cheer-star{font-size:12px;line-height:1;display:inline-flex}\n.dsm-trae-usage-cheer:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}\n.dsm-trae-searched{margin-top:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}\n.dsm-trae-searched>summary{cursor:pointer;color:var(--dsw-alias-label-secondary,#b8b8b8);user-select:none}\n.dsm-trae-searched-hint{margin:6px 0 4px;color:var(--dsw-alias-label-tertiary,#999)}\n.dsm-trae-searched-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}\n.dsm-trae-searched-list li{display:flex;flex-direction:column;gap:1px;min-width:0}\n.dsm-trae-searched-list code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#b8b8b8);word-break:break-all}\n.dsm-trae-searched-reason{color:var(--dsw-alias-label-tertiary,#999);font-size:11px}\n.dsm-trae-usage-cheer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}\n.dsm-trae-checkin{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:14px;background:var(--dsw-alias-bg-layer-2,#24262c)}\n.dsm-trae-checkin-copy{display:flex;flex-direction:column;gap:2px;min-width:0}\n.dsm-trae-checkin-label{color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;line-height:18px;font-weight:600}\n.dsm-trae-checkin-hint{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:17px}\n.dsm-trae-checkin-button{flex:none}\n/* The \"this machine already used today's check-in\" note is INFORMATIONAL, not\n   an error: it is Trae's one-per-device-per-day rule, and the day is simply\n   spent. Rendering it in the error colour would read as a plugin fault. */\n.dsm-trae-checkin-note{margin:8px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}\n`;\n\t\t/**\n\t\t* Composer-row readout styles, injected by the readout itself.\n\t\t*\n\t\t* SEPARATE from `TRAE_CARD_CSS`, and that is not tidiness: the card's CSS is\n\t\t* only injected when the settings card module loads, so putting the composer's\n\t\t* rules in it means the readout renders UNSTYLED in the composer toolbar —\n\t\t* which is exactly what shipped in 2.13.0–2.13.4. The trigger fell back to the\n\t\t* browser's default button box, and the panel, without `position: fixed`, had\n\t\t* its inline left/top ignored and rendered nowhere useful.\n\t\t*\n\t\t* `tests/composer-styles.spec.tsx` now asserts that every class this component\n\t\t* renders has a rule here, so a rule cannot go missing without a test failing.\n\t\t*/\n\t\tconst COMPOSER_POINTS_CSS = `\n/* The readout is plain composer text — no border, no fill at rest. The padding\n   is only the click target, invisible until the pointer arrives. */\n.dsm-trae-composer-points{display:inline-flex;align-items:center;min-width:0}\n.dsm-trae-composer-points-trigger{\n  appearance:none;display:inline-flex;align-items:center;align-self:stretch;\n  padding:2px 6px;border:0;border-radius:6px;background:transparent;\n  /* EXPLICIT, not inherit. The composer row's own font and body colour are\n     noticeably larger and darker than the neighbouring controls — a credit\n     readout is secondary information and must not shout. 12px matches this\n     plugin's original line; label-tertiary matches the shell's own composer-row\n     control (ContextMeter), which is the sibling this reads alongside. */\n  font-size:12px;line-height:18px;\n  color:var(--dsw-alias-label-tertiary,#999);\n  white-space:nowrap;cursor:pointer;\n  font-variant-numeric:tabular-nums;\n}\n.dsm-trae-composer-points-trigger:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}\n.dsm-trae-composer-points-trigger:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}\n/* The panel is portaled to document.body and positioned from the trigger, so it\n   MUST be fixed — otherwise the left/top it measures are ignored and it lands in\n   document flow. All material comes from shell tokens so it follows the theme. */\n.dsm-trae-composer-panel{\n  position:fixed;z-index:1100;box-sizing:border-box;\n  width:min(248px,calc(100vw - 24px));padding:12px;\n  border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.28));\n  border-radius:var(--dsw-radius-lg,14px);\n  background:var(--dsw-specific-menu,Canvas);\n  box-shadow:var(--dsw-elevation-prominent,0 8px 32px rgba(0,0,0,.22));\n  backdrop-filter:var(--dsw-menu-backdrop-filter,none);\n  font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#444);\n}\n.dsm-trae-composer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}\n.dsm-trae-composer-panel-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}\n/* Self-contained: the dsm-btn primitive lives in TRAE_CARD_CSS, which the\n   composer never loads, so the refresh button must style itself. */\n.dsm-trae-composer-panel-refresh{\n  appearance:none;flex:none;margin-left:auto;padding:3px 10px;\n  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.34));\n  border-radius:7px;background:transparent;\n  color:var(--dsw-alias-label-secondary,#444);\n  font:inherit;font-size:11px;line-height:16px;cursor:pointer;\n}\n.dsm-trae-composer-panel-refresh:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}\n.dsm-trae-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}\n.dsm-trae-composer-panel-refresh:disabled{opacity:.5;cursor:default}\n/* The panel is a TABLE: one row per account in the region, one figure (the\n   general balance) per row, and a row click switches accounts.\n\n   Rhythm is deliberate: the header sits on a hairline, the switch button owns\n   ALL horizontal padding (and pulls back by the same amount so its label lines\n   up with the header), and every row is the same height. A misaligned first\n   column is what makes a two-column popover read as broken. */\n.dsm-trae-composer-panel-table{\n  width:100%;border-collapse:collapse;\n  font-size:12px;line-height:18px;\n}\n.dsm-trae-composer-panel-table thead th{\n  padding:0 0 7px;font-weight:500;text-align:left;font-size:11px;\n  color:var(--dsw-alias-label-tertiary,GrayText);\n  border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));\n}\n.dsm-trae-composer-panel-num{\n  text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;\n}\n.dsm-trae-composer-panel-table thead th.dsm-trae-composer-panel-num{padding-right:0}\n.dsm-trae-composer-panel-table tbody th{\n  padding:0;font-weight:400;text-align:left;vertical-align:middle;\n}\n.dsm-trae-composer-panel-table tbody td{\n  padding:4px 0;vertical-align:middle;\n  color:var(--dsw-alias-label-primary,CanvasText);\n}\n/* The current account reads as current without shouting: a filled dot and a\n   slightly heavier weight. Disabled — pressing it would write a selection that\n   has not changed. */\n.dsm-trae-composer-panel-table tbody tr.dsm-trae-composer-panel-row-current td{font-weight:600}\n.dsm-trae-composer-panel-switch{\n  appearance:none;display:flex;align-items:center;gap:7px;\n  width:100%;padding:4px 6px;margin-left:-6px;\n  border:0;border-radius:6px;background:transparent;\n  color:inherit;font:inherit;font-size:12px;text-align:left;cursor:pointer;\n  white-space:nowrap;overflow:hidden;\n}\n.dsm-trae-composer-panel-switch>span:last-child{overflow:hidden;text-overflow:ellipsis}\n/* Hover belongs to the switch, not the row: the number cell is not clickable,\n   so lighting it up would promise an action it cannot perform. */\n.dsm-trae-composer-panel-switch:hover:not(:disabled){\n  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));\n}\n.dsm-trae-composer-panel-switch:focus-visible{\n  outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:-1px;\n}\n.dsm-trae-composer-panel-switch:disabled{cursor:default}\n.dsm-trae-composer-panel-dot{\n  flex:none;width:7px;height:7px;border-radius:50%;\n  background:var(--dsw-alias-label-dimmed,rgba(127,127,127,.5));\n}\n.dsm-trae-composer-panel-table tr.dsm-trae-composer-panel-row-current .dsm-trae-composer-panel-dot{\n  background:var(--dsw-state-success,#22a06b);\n}\n.dsm-trae-composer-panel-foot{\n  display:flex;justify-content:space-between;gap:8px;\n  margin-top:9px;padding-top:7px;\n  border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));\n  font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,GrayText);\n}\n.dsm-trae-composer-panel-empty{margin:0;color:var(--dsw-alias-label-tertiary,GrayText)}\n.dsm-trae-composer-panel-error{margin:8px 0 0;color:var(--dsw-alias-state-error-primary,#d92d20);font-size:11px;line-height:16px}\n`;\n\t\t//#endregion\n\t\t//#region src/client/TraeUsageCard.tsx\n\t\t/**\n\t\t* Trae usage card contributed to Harness Plugin configuration.\n\t\t*\n\t\t* Structure, CSS classes, and button primitives mirror `dsh-subagent-default-model`'s\n\t\t* `SubagentModelCard` so the two plugins share one external-presentation language.\n\t\t*/\n\t\tconst POLL_INTERVAL_MS = 6e4;\n\t\tconst TRAE_GITHUB_URL = \"https://github.com/dingminhua/dsh-connect-trae\";\n\t\t/**\n\t\t* Write one settings field and confirm the value actually landed.\n\t\t*\n\t\t* `configForms.set()` resolving is NOT proof that anything was stored: a write\n\t\t* can be accepted by the transport and still not materialize — a rejected\n\t\t* write reloads Host state and merely RETURNS, so the caller's `await`\n\t\t* succeeds while the document is unchanged. The form answers with an explicit\n\t\t* boolean for exactly this reason.\n\t\t*\n\t\t* Either way the caller must not report success on an unpersisted write: the\n\t\t* user would see the control flip and then silently revert.\n\t\t*\n\t\t* @throws {TraeSettingsWriteError} when the write was refused or did not land.\n\t\t*/\n\t\tvar TraeSettingsWriteError = class extends Error {\n\t\t\tconstructor(field, detail) {\n\t\t\t\tsuper(detail === void 0 || detail === \"\" ? `trae: settings field \"${field}\" was not persisted by the settings write` : `trae: settings field \"${field}\" was not persisted by the settings write (${detail})`);\n\t\t\t\tthis.name = \"TraeSettingsWriteError\";\n\t\t\t}\n\t\t};\n\t\tasync function writeSettingsField(scope, field, value, landed) {\n\t\t\tif (await scope.set(field, value) === false) throw new TraeSettingsWriteError(field, \"the Host refused the write\");\n\t\t\tif (!landed(unwrapVolatileDeep(scope.getSnapshot().value))) throw new TraeSettingsWriteError(field);\n\t\t}\n\t\t/** Read one region's stored `regions` slot out of an unwrapped settings value. */\n\t\tfunction regionSlotsOf(value) {\n\t\t\tconst regions = value?.regions;\n\t\t\treturn typeof regions === \"object\" && regions !== null ? regions : {};\n\t\t}\n\t\t/** Inject the shared card CSS once. */\n\t\tif (typeof document !== \"undefined\") {\n\t\t\tconst cssId = \"dsh-connect-trae/client.css\";\n\t\t\tif (!document.querySelector(`style[data-plugin-css=\"${cssId}\"]`)) {\n\t\t\t\tconst styleTag = document.createElement(\"style\");\n\t\t\t\tstyleTag.dataset.plugin = \"dsh-connect-trae\";\n\t\t\t\tstyleTag.dataset.pluginCss = cssId;\n\t\t\t\tstyleTag.textContent = TRAE_CARD_CSS;\n\t\t\t\tdocument.head.appendChild(styleTag);\n\t\t\t}\n\t\t}\n\t\tfunction formatNumber(value) {\n\t\t\treturn new Intl.NumberFormat(void 0, {\n\t\t\t\tminimumFractionDigits: 0,\n\t\t\t\tmaximumFractionDigits: 0\n\t\t\t}).format(value);\n\t\t}\n\t\tfunction formatDateTime(value) {\n\t\t\treturn new Intl.DateTimeFormat(void 0, {\n\t\t\t\tyear: \"numeric\",\n\t\t\t\tmonth: \"2-digit\",\n\t\t\t\tday: \"2-digit\",\n\t\t\t\thour: \"2-digit\",\n\t\t\t\tminute: \"2-digit\"\n\t\t\t}).format(new Date(value));\n\t\t}\n\t\tfunction formatCapacity(value, unknown) {\n\t\t\tif (value === void 0) return unknown;\n\t\t\tif (value >= 1e6 && value % 1e6 === 0) return `${value / 1e6}M`;\n\t\t\tif (value >= 1e3 && value % 1e3 === 0) return `${value / 1e3}K`;\n\t\t\treturn formatNumber(value);\n\t\t}\n\t\t/**\n\t\t* The subscription row's verdict.\n\t\t*\n\t\t* Two independent things can entitle an international account: a package row\n\t\t* (`has_package`) and a plan identity (`user_pay_identity_str`). Reading only\n\t\t* the first is what rendered a Pro member as \"No active package\" in issue #19,\n\t\t* so either one counts. The tier string is carried separately so the row can\n\t\t* name the plan instead of just asserting a boolean.\n\t\t*/\n\t\tfunction payVerdict(payStatus) {\n\t\t\tconst tier = payStatus.payIdentityStr?.trim();\n\t\t\tconst paid = payStatus.hasPackage || traePlanIsPaid(payStatus.payIdentityStr);\n\t\t\treturn {\n\t\t\t\tpaid,\n\t\t\t\t...tier === void 0 || tier === \"\" ? {} : { tier },\n\t\t\t\tlabel: paid ? \"row.subscribed\" : \"row.noPackage\"\n\t\t\t};\n\t\t}\n\t\t/**\n\t\t* The verdict badge for one model, or null when it has not been tested.\n\t\t*\n\t\t* `unknown` renders as inconclusive, never as a failure: a throttle or a dropped\n\t\t* connection says nothing about the model, and painting it the same red as a\n\t\t* real refusal is what makes users delete working models.\n\t\t*/\n\t\tconst PROBE_LABELS = {\n\t\t\tavailable: \"row.probeAvailable\",\n\t\t\tgated: \"row.probeGated\",\n\t\t\tunsupported: \"row.probeUnsupported\",\n\t\t\trate_limited: \"row.probeRateLimited\",\n\t\t\tauth: \"row.probeAuth\",\n\t\t\tunknown: \"row.probeUnknown\"\n\t\t};\n\t\tfunction probeBadge(probe, t) {\n\t\t\tif (probe === void 0) return null;\n\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\tclassName: `dsm-trae-model-probe dsm-trae-model-probe-${probe.verdict}`,\n\t\t\t\ttitle: probe.detail,\n\t\t\t\tchildren: t(PROBE_LABELS[probe.verdict])\n\t\t\t});\n\t\t}\n\t\tfunction dotStyle(status) {\n\t\t\treturn { background: status === \"signed-in\" ? \"var(--dsw-alias-state-success-primary, #22a06b)\" : status === \"error\" ? \"var(--dsw-alias-state-error-primary, #d92d20)\" : \"var(--dsw-alias-label-dimmed, #9aa0a6)\" };\n\t\t}\n\t\t/** Render Trae sign-in state and the total usage summary as one expandable card. */\n\t\tfunction TraeUsageCard({ t, settingsScope, view }) {\n\t\t\tif (t === void 0) throw new Error(\"Trae usage card requires its translation function\");\n\t\t\tconst [open, setOpen] = (0, react.useState)(view === \"page\");\n\t\t\t/** The region whose tab is on screen; each tab is its own provider stack. */\n\t\t\tconst [activeRegion, setActiveRegion] = (0, react.useState)(\"cn\");\n\t\t\t/** Last-known usage per region, so tab dots survive tab switches. */\n\t\t\tconst [statusByRegion, setStatusByRegion] = (0, react.useState)({\n\t\t\t\tcn: {\n\t\t\t\t\tstatus: \"signed-out\",\n\t\t\t\t\taccounts: []\n\t\t\t\t},\n\t\t\t\tai: {\n\t\t\t\t\tstatus: \"signed-out\",\n\t\t\t\t\taccounts: []\n\t\t\t\t}\n\t\t\t});\n\t\t\tconst [busy, setBusy] = (0, react.useState)(false);\n\t\t\t/**\n\t\t\t* Availability verdicts from the one-click test, per region, keyed by model\n\t\t\t* id. Session-only on purpose: a verdict is one moment on one account, and a\n\t\t\t* persisted \"not served\" would keep claiming that long after upstream changed\n\t\t\t* its mind.\n\t\t\t*/\n\t\t\tconst [probeByRegion, setProbeByRegion] = (0, react.useState)({\n\t\t\t\tcn: {},\n\t\t\t\tai: {}\n\t\t\t});\n\t\t\tconst [testing, setTesting] = (0, react.useState)(void 0);\n\t\t\tconst [testError, setTestError] = (0, react.useState)(void 0);\n\t\t\tconst [testSummary, setTestSummary] = (0, react.useState)(void 0);\n\t\t\tconst [settingsRevision, setSettingsRevision] = (0, react.useState)(0);\n\t\t\t/** Per-region unsaved model edits; a draft on one tab is never dropped by\n\t\t\t* switching to the other tab, only by that tab's discard/save. */\n\t\t\tconst [drafts, setDrafts] = (0, react.useState)({});\n\t\t\tconst [saving, setSaving] = (0, react.useState)(false);\n\t\t\tconst [switchingAccount, setSwitchingAccount] = (0, react.useState)(false);\n\t\t\t/** Region whose on/off checkbox write is in flight, so its box can't race. */\n\t\t\tconst [togglingRegion, setTogglingRegion] = (0, react.useState)(void 0);\n\t\t\t/**\n\t\t\t* Whether a check-in claim is in flight. A single flag rather than a\n\t\t\t* per-region map: the claim exists only on the CN tab, and one shared flag\n\t\t\t* keeps a tab switch from stranding a second concurrent claim.\n\t\t\t*/\n\t\t\tconst [claiming, setClaiming] = (0, react.useState)(false);\n\t\t\t/** Last claim refusal, shown until the next successful refresh. */\n\t\t\tconst [claimError, setClaimError] = (0, react.useState)(void 0);\n\t\t\t/**\n\t\t\t* Outcome of the last \"refresh accounts\" press (issue #25).\n\t\t\t*\n\t\t\t* The rescan answers 200 with a fresh account list whether or not anything\n\t\t\t* changed, and the selection is PERSISTED, so a rescan of a machine whose\n\t\t\t* bound account is still the one it was yesterday looks identical to a\n\t\t\t* failure. Reporting the outcome is the difference between \"it did nothing\"\n\t\t\t* and \"it found the same 2 accounts, still on X\".\n\t\t\t*/\n\t\t\tconst [rescanNote, setRescanNote] = (0, react.useState)(void 0);\n\t\t\t/**\n\t\t\t* Whether this MACHINE has spent today's check-in while the selected account\n\t\t\t* has not been paid — the \"switched account\" state. Kept separate from\n\t\t\t* `claimError` because it is not a failure: it is the upstream's one-per-\n\t\t\t* device-per-day rule, and rendering it through the \"签到失败：…\" line would\n\t\t\t* present a normal rule as a plugin fault.\n\t\t\t*/\n\t\t\tconst [deviceSpentNotice, setDeviceSpentNotice] = (0, react.useState)(false);\n\t\t\t/**\n\t\t\t* A refused or unpersisted settings write, surfaced instead of silently\n\t\t\t* reverting. On 0.1.7 a rejected write resolves normally, so without this\n\t\t\t* the control would flip and then quietly snap back on the next snapshot.\n\t\t\t*/\n\t\t\tconst [writeError, setWriteError] = (0, react.useState)(void 0);\n\t\t\t/** True while the composer-credit switch write is in flight. */\n\t\t\tconst [togglingCredits, setTogglingCredits] = (0, react.useState)(false);\n\t\t\tconst mounted = (0, react.useRef)(true);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tmounted.current = true;\n\t\t\t\treturn () => {\n\t\t\t\t\tmounted.current = false;\n\t\t\t\t};\n\t\t\t}, []);\n\t\t\t/**\n\t\t\t* Toggle the composer credit readout (`showPointsInMainUi`). The card's\n\t\t\t* checkbox is the ONLY writer of this field — the readout itself carries no\n\t\t\t* control — so there is exactly one path that can change it, and the write is\n\t\t\t* read-back-checked like every other settings write in this card.\n\t\t\t*/\n\t\t\tconst toggleShowPointsInMainUi = async (enabled) => {\n\t\t\t\tif (settingsScope === void 0 || settingsScope.getSnapshot().writable !== true) return;\n\t\t\t\tsetTogglingCredits(true);\n\t\t\t\tsetWriteError(void 0);\n\t\t\t\ttry {\n\t\t\t\t\tawait writeSettingsField(settingsScope, \"showPointsInMainUi\", enabled, (readBack) => unwrapVolatileDeep(readBack)?.showPointsInMainUi === enabled);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setWriteError(error instanceof Error ? error.message : t(\"row.requestFailed\"));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setTogglingCredits(false);\n\t\t\t\t}\n\t\t\t};\n\t\t\t(0, react.useEffect)(() => settingsScope?.subscribe(() => {\n\t\t\t\tsetSettingsRevision((value) => value + 1);\n\t\t\t}), [settingsScope]);\n\t\t\t/**\n\t\t\t* Whether one region's provider is switched on, read off the SAME committed\n\t\t\t* settings document the Host reads (`regionEnabledOf` mirrors the Host's\n\t\t\t* `regionStateOf` opt-out rule: only an explicit `false` disables). Reading\n\t\t\t* the stored value rather than echoing local state means a rejected write,\n\t\t\t* another window's change, or a restart all converge on the truth.\n\t\t\t*\n\t\t\t* The whole settings section is passed deliberately: `regionEnabledOf`\n\t\t\t* accepts either it or the bare `regions` map, because passing the section\n\t\t\t* where the map was expected was a shipped bug (the lookup read\n\t\t\t* `section['cn']`, found nothing, and reported `true` forever — the checkbox\n\t\t\t* stayed checked and clicking it appeared dead while the write succeeded).\n\t\t\t*/\n\t\t\tconst regionOn = (item) => regionEnabledOf(settingsScope?.getSnapshot().value, item);\n\t\t\tconst activeRegionOn = regionOn(activeRegion);\n\t\t\tconst refreshUsage = (0, react.useCallback)(async (region, signal) => {\n\t\t\t\ttry {\n\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_USAGE_PATH, region), {\n\t\t\t\t\t\theaders: { accept: \"application/json\" },\n\t\t\t\t\t\tcredentials: \"same-origin\",\n\t\t\t\t\t\t...signal === void 0 ? {} : { signal }\n\t\t\t\t\t});\n\t\t\t\t\tconst value = await response.json().catch(() => void 0);\n\t\t\t\t\tif (!response.ok) throw new Error(`HTTP ${response.status}`);\n\t\t\t\t\tconst usage = value;\n\t\t\t\t\tif (mounted.current && signal?.aborted !== true) setStatusByRegion((prev) => ({\n\t\t\t\t\t\t...prev,\n\t\t\t\t\t\t[region]: usage\n\t\t\t\t\t}));\n\t\t\t\t\treturn usage;\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current && signal?.aborted !== true) setStatusByRegion((prev) => ({\n\t\t\t\t\t\t...prev,\n\t\t\t\t\t\t[region]: {\n\t\t\t\t\t\t\tstatus: \"error\",\n\t\t\t\t\t\t\tmessage: error instanceof Error ? error.message : t(\"row.requestFailed\")\n\t\t\t\t\t\t}\n\t\t\t\t\t}));\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t}, [t]);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tif (!open || !activeRegionOn) return;\n\t\t\t\tconst controller = new AbortController();\n\t\t\t\trefreshUsage(activeRegion, controller.signal);\n\t\t\t\treturn () => {\n\t\t\t\t\tcontroller.abort();\n\t\t\t\t};\n\t\t\t}, [\n\t\t\t\topen,\n\t\t\t\tactiveRegion,\n\t\t\t\tactiveRegionOn,\n\t\t\t\trefreshUsage\n\t\t\t]);\n\t\t\tconst status = statusByRegion[activeRegion] ?? {\n\t\t\t\tstatus: \"signed-out\",\n\t\t\t\taccounts: []\n\t\t\t};\n\t\t\t/**\n\t\t\t* Drop a claim refusal when the tab changes. The error belongs to the region\n\t\t\t* it came from — carrying it onto the other tab would attribute an\n\t\t\t* international account's problem to the CN one (or the reverse).\n\t\t\t*/\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tsetClaimError(void 0);\n\t\t\t\tsetDeviceSpentNotice(false);\n\t\t\t}, [activeRegion]);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tif (!open || !activeRegionOn || status.status !== \"signed-in\") return;\n\t\t\t\tconst controller = new AbortController();\n\t\t\t\tconst timer = window.setInterval(() => {\n\t\t\t\t\trefreshUsage(activeRegion, controller.signal);\n\t\t\t\t}, POLL_INTERVAL_MS);\n\t\t\t\treturn () => {\n\t\t\t\t\twindow.clearInterval(timer);\n\t\t\t\t\tcontroller.abort();\n\t\t\t\t};\n\t\t\t}, [\n\t\t\t\topen,\n\t\t\t\tactiveRegion,\n\t\t\t\tactiveRegionOn,\n\t\t\t\trefreshUsage,\n\t\t\t\tstatus.status\n\t\t\t]);\n\t\t\tconst rescanAccounts = async () => {\n\t\t\t\tsetBusy(true);\n\t\t\t\tsetWriteError(void 0);\n\t\t\t\ttry {\n\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_ACCOUNTS_REFRESH_PATH, activeRegion), {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: { accept: \"application/json\" },\n\t\t\t\t\t\tcredentials: \"same-origin\"\n\t\t\t\t\t});\n\t\t\t\t\tconst body = await response.json();\n\t\t\t\t\tif (!response.ok || !Array.isArray(body.accounts)) throw new Error(`HTTP ${response.status}`);\n\t\t\t\t\tconst selected = body.accounts.find((account) => account.selected);\n\t\t\t\t\tconst configured = configuredAccountsOf(settingsScope?.getSnapshot().value);\n\t\t\t\t\tconst followed = selected !== void 0 && selected.id !== configured[activeRegion] && settingsScope !== void 0 && settingsScope.getSnapshot().writable === true;\n\t\t\t\t\tif (followed && settingsScope !== void 0) await writeSettingsField(settingsScope, \"accounts\", {\n\t\t\t\t\t\t...configured,\n\t\t\t\t\t\t[activeRegion]: selected.id\n\t\t\t\t\t}, (readBack) => configuredAccountsOf(readBack)[activeRegion] === selected.id);\n\t\t\t\t\tawait refreshUsage(activeRegion);\n\t\t\t\t\tif (mounted.current) setRescanNote(body.accounts.length === 0 ? t(\"row.accountsRefreshedNone\") : t(\"row.accountsRefreshed\", {\n\t\t\t\t\t\tcount: String(body.accounts.length),\n\t\t\t\t\t\tselected: followed ? \"\" : ` · ${t(\"row.accountsKept\")} ${selected?.accountName ?? selected?.id ?? \"—\"}`\n\t\t\t\t\t}));\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) {\n\t\t\t\t\t\tconst message = error instanceof Error ? error.message : t(\"row.requestFailed\");\n\t\t\t\t\t\tsetRescanNote(t(\"row.accountsRescanFailed\", { message }));\n\t\t\t\t\t\tsetWriteError(message);\n\t\t\t\t\t}\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setBusy(false);\n\t\t\t\t}\n\t\t\t};\n\t\t\tconst switchAccount = async (accountId) => {\n\t\t\t\tif (settingsScope === void 0) return;\n\t\t\t\tsetSwitchingAccount(true);\n\t\t\t\tsetWriteError(void 0);\n\t\t\t\ttry {\n\t\t\t\t\tawait writeSettingsField(settingsScope, \"accounts\", {\n\t\t\t\t\t\t...configuredAccountsOf(settingsScope.getSnapshot().value),\n\t\t\t\t\t\t[activeRegion]: accountId\n\t\t\t\t\t}, (readBack) => configuredAccountsOf(readBack)[activeRegion] === accountId);\n\t\t\t\t\tawait refreshUsage(activeRegion);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setWriteError(error instanceof Error ? error.message : t(\"row.requestFailed\"));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setSwitchingAccount(false);\n\t\t\t\t}\n\t\t\t};\n\t\t\t/**\n\t\t\t* Claim today's check-in reward for the active tab's region.\n\t\t\t*\n\t\t\t* The Host route owns every guard that matters — POST only, loopback origin\n\t\t\t* only, CN only, and a status read before the claim — because a browser-side\n\t\t\t* check is not a guard. The button's own `disabled` is therefore a courtesy\n\t\t\t* (it stops an obviously pointless click), not the protection.\n\t\t\t*\n\t\t\t* A refusal is not thrown away: the route answers `claimed: false` with the\n\t\t\t* upstream's business code and message, and the card shows it. Three answers\n\t\t\t* are distinguished rather than collapsed into \"failed\":\n\t\t\t*\n\t\t\t*  - `alreadyCheckedIn` — this ACCOUNT was already paid today; show it as\n\t\t\t*    claimed and refresh, never as an error.\n\t\t\t*  - `deviceCheckedIn` (code 9095) — this MACHINE already spent today's\n\t\t\t*    check-in, so this account cannot claim here today. That is the normal\n\t\t\t*    outcome after switching accounts, and saying \"check-in failed\" would\n\t\t\t*    blame the plugin for an upstream rule.\n\t\t\t*  - anything else — a real refusal, reported verbatim.\n\t\t\t*/\n\t\t\tconst claimCheckin = async () => {\n\t\t\t\tsetClaiming(true);\n\t\t\t\tsetClaimError(void 0);\n\t\t\t\tsetDeviceSpentNotice(false);\n\t\t\t\ttry {\n\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_CHECKIN_PATH, activeRegion), {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: { accept: \"application/json\" },\n\t\t\t\t\t\tcredentials: \"same-origin\"\n\t\t\t\t\t});\n\t\t\t\t\tconst body = await response.json().catch(() => void 0);\n\t\t\t\t\tif (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`);\n\t\t\t\t\tif (body?.claimed === false && body.deviceCheckedIn === true) {\n\t\t\t\t\t\tawait refreshUsage(activeRegion);\n\t\t\t\t\t\tif (mounted.current) setDeviceSpentNotice(true);\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tif (body?.claimed === false && body.alreadyCheckedIn !== true) throw new Error(body.message === void 0 || body.message === \"\" ? t(\"row.checkinRefused\", { code: String(body.code ?? \"\") }) : `${t(\"row.checkinRefused\", { code: String(body.code ?? \"\") })}: ${body.message}`);\n\t\t\t\t\tawait refreshUsage(activeRegion);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setClaimError(error instanceof Error ? error.message : t(\"row.requestFailed\"));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setClaiming(false);\n\t\t\t\t}\n\t\t\t};\n\t\t\t/**\n\t\t\t* Switch one region's provider off or on (issue #11). The write carries the\n\t\t\t* region's whole slot through untouched — only `enabled` changes — so the\n\t\t\t* user's directory, model picks, image opt-ins and budgets survive a\n\t\t\t* round trip. The Host withdraws or restores the provider route on the next\n\t\t\t* `onChange`, which is what actually removes it from DSH's model picker.\n\t\t\t*/\n\t\t\tconst toggleRegion = async (item, enabled) => {\n\t\t\t\tif (settingsScope === void 0 || settingsScope.getSnapshot().writable !== true) return;\n\t\t\t\tsetTogglingRegion(item);\n\t\t\t\tsetWriteError(void 0);\n\t\t\t\ttry {\n\t\t\t\t\tawait writeSettingsField(settingsScope, \"regions\", nextRegionEnabled(settingsScope.getSnapshot().value, item, enabled), (readBack) => regionSlotsOf(readBack)[item] !== void 0 && regionSlotsOf(readBack)[item].enabled === enabled);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setWriteError(error instanceof Error ? error.message : t(\"row.requestFailed\"));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setTogglingRegion(void 0);\n\t\t\t\t}\n\t\t\t};\n\t\t\t/**\n\t\t\t* One-click availability test for the ENABLED models of the active region.\n\t\t\t*\n\t\t\t* One model per request, deliberately: the host probe is sequential anyway\n\t\t\t* (Trae throttles bursts), and a per-model round trip lets each row show its\n\t\t\t* verdict as soon as it is known instead of the card sitting blank for a\n\t\t\t* minute. User-started, and it stops on the first authentication failure —\n\t\t\t* every later probe would only repeat that answer.\n\t\t\t*/\n\t\t\tconst testEnabledModels = async () => {\n\t\t\t\tconst ids = [...activeEnabledIds];\n\t\t\t\tsetTestError(void 0);\n\t\t\t\tsetTestSummary(void 0);\n\t\t\t\tif (ids.length === 0) {\n\t\t\t\t\tsetTestError(t(\"row.modelsTestEmpty\"));\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tsetTesting({\n\t\t\t\t\tdone: 0,\n\t\t\t\t\ttotal: ids.length\n\t\t\t\t});\n\t\t\t\tconst collected = {};\n\t\t\t\tlet available = 0;\n\t\t\t\tlet denied = false;\n\t\t\t\ttry {\n\t\t\t\t\tfor (const [index, id] of ids.entries()) {\n\t\t\t\t\t\tif (!mounted.current) return;\n\t\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_MODELS_TEST_PATH, activeRegion), {\n\t\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\t\theaders: {\n\t\t\t\t\t\t\t\taccept: \"application/json\",\n\t\t\t\t\t\t\t\t\"content-type\": \"application/json\"\n\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\tcredentials: \"same-origin\",\n\t\t\t\t\t\t\tbody: JSON.stringify({ ids: [id] })\n\t\t\t\t\t\t});\n\t\t\t\t\t\tconst body = await response.json().catch(() => ({}));\n\t\t\t\t\t\tif (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);\n\t\t\t\t\t\tconst verdict = body.results?.[0];\n\t\t\t\t\t\tif (verdict !== void 0) {\n\t\t\t\t\t\t\tcollected[id] = {\n\t\t\t\t\t\t\t\tverdict: verdict.verdict,\n\t\t\t\t\t\t\t\tdetail: verdict.detail\n\t\t\t\t\t\t\t};\n\t\t\t\t\t\t\tif (verdict.verdict === \"available\") available += 1;\n\t\t\t\t\t\t\tsetProbeByRegion((prev) => ({\n\t\t\t\t\t\t\t\t...prev,\n\t\t\t\t\t\t\t\t[activeRegion]: {\n\t\t\t\t\t\t\t\t\t...prev[activeRegion],\n\t\t\t\t\t\t\t\t\t[id]: {\n\t\t\t\t\t\t\t\t\t\tverdict: verdict.verdict,\n\t\t\t\t\t\t\t\t\t\tdetail: verdict.detail\n\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t}));\n\t\t\t\t\t\t\tif (verdict.verdict === \"auth\") {\n\t\t\t\t\t\t\t\tdenied = true;\n\t\t\t\t\t\t\t\tbreak;\n\t\t\t\t\t\t\t}\n\t\t\t\t\t\t}\n\t\t\t\t\t\tsetTesting({\n\t\t\t\t\t\t\tdone: index + 1,\n\t\t\t\t\t\t\ttotal: ids.length\n\t\t\t\t\t\t});\n\t\t\t\t\t}\n\t\t\t\t\tif (mounted.current) {\n\t\t\t\t\t\tsetTestSummary(t(\"row.modelsTestDone\", {\n\t\t\t\t\t\t\tavailable,\n\t\t\t\t\t\t\ttotal: Object.keys(collected).length\n\t\t\t\t\t\t}));\n\t\t\t\t\t\tif (denied) setTestError(t(\"row.probeAuth\"));\n\t\t\t\t\t}\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setTestError(t(\"row.modelsTestError\", { message: error instanceof Error ? error.message : t(\"row.requestFailed\") }));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setTesting(void 0);\n\t\t\t\t}\n\t\t\t};\n\t\t\tconst refreshModels = async () => {\n\t\t\t\tsetBusy(true);\n\t\t\t\ttry {\n\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_MODELS_REFRESH_PATH, activeRegion), {\n\t\t\t\t\t\tmethod: \"POST\",\n\t\t\t\t\t\theaders: { accept: \"application/json\" },\n\t\t\t\t\t\tcredentials: \"same-origin\"\n\t\t\t\t\t});\n\t\t\t\t\tconst body = await response.json();\n\t\t\t\t\tif (!response.ok || !Array.isArray(body.models)) throw new Error(`HTTP ${response.status}`);\n\t\t\t\t\tconst fresh = body.models;\n\t\t\t\t\tconst freshIds = new Set(fresh.map((model) => model.id));\n\t\t\t\t\tconst stillEnabled = [...activeEnabledIds].filter((id) => freshIds.has(id));\n\t\t\t\t\tconst stillImages = [...activeImageIds].filter((id) => freshIds.has(id));\n\t\t\t\t\tconst stillBudgets = {};\n\t\t\t\t\tfor (const id of freshIds) {\n\t\t\t\t\t\tconst budget = activeContextBudgets[id];\n\t\t\t\t\t\tif (typeof budget === \"number\") stillBudgets[id] = budget;\n\t\t\t\t\t}\n\t\t\t\t\tsetDrafts((prev) => ({\n\t\t\t\t\t\t...prev,\n\t\t\t\t\t\t[activeRegion]: {\n\t\t\t\t\t\t\tmodels: fresh.map((model) => ({\n\t\t\t\t\t\t\t\t...model,\n\t\t\t\t\t\t\t\tinput: [\"text\"]\n\t\t\t\t\t\t\t})),\n\t\t\t\t\t\t\tenabledIds: new Set(stillEnabled),\n\t\t\t\t\t\t\timageIds: new Set(stillImages),\n\t\t\t\t\t\t\tcontextBudgets: stillBudgets\n\t\t\t\t\t\t}\n\t\t\t\t\t}));\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setStatusByRegion((prev) => ({\n\t\t\t\t\t\t...prev,\n\t\t\t\t\t\t[activeRegion]: {\n\t\t\t\t\t\t\tstatus: \"error\",\n\t\t\t\t\t\t\tmessage: error instanceof Error ? error.message : t(\"row.requestFailed\")\n\t\t\t\t\t\t}\n\t\t\t\t\t}));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setBusy(false);\n\t\t\t\t}\n\t\t\t};\n\t\t\tconst settingsValue = unwrapVolatileDeep(settingsScope?.getSnapshot().value);\n\t\t\tconst region = activeRegion;\n\t\t\tconst configuredRegions = typeof settingsValue === \"object\" && settingsValue !== null && typeof settingsValue.regions === \"object\" && settingsValue.regions !== null ? settingsValue.regions : {};\n\t\t\tconst regionSlot = configuredRegions[region];\n\t\t\tconst legacySlot = region === \"cn\" && regionSlot === void 0;\n\t\t\tconst slotContextBudgets = typeof regionSlot?.contextBudgets === \"object\" && regionSlot.contextBudgets !== null ? regionSlot.contextBudgets : void 0;\n\t\t\tconst legacyContextBudgets = legacySlot && typeof settingsValue === \"object\" && settingsValue !== null && typeof settingsValue.contextBudgets === \"object\" && settingsValue.contextBudgets !== null ? settingsValue.contextBudgets : void 0;\n\t\t\tconst savedContextBudgets = slotContextBudgets ?? legacyContextBudgets ?? {};\n\t\t\tconst slotImageIds = Array.isArray(regionSlot?.imageModelIds) ? regionSlot.imageModelIds.filter((id) => typeof id === \"string\") : void 0;\n\t\t\tconst legacyImageIds = legacySlot && typeof settingsValue === \"object\" && settingsValue !== null && Array.isArray(settingsValue.imageModelIds) ? settingsValue.imageModelIds.filter((id) => typeof id === \"string\") : [];\n\t\t\tconst savedImageIds = new Set(slotImageIds ?? legacyImageIds);\n\t\t\tconst draft = drafts[activeRegion];\n\t\t\tconst visibleModels = draft?.models ?? (status.status === \"signed-in\" ? status.models : []);\n\t\t\tconst savedEnabledIds = status.status === \"signed-in\" ? new Set(status.enabledModelIds) : /* @__PURE__ */ new Set();\n\t\t\tconst activeEnabledIds = draft?.enabledIds ?? savedEnabledIds;\n\t\t\tconst activeImageIds = draft?.imageIds ?? savedImageIds;\n\t\t\t/**\n\t\t\t* Effective image capability of one row, mirroring what the Host reports to\n\t\t\t* DSH: the user's opt-in unioned with Trae's own `multimodal` flag (issue\n\t\t\t* #16). Rendering the union is what keeps this checkbox truthful — showing the\n\t\t\t* raw `imageModelIds` would draw an unticked box next to a model the plugin\n\t\t\t* is in fact advertising as image-capable.\n\t\t\t*/\n\t\t\tconst rowAcceptsImage = (model) => activeImageIds.has(model.id) || model.multimodal === true;\n\t\t\t/**\n\t\t\t* A row Trae itself declares multimodal needs no manual opt-in, so its box is\n\t\t\t* shown ticked and read-only rather than offering a toggle that the union\n\t\t\t* would immediately undo. Turning image input off for such a model is\n\t\t\t* deliberately not supported: the flag is the vendor's own capability answer,\n\t\t\t* and enabling it only lets DSH attach an image the user still has to pick per\n\t\t\t* message — it never sends one by itself.\n\t\t\t*/\n\t\t\tconst rowImageIsAutomatic = (model) => model.multimodal === true;\n\t\t\t/** The subscription row's verdict for the current account, when it has one. */\n\t\t\tconst payPlan = status.status === \"signed-in\" && status.payStatus !== void 0 ? payVerdict(status.payStatus) : void 0;\n\t\t\tconst activeContextBudgets = draft?.contextBudgets ?? savedContextBudgets;\n\t\t\tconst dirty = draft !== void 0;\n\t\t\t/** Apply an edit to the ACTIVE tab's draft, seeding it from the current view. */\n\t\t\tconst editDraft = (edit) => {\n\t\t\t\tsetDrafts((prev) => ({\n\t\t\t\t\t...prev,\n\t\t\t\t\t[activeRegion]: edit(prev[activeRegion] ?? {\n\t\t\t\t\t\tmodels: [...visibleModels],\n\t\t\t\t\t\tenabledIds: new Set(activeEnabledIds),\n\t\t\t\t\t\timageIds: new Set(activeImageIds),\n\t\t\t\t\t\tcontextBudgets: { ...activeContextBudgets }\n\t\t\t\t\t})\n\t\t\t\t}));\n\t\t\t};\n\t\t\tconst toggleModel = (modelId) => {\n\t\t\t\teditDraft((current) => {\n\t\t\t\t\tconst next = new Set(current.enabledIds);\n\t\t\t\t\tif (!next.delete(modelId)) next.add(modelId);\n\t\t\t\t\treturn {\n\t\t\t\t\t\t...current,\n\t\t\t\t\t\tenabledIds: next\n\t\t\t\t\t};\n\t\t\t\t});\n\t\t\t};\n\t\t\tconst toggleImage = (modelId) => {\n\t\t\t\teditDraft((current) => {\n\t\t\t\t\tconst next = new Set(current.imageIds);\n\t\t\t\t\tif (!next.delete(modelId)) next.add(modelId);\n\t\t\t\t\treturn {\n\t\t\t\t\t\t...current,\n\t\t\t\t\t\timageIds: next\n\t\t\t\t\t};\n\t\t\t\t});\n\t\t\t};\n\t\t\tconst setContextBudget = (modelId, budget) => {\n\t\t\t\teditDraft((current) => {\n\t\t\t\t\tconst next = { ...current.contextBudgets };\n\t\t\t\t\tif (budget === void 0) delete next[modelId];\n\t\t\t\t\telse next[modelId] = budget;\n\t\t\t\t\treturn {\n\t\t\t\t\t\t...current,\n\t\t\t\t\t\tcontextBudgets: next\n\t\t\t\t\t};\n\t\t\t\t});\n\t\t\t};\n\t\t\tconst discardModels = () => {\n\t\t\t\tsetDrafts((prev) => {\n\t\t\t\t\tconst next = { ...prev };\n\t\t\t\t\tdelete next[activeRegion];\n\t\t\t\t\treturn next;\n\t\t\t\t});\n\t\t\t};\n\t\t\tconst saveModels = async () => {\n\t\t\t\tif (settingsScope === void 0) return;\n\t\t\t\tsetSaving(true);\n\t\t\t\tsetWriteError(void 0);\n\t\t\t\ttry {\n\t\t\t\t\tif (status.status !== \"signed-in\") return;\n\t\t\t\t\tconst nextSlot = {\n\t\t\t\t\t\tenabled: regionOn(activeRegion),\n\t\t\t\t\t\tlastCatalog: visibleModels.map((model) => ({\n\t\t\t\t\t\t\t...model,\n\t\t\t\t\t\t\tinput: [\"text\"],\n\t\t\t\t\t\t\t...model.multimodal === void 0 ? {} : { multimodal: model.multimodal }\n\t\t\t\t\t\t})),\n\t\t\t\t\t\tenabledModelIds: [...activeEnabledIds],\n\t\t\t\t\t\timageModelIds: [...activeImageIds].filter((id) => activeEnabledIds.has(id)),\n\t\t\t\t\t\tcontextBudgets: activeContextBudgets\n\t\t\t\t\t};\n\t\t\t\t\tawait writeSettingsField(settingsScope, \"regions\", nextRegionSlots(configuredRegions, activeRegion, nextSlot), (readBack) => {\n\t\t\t\t\t\tconst ids = regionSlotsOf(readBack)[activeRegion]?.enabledModelIds;\n\t\t\t\t\t\treturn Array.isArray(ids) && ids.length === nextSlot.enabledModelIds.length && nextSlot.enabledModelIds.every((id) => ids.includes(id));\n\t\t\t\t\t});\n\t\t\t\t\tdiscardModels();\n\t\t\t\t\tawait refreshUsage(activeRegion);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tif (mounted.current) setWriteError(error instanceof Error ? error.message : t(\"row.requestFailed\"));\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setSaving(false);\n\t\t\t\t}\n\t\t\t};\n\t\t\tconst title = t(\"row.title\");\n\t\t\tconst label = status.status === \"signed-in\" ? t(\"row.signedIn\", { accountName: status.accountName }) : status.status === \"error\" ? t(\"row.requestFailed\") : t(\"row.signedOut\");\n\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"li\", {\n\t\t\t\tclassName: `dsm-plugin-card${open ? \" dsm-plugin-card-open\" : \"\"}`,\n\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"button\", {\n\t\t\t\t\ttype: \"button\",\n\t\t\t\t\tclassName: \"dsm-plugin-card-header\",\n\t\t\t\t\t\"aria-expanded\": open,\n\t\t\t\t\t\"aria-label\": `${t(open ? \"row.collapse\" : \"row.expand\")}: ${title}`,\n\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\tsetOpen(!open);\n\t\t\t\t\t},\n\t\t\t\t\tchildren: [\n\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"img\", {\n\t\t\t\t\t\t\tclassName: \"dsm-plugin-card-icon\",\n\t\t\t\t\t\t\tsrc: TRAE_PLUGIN_ICON,\n\t\t\t\t\t\t\talt: \"\"\n\t\t\t\t\t\t}),\n\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\t\t\t\tclassName: \"dsm-plugin-card-head\",\n\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-plugin-card-title\",\n\t\t\t\t\t\t\t\tchildren: title\n\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-plugin-card-description\",\n\t\t\t\t\t\t\t\tchildren: t(\"row.desc\")\n\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t}),\n\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\"aria-hidden\": \"true\",\n\t\t\t\t\t\t\tclassName: `dsm-plugin-card-chevron${open ? \" dsm-plugin-card-chevron-open\" : \"\"}`\n\t\t\t\t\t\t})\n\t\t\t\t\t]\n\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\tclassName: \"dsm-plugin-card-body\",\n\t\t\t\t\thidden: !open,\n\t\t\t\t\tchildren: open ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\tclassName: \"dsm-trae-usage\",\n\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-tabs\",\n\t\t\t\t\t\t\t\trole: \"tablist\",\n\t\t\t\t\t\t\t\t\"aria-label\": title,\n\t\t\t\t\t\t\t\tchildren: TRAE_REGIONS.map((item) => {\n\t\t\t\t\t\t\t\t\tconst regionStatus = statusByRegion[item];\n\t\t\t\t\t\t\t\t\tconst on = regionOn(item);\n\t\t\t\t\t\t\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-tab-cell\",\n\t\t\t\t\t\t\t\t\t\trole: \"presentation\",\n\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\trole: \"tab\",\n\t\t\t\t\t\t\t\t\t\t\t\"aria-selected\": item === activeRegion,\n\t\t\t\t\t\t\t\t\t\t\tclassName: `dsm-trae-tab${item === activeRegion ? \" dsm-trae-tab-active\" : \"\"}${on ? \"\" : \" dsm-trae-tab-off\"}`,\n\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\tsetActiveRegion(item);\n\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\tchildren: [regionStatus === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\"aria-hidden\": \"true\",\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-tab-dot\",\n\t\t\t\t\t\t\t\t\t\t\t\tstyle: dotStyle(regionStatus.status)\n\t\t\t\t\t\t\t\t\t\t\t}), item === \"cn\" ? t(\"row.tabCn\") : t(\"row.tabAi\")]\n\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"label\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-tab-switch\",\n\t\t\t\t\t\t\t\t\t\t\ttitle: t(\"row.tabSwitchHint\"),\n\t\t\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"input\", {\n\t\t\t\t\t\t\t\t\t\t\t\ttype: \"checkbox\",\n\t\t\t\t\t\t\t\t\t\t\t\tchecked: on,\n\t\t\t\t\t\t\t\t\t\t\t\tdisabled: settingsScope?.getSnapshot().writable !== true || togglingRegion !== void 0,\n\t\t\t\t\t\t\t\t\t\t\t\t\"aria-label\": t(\"row.tabSwitchAria\", { region: item === \"cn\" ? t(\"row.tabCn\") : t(\"row.tabAi\") }),\n\t\t\t\t\t\t\t\t\t\t\t\tonChange: (event) => {\n\t\t\t\t\t\t\t\t\t\t\t\t\ttoggleRegion(item, event.currentTarget.checked);\n\t\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t}, item);\n\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-tab-hint\",\n\t\t\t\t\t\t\t\tchildren: t(\"row.tabHint\")\n\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\twriteError === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\trole: \"alert\",\n\t\t\t\t\t\t\t\tchildren: t(\"row.settingsWriteFailed\", { message: writeError })\n\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\tregionOn(activeRegion) ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-tab-off-notice\",\n\t\t\t\t\t\t\t\trole: \"status\",\n\t\t\t\t\t\t\t\tchildren: t(\"row.tabOffNotice\")\n\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\tactiveRegion !== \"cn\" ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-mainui-switch\",\n\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"label\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-mainui-switch-label\",\n\t\t\t\t\t\t\t\t\ttitle: t(\"row.showPointsInMainUiHint\"),\n\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"input\", {\n\t\t\t\t\t\t\t\t\t\ttype: \"checkbox\",\n\t\t\t\t\t\t\t\t\t\tchecked: settingsValue?.showPointsInMainUi === true,\n\t\t\t\t\t\t\t\t\t\tdisabled: settingsScope?.getSnapshot().writable !== true || togglingCredits,\n\t\t\t\t\t\t\t\t\t\tonChange: (event) => {\n\t\t\t\t\t\t\t\t\t\t\ttoggleShowPointsInMainUi(event.currentTarget.checked);\n\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: t(\"row.showPointsInMainUi\") })]\n\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-account\",\n\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-account-copy\",\n\t\t\t\t\t\t\t\t\trole: \"status\",\n\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-status\",\n\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\"aria-hidden\": \"true\",\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-dot\",\n\t\t\t\t\t\t\t\t\t\t\tstyle: dotStyle(status.status)\n\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: label })]\n\t\t\t\t\t\t\t\t\t}), status.status === \"signed-in\" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-expiry\",\n\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.tokenExpiry\", { expiresAt: formatDateTime(status.tokenExpiresAtMs) })\n\t\t\t\t\t\t\t\t\t}) : null]\n\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-btn dsm-btn-outline\",\n\t\t\t\t\t\t\t\t\tdisabled: busy,\n\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\trescanAccounts();\n\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\tchildren: busy ? t(\"row.accountsScanning\") : t(\"row.refreshTokens\")\n\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\tstatus.status !== \"error\" && status.accounts.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"section\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-account-picker\",\n\t\t\t\t\t\t\t\t\"aria-label\": t(\"row.accountsTitle\"),\n\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-select-wrap\",\n\t\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"select\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-select\",\n\t\t\t\t\t\t\t\t\t\t\tvalue: status.status === \"signed-in\" ? status.accountId : \"\",\n\t\t\t\t\t\t\t\t\t\t\tdisabled: switchingAccount || settingsScope?.getSnapshot().writable !== true,\n\t\t\t\t\t\t\t\t\t\t\tonChange: (event) => {\n\t\t\t\t\t\t\t\t\t\t\t\tswitchAccount(event.currentTarget.value);\n\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\tchildren: status.accounts.map((account) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"option\", {\n\t\t\t\t\t\t\t\t\t\t\t\tvalue: account.id,\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\t\taccount.accountName,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\" · \",\n\t\t\t\t\t\t\t\t\t\t\t\t\taccount.region === \"ai\" ? t(\"row.regionAi\") : t(\"row.regionCn\"),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\" · \",\n\t\t\t\t\t\t\t\t\t\t\t\t\tt(`row.edition${account.edition === \"cn\" ? \"Cn\" : account.edition === \"sg\" ? \"Sg\" : account.edition === \"solo\" ? \"Solo\" : \"SoloSg\"}`)\n\t\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t\t}, account.id))\n\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\tstatus.status === \"signed-in\" && status.alternatives !== void 0 && status.alternatives.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-alternative\",\n\t\t\t\t\t\t\t\t\t\trole: \"status\",\n\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"p\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-alternative-text\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\tt(\"row.creditsExhausted\", { account: status.accountName }),\n\t\t\t\t\t\t\t\t\t\t\t\t\" \",\n\t\t\t\t\t\t\t\t\t\t\t\tt(\"row.creditsAlternative\", { accounts: status.alternatives.map((alt) => `${alt.accountName}（${t(`row.edition${alt.edition === \"cn\" ? \"Cn\" : alt.edition === \"sg\" ? \"Sg\" : alt.edition === \"solo\" ? \"Solo\" : \"SoloSg\"}`)}：${formatNumber(alt.workAvailable + alt.generalAvailable)}）`).join(\"、\") })\n\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-switch-button\",\n\t\t\t\t\t\t\t\t\t\t\tdisabled: switchingAccount || settingsScope?.getSnapshot()?.writable !== true,\n\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\tconst target = status.alternatives?.[0];\n\t\t\t\t\t\t\t\t\t\t\t\tif (target !== void 0) switchAccount(target.id);\n\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.creditsAlternativeSwitch\")\n\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t}) : null,\n\t\t\t\t\t\t\t\t\trescanNote === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-note\",\n\t\t\t\t\t\t\t\t\t\trole: \"status\",\n\t\t\t\t\t\t\t\t\t\tchildren: rescanNote\n\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t}) : null,\n\t\t\t\t\t\t\tstatus.status === \"signed-in\" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [\n\t\t\t\t\t\t\t\tstatus.payStatus === void 0 || payPlan === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-list\",\n\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stats dsm-trae-usage-stats-two\",\n\t\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat dsm-trae-usage-stat-general\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-head\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-label\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.subscriptionLabel\")\n\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: `dsm-trae-usage-stat-badge ${payPlan.paid ? \"dsm-trae-usage-stat-badge-on\" : \"dsm-trae-usage-stat-badge-off\"}`,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(payPlan.label)\n\t\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-value dsm-trae-usage-stat-value-general\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: status.payStatus.inTrial && status.payStatus.trialEndTimeMs > 0 ? t(\"row.trialUntil\", { date: formatDateTime(status.payStatus.trialEndTimeMs) }) : [t(payPlan.label), payPlan.tier].filter(Boolean).join(\" · \")\n\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-hint\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: status.payStatus.enableSoloLite || status.payStatus.enableSoloCoder || status.payStatus.enableSoloBuilder || status.payStatus.enableSoloWeb ? [\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tstatus.payStatus.enableSoloLite ? \"SOLO Lite\" : \"\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tstatus.payStatus.enableSoloCoder ? \"SOLO Coder\" : \"\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tstatus.payStatus.enableSoloBuilder ? \"SOLO Builder\" : \"\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tstatus.payStatus.enableSoloWeb ? \"SOLO Web\" : \"\"\n\t\t\t\t\t\t\t\t\t\t\t\t\t].filter(Boolean).join(\" · \") : status.payStatus.isDollarUsageBilling ? \"dollar usage billing\" : \"\"\n\t\t\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\tstatus.payStatusError === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\t\tchildren: t(\"row.payStatusError\", { message: status.payStatusError })\n\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\tstatus.credits === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-list\",\n\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stats dsm-trae-usage-stats-two\",\n\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat dsm-trae-usage-stat-work\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-head\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-label\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.workCreditsLabel\")\n\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-badge dsm-trae-usage-stat-badge-off\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.workNotUsable\")\n\t\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-value dsm-trae-usage-stat-value-work\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: formatNumber(status.credits.workAvailable)\n\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-hint\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.workUsableHint\")\n\t\t\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat dsm-trae-usage-stat-general\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-head\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-label\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.generalCreditsLabel\")\n\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-badge dsm-trae-usage-stat-badge-on\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.generalUsable\")\n\t\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-value dsm-trae-usage-stat-value-general\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: formatNumber(status.credits.generalAvailable)\n\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-stat-hint\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.generalUsableHint\")\n\t\t\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\tstatus.creditsError === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\t\tchildren: t(\"row.creditsError\", { message: status.creditsError })\n\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\tstatus.checkin === void 0 ? null : (() => {\n\t\t\t\t\t\t\t\t\tconst accountClaimed = status.checkin.checkedIn;\n\t\t\t\t\t\t\t\t\tconst deviceSpent = !accountClaimed && (status.checkin.didCheckedIn || deviceSpentNotice);\n\t\t\t\t\t\t\t\t\tconst reward = formatNumber(status.checkin.credits);\n\t\t\t\t\t\t\t\t\tconst bonus = status.checkin.extraCredits === void 0 ? \"\" : ` + ${formatNumber(status.checkin.extraCredits)}`;\n\t\t\t\t\t\t\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-checkin\",\n\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-checkin-copy\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-checkin-label\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.checkinLabel\")\n\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-checkin-hint\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: [t(\"row.checkinReward\", { reward: `${reward}${bonus}` }), accountClaimed ? ` · ${t(\"row.checkinDoneHint\")}` : \"\"]\n\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-btn dsm-btn-primary dsm-trae-checkin-button\",\n\t\t\t\t\t\t\t\t\t\t\tdisabled: !status.checkin.enabled || accountClaimed || deviceSpent || claiming,\n\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\tclaimCheckin();\n\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\tchildren: claiming ? t(\"row.checkinClaiming\") : accountClaimed ? t(\"row.checkinClaimed\") : t(\"row.checkinClaim\")\n\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t}), deviceSpent ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-checkin-note\",\n\t\t\t\t\t\t\t\t\t\trole: \"status\",\n\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.checkinDeviceSpent\")\n\t\t\t\t\t\t\t\t\t}) : null] });\n\t\t\t\t\t\t\t\t})(),\n\t\t\t\t\t\t\t\tstatus.checkin !== void 0 && !status.checkin.enabled ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\t\tchildren: t(\"row.checkinDisabled\")\n\t\t\t\t\t\t\t\t}) : null,\n\t\t\t\t\t\t\t\tstatus.checkinError === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\t\tchildren: t(\"row.checkinError\", { message: status.checkinError })\n\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\tclaimError === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\t\trole: \"alert\",\n\t\t\t\t\t\t\t\t\tchildren: t(\"row.checkinError\", { message: claimError })\n\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"section\", {\n\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models\",\n\t\t\t\t\t\t\t\t\t\"aria-label\": t(\"row.modelsTitle\"),\n\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models-head\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"h3\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models-title\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.modelsTitle\")\n\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models-summary\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.modelsSummary\", { count: activeEnabledIds.size })\n\t\t\t\t\t\t\t\t\t\t\t})] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models-actions\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-btn dsm-btn-outline\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: busy,\n\t\t\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\trefreshModels();\n\t\t\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: busy ? t(\"row.modelsRefreshing\") : t(\"row.modelsRefresh\")\n\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-btn dsm-btn-outline\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: busy || testing !== void 0 || activeEnabledIds.size === 0,\n\t\t\t\t\t\t\t\t\t\t\t\t\ttitle: t(\"row.modelsTestHint\"),\n\t\t\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\ttestEnabledModels();\n\t\t\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: testing === void 0 ? t(\"row.modelsTestEnabled\") : t(\"row.modelsTesting\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tdone: testing.done,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\ttotal: testing.total\n\t\t\t\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models-hint\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.modelsTestHint\")\n\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\ttestSummary === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-models-summary\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: testSummary\n\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\ttestError === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\t\t\t\trole: \"alert\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: testError\n\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-list\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: visibleModels.map((model) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: `dsm-trae-model${activeEnabledIds.has(model.id) ? \"\" : \" dsm-trae-model-disabled\"}`,\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-head\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"label\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-enabled\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"input\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"checkbox\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchecked: activeEnabledIds.has(model.id),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: settingsScope?.getSnapshot().writable !== true || saving,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tonChange: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttoggleModel(model.id);\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-copy\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-name\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tmodel.name,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tmodel.creditMultiplier === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-name-rate\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [\"· x\", model.creditMultiplier.toFixed(2)]\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tprobeBadge(probeByRegion[activeRegion][model.id], t)\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-options\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"label\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-image\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"input\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"checkbox\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchecked: rowAcceptsImage(model),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: rowImageIsAutomatic(model) || settingsScope?.getSnapshot().writable !== true || saving,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttitle: rowImageIsAutomatic(model) ? t(\"row.modelImageAuto\") : void 0,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tonChange: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttoggleImage(model.id);\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: t(\"row.modelImage\") })]\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"fieldset\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-context-budget\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\"aria-label\": t(\"row.contextBudget\"),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [model.maxContextWindow !== void 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"label\", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"input\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"radio\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tname: `context-${model.id}`,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchecked: activeContextBudgets[model.id] !== model.maxContextWindow,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: settingsScope?.getSnapshot().writable !== true || saving,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tonChange: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tsetContextBudget(model.id, model.contextWindow);\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: formatCapacity(model.contextWindow, t(\"row.modelUnknown\")) })] }) : null, /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"label\", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"input\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"radio\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tname: `context-${model.id}`,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tchecked: model.maxContextWindow === void 0 || activeContextBudgets[model.id] === model.maxContextWindow,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: model.maxContextWindow === void 0 || settingsScope?.getSnapshot().writable !== true || saving,\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tonChange: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\tsetContextBudget(model.id, model.maxContextWindow);\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: formatCapacity(model.maxContextWindow ?? model.contextWindow, t(\"row.modelUnknown\")) })] })]\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-meta\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: t(\"row.modelContext\", { context: formatCapacity(model.maxContextWindow ?? model.contextWindow, t(\"row.modelUnknown\")) }) }),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tmodel.maxTokens === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: t(\"row.modelOutput\", { output: formatCapacity(model.maxTokens, t(\"row.modelUnknown\")) }) }),\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tmodel.reasoning === void 0 ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", { children: t(\"row.modelReasoning\", { efforts: model.reasoning.supported.join(\" / \") }) })\n\t\t\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t}, model.id))\n\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-capability-note\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.modelCapabilityPending\")\n\t\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-actions\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"a\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-cheer\",\n\t\t\t\t\t\t\t\t\t\t\t\thref: TRAE_GITHUB_URL,\n\t\t\t\t\t\t\t\t\t\t\t\ttarget: \"_blank\",\n\t\t\t\t\t\t\t\t\t\t\t\trel: \"noopener noreferrer\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: [t(\"row.cheer\"), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-cheer-star\",\n\t\t\t\t\t\t\t\t\t\t\t\t\t\"aria-hidden\": \"true\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: \"★\"\n\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-model-actions-buttons\",\n\t\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-btn dsm-btn-outline\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: !dirty || saving,\n\t\t\t\t\t\t\t\t\t\t\t\t\tonClick: discardModels,\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.discard\")\n\t\t\t\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-btn dsm-btn-primary\",\n\t\t\t\t\t\t\t\t\t\t\t\t\tdisabled: !dirty || saving || activeEnabledIds.size === 0,\n\t\t\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\t\t\tsaveModels();\n\t\t\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\t\t\tchildren: saving ? t(\"row.saving\") : t(\"row.save\")\n\t\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t] }) : null,\n\t\t\t\t\t\t\tstatus.status === \"signed-out\" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-text\",\n\t\t\t\t\t\t\t\tchildren: status.message ?? t(\"row.signedOutHint\")\n\t\t\t\t\t\t\t}), status.searched && status.searched.length > 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"details\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-searched\",\n\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"summary\", { children: [\n\t\t\t\t\t\t\t\t\t\tt(\"row.searchedTitle\"),\n\t\t\t\t\t\t\t\t\t\t\" (\",\n\t\t\t\t\t\t\t\t\t\tstatus.searched.length,\n\t\t\t\t\t\t\t\t\t\t\")\"\n\t\t\t\t\t\t\t\t\t] }),\n\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-searched-hint\",\n\t\t\t\t\t\t\t\t\t\tchildren: t(\"row.searchedHint\")\n\t\t\t\t\t\t\t\t\t}),\n\t\t\t\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"ul\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-searched-list\",\n\t\t\t\t\t\t\t\t\t\tchildren: status.searched.map((item) => /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"li\", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"code\", { children: item.path }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-searched-reason\",\n\t\t\t\t\t\t\t\t\t\t\tchildren: [\n\t\t\t\t\t\t\t\t\t\t\t\tt(item.source === \"cli\" ? \"row.sourceCli\" : \"row.sourceDesktop\"),\n\t\t\t\t\t\t\t\t\t\t\t\t\" · \",\n\t\t\t\t\t\t\t\t\t\t\t\tt(item.reason === \"missing\" ? \"row.reasonMissing\" : item.reason === \"unreadable\" ? \"row.reasonUnreadable\" : \"row.reasonInvalid\")\n\t\t\t\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t\t\t\t})] }, `${item.source}:${item.path}`))\n\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t]\n\t\t\t\t\t\t\t}) : null] }) : null,\n\t\t\t\t\t\t\tstatus.status === \"error\" ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-usage-error\",\n\t\t\t\t\t\t\t\tchildren: status.message\n\t\t\t\t\t\t\t}) : null\n\t\t\t\t\t\t]\n\t\t\t\t\t}) : null\n\t\t\t\t})]\n\t\t\t});\n\t\t}\n\t\t//#endregion\n\t\t//#region src/client/popover.ts\n\t\t/**\n\t\t* The two shell behaviours the composer credit panel needs: hanging the panel\n\t\t* off its trigger, and dismissing it on an outside press.\n\t\t*\n\t\t* Implemented locally rather than imported from\n\t\t* `@deepseek-ai/dsh-client-ui-primitives`. The shell DOES register that package\n\t\t* for plugin bundles, so importing it is legal — this is a deliberate choice,\n\t\t* not a workaround: the two behaviours are ~40 lines of DOM geometry, and owning\n\t\t* them keeps this component renderable in the Node test suite without mocking a\n\t\t* package that itself reaches `*.module.css` and further DSH dependencies.\n\t\t*\n\t\t* NOTE ON A MISDIAGNOSIS, kept because it is the kind of thing that gets\n\t\t* re-litigated: the 2.12.0/2.13.0 client load failure was first attributed to\n\t\t* importing the primitives package. It was not that. The real cause was\n\t\t* `import { createPortal } from 'react-dom'` being BUNDLED rather than\n\t\t* externalized — the inlined development build opens with\n\t\t* `process.env.NODE_ENV` and threw `ReferenceError: process is not defined` in\n\t\t* the browser. See `tsdown.config.ts` for the fix and\n\t\t* `tests/client-runtime-imports.spec.ts` for the rule that now prevents it.\n\t\t*\n\t\t* Behaviour is intentionally identical to the shell's implementations: the same\n\t\t* top/bottom placement, the same viewport clamping, the same re-measure on\n\t\t* scroll (capture, so nested scrollers count), resize and the panel's own size\n\t\t* changes, and the same \"a pointerdown outside both the trigger and the panel\n\t\t* closes it\" rule.\n\t\t*/\n\t\t/**\n\t\t* Clearance to keep from the top of the viewport.\n\t\t*\n\t\t* The shell reserves a strip at the top of the frame (`--dsh-frame-top-clearance`)\n\t\t* for the window chrome, so a panel clamped to `margin` alone can still land\n\t\t* under it. Absent variable or no `data-fullscreen` distinction is handled the\n\t\t* same way the shell does: fall back to `min`.\n\t\t*/\n\t\tfunction overlayTopMargin(min) {\n\t\t\tif (typeof document === \"undefined\") return min;\n\t\t\tconst root = document.documentElement;\n\t\t\tconst clearance = Number.parseFloat(getComputedStyle(root).getPropertyValue(\"--dsh-frame-top-clearance\"));\n\t\t\tif (Number.isNaN(clearance)) return min;\n\t\t\treturn Math.max(min, (root.hasAttribute(\"data-fullscreen\") ? 0 : clearance) + 20);\n\t\t}\n\t\t/** Keep a `position: fixed` floating element anchored to a trigger. */\n\t\tfunction useAnchoredPosition(options) {\n\t\t\tconst { open, anchorRef, panelRef, side = \"bottom\", align = \"start\", gap, margin } = options;\n\t\t\tconst [position, setPosition] = (0, react.useState)(null);\n\t\t\t(0, react.useLayoutEffect)(() => {\n\t\t\t\tif (!open) {\n\t\t\t\t\tsetPosition(null);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst place = () => {\n\t\t\t\t\tconst rect = anchorRef.current?.getBoundingClientRect();\n\t\t\t\t\tif (rect === void 0) return;\n\t\t\t\t\tconst panel = panelRef.current;\n\t\t\t\t\tconst width = panel?.offsetWidth ?? 0;\n\t\t\t\t\tconst height = panel?.offsetHeight ?? 0;\n\t\t\t\t\tlet left = align === \"end\" ? rect.right - width : rect.left;\n\t\t\t\t\tlet top = side === \"top\" ? rect.top - gap - height : rect.bottom + gap;\n\t\t\t\t\tif (width > 0) left = Math.min(Math.max(left, margin), window.innerWidth - width - margin);\n\t\t\t\t\tif (height > 0) top = Math.min(Math.max(top, overlayTopMargin(margin)), window.innerHeight - height - margin);\n\t\t\t\t\tsetPosition({\n\t\t\t\t\t\tleft,\n\t\t\t\t\t\ttop\n\t\t\t\t\t});\n\t\t\t\t};\n\t\t\t\tplace();\n\t\t\t\twindow.addEventListener(\"scroll\", place, true);\n\t\t\t\twindow.addEventListener(\"resize\", place);\n\t\t\t\tconst panel = panelRef.current;\n\t\t\t\tlet observer = null;\n\t\t\t\tif (typeof ResizeObserver !== \"undefined\" && panel !== null) {\n\t\t\t\t\tobserver = new ResizeObserver(place);\n\t\t\t\t\tobserver.observe(panel);\n\t\t\t\t}\n\t\t\t\treturn () => {\n\t\t\t\t\tobserver?.disconnect();\n\t\t\t\t\twindow.removeEventListener(\"scroll\", place, true);\n\t\t\t\t\twindow.removeEventListener(\"resize\", place);\n\t\t\t\t};\n\t\t\t}, [\n\t\t\t\topen,\n\t\t\t\tanchorRef,\n\t\t\t\tpanelRef,\n\t\t\t\tside,\n\t\t\t\talign,\n\t\t\t\tgap,\n\t\t\t\tmargin\n\t\t\t]);\n\t\t\treturn position;\n\t\t}\n\t\t/**\n\t\t* Close an open popover when a pointerdown lands outside it.\n\t\t*\n\t\t* `portal` counts as inside: the panel is portaled to `document.body`, so it is\n\t\t* not a descendant of `root` and a click on the panel itself would otherwise\n\t\t* read as \"outside\" and dismiss the popover the user is trying to use.\n\t\t*/\n\t\tfunction useDismissOnOutsidePointer(root, open, setOpen, portal) {\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tif (!open) return void 0;\n\t\t\t\tconst closeOutside = (event) => {\n\t\t\t\t\tif (event.target instanceof Node && root.current?.contains(event.target) !== true && portal?.current?.contains(event.target) !== true) setOpen(false);\n\t\t\t\t};\n\t\t\t\tdocument.addEventListener(\"pointerdown\", closeOutside);\n\t\t\t\treturn () => {\n\t\t\t\t\tdocument.removeEventListener(\"pointerdown\", closeOutside);\n\t\t\t\t};\n\t\t\t}, [\n\t\t\t\troot,\n\t\t\t\topen,\n\t\t\t\tsetOpen,\n\t\t\t\tportal\n\t\t\t]);\n\t\t}\n\t\t//#endregion\n\t\t//#region src/client/ComposerPoints.tsx\n\t\t/**\n\t\t* Credit readout for the composer tool row (`conversation.input.left`).\n\t\t*\n\t\t* Shows the bound CN account's general credit balance, but ONLY while the\n\t\t* session's selected model belongs to this plugin. That condition is the whole\n\t\t* point: the sidebar foot is a single shared row, so two connector plugins each\n\t\t* parking a line there end up fighting for the same space. The composer row is\n\t\t* per-session and provider-scoped, so exactly one plugin's credits are relevant\n\t\t* at a time and nothing overlaps.\n\t\t*\n\t\t* The row itself is a bare clickable readout — `Trae CN · 657` — with NO\n\t\t* refresh control. Clicking it opens an anchored panel: a TABLE with one row\n\t\t* per account in the region and that account's general balance, where a row\n\t\t* click switches to it. The manual refresh button lives in the panel too.\n\t\t*\n\t\t* Two deliberate choices in that panel:\n\t\t*\n\t\t*  - GENERAL balance only, not Work credits. The table's one figure is the\n\t\t*    bucket the SOLO chat actually spends; two columns of numbers in a\n\t\t*    five-slot popover is noise, and the card is where the breakdown belongs.\n\t\t*  - Per-account figures are fetched ONLY while the panel is open. The\n\t\t*    5-minute readout must not multiply its upstream reads by the account\n\t\t*    count — a healthy balance should not pay for a table nobody is looking at.\n\t\t*    This is the same principle that keeps `creditAlternatives` firing only\n\t\t*    when a balance hits zero.\n\t\t*\n\t\t* The provider comes from the Host's own `modelSelection` projection rather\n\t\t* than from anything this plugin tracks: the projection is what the model\n\t\t* picker writes and what the next request will use, so the readout cannot\n\t\t* disagree with the model actually in effect.\n\t\t*/\n\t\t/**\n\t\t* Inject the readout's styles into the document head, once, on module load.\n\t\t*\n\t\t* Same idempotent pattern as the card's injection, and for the same reason: the\n\t\t* classes are attached to DOM this component owns, and `.dsm-card-*` lives in\n\t\t* `TRAE_CARD_CSS` — which only loads when the settings card does. Before this\n\t\t* existed (2.13.0–2.13.4) the trigger rendered as the browser's default button\n\t\t* box and the panel, with no `position: fixed`, had its measured left/top\n\t\t* ignored and appeared nowhere.\n\t\t*/\n\t\tif (typeof document !== \"undefined\") {\n\t\t\tconst cssId = \"dsh-connect-trae/composer-points.css\";\n\t\t\tif (!document.querySelector(`style[data-plugin-css=\"${cssId}\"]`)) {\n\t\t\t\tconst styleTag = document.createElement(\"style\");\n\t\t\t\tstyleTag.dataset.plugin = \"dsh-connect-trae\";\n\t\t\t\tstyleTag.dataset.pluginCss = cssId;\n\t\t\t\tstyleTag.textContent = COMPOSER_POINTS_CSS;\n\t\t\t\tdocument.head.appendChild(styleTag);\n\t\t\t}\n\t\t}\n\t\t/**\n\t\t* Automatic refresh period. Five minutes, matching the sidebar line: a credit\n\t\t* balance moves on the scale of model calls, not seconds, and each read is two\n\t\t* read-only upstream calls.\n\t\t*/\n\t\tconst COMPOSER_POINTS_REFRESH_INTERVAL_MS = 3e5;\n\t\t/**\n\t\t* Provider routes whose credit balance this readout can show, mapped to the\n\t\t* region to read it from.\n\t\t*\n\t\t* CN ONLY, and the restriction is the data's, not a preference: the Host builds\n\t\t* the international region's usage document from `payStatus` and never sets\n\t\t* `credits` on it (`webStatusFor` returns early for `region === 'ai'`), because\n\t\t* that side is subscription-based and has no comparable balance. Mapping\n\t\t* `trae-global` here would render the hardcoded \"Trae CN\" label next to a dash\n\t\t* — a number-slot with no number — while an international model is selected.\n\t\t*\n\t\t* Mirrors the CN half of `TRAE_PROVIDERS` on the host side; duplicated here\n\t\t* because the client bundle must not import the host entry.\n\t\t*/\n\t\tconst TRAE_COMPOSER_PROVIDERS = { \"trae\": \"cn\" };\n\t\t/** The general credit balance out of one usage document, or undefined. */\n\t\tfunction generalCreditsOf(usage) {\n\t\t\tif (usage.status !== \"signed-in\") return void 0;\n\t\t\treturn usage.credits?.generalAvailable;\n\t\t}\n\t\t/** Group the digits so a four-figure balance stays readable in a narrow row. */\n\t\tfunction formatCredits(value) {\n\t\t\treturn value.toLocaleString(\"en-US\", { maximumFractionDigits: 0 });\n\t\t}\n\t\tfunction formatClock(value) {\n\t\t\treturn new Date(value).toLocaleTimeString(\"zh-CN\", {\n\t\t\t\thour: \"2-digit\",\n\t\t\t\tminute: \"2-digit\"\n\t\t\t});\n\t\t}\n\t\tfunction ComposerPoints(props) {\n\t\t\tconst { t, provider, region, settingsScope } = props;\n\t\t\tif (t === void 0) throw new Error(\"Composer points readout requires its translation function\");\n\t\t\tconst owned = provider === void 0 ? void 0 : TRAE_COMPOSER_PROVIDERS[provider];\n\t\t\tconst activeRegion = region ?? owned;\n\t\t\tconst [usage, setUsage] = (0, react.useState)(void 0);\n\t\t\tconst [accountCredits, setAccountCredits] = (0, react.useState)(void 0);\n\t\t\tconst [busy, setBusy] = (0, react.useState)(false);\n\t\t\tconst [switchingId, setSwitchingId] = (0, react.useState)(void 0);\n\t\t\tconst [failed, setFailed] = (0, react.useState)(false);\n\t\t\tconst [lastRefresh, setLastRefresh] = (0, react.useState)(void 0);\n\t\t\tconst [open, setOpen] = (0, react.useState)(false);\n\t\t\tconst inFlight = (0, react.useRef)(false);\n\t\t\tconst mounted = (0, react.useRef)(true);\n\t\t\tconst rootRef = (0, react.useRef)(null);\n\t\t\tconst panelRef = (0, react.useRef)(null);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tmounted.current = true;\n\t\t\t\treturn () => {\n\t\t\t\t\tmounted.current = false;\n\t\t\t\t};\n\t\t\t}, []);\n\t\t\tconst position = useAnchoredPosition({\n\t\t\t\topen: open && activeRegion !== void 0,\n\t\t\t\tanchorRef: rootRef,\n\t\t\t\tpanelRef,\n\t\t\t\tside: \"top\",\n\t\t\t\tgap: 8,\n\t\t\t\tmargin: 12\n\t\t\t});\n\t\t\tuseDismissOnOutsidePointer(rootRef, open, setOpen, panelRef);\n\t\t\tconst fetchUsage = (0, react.useCallback)(async (signal) => {\n\t\t\t\tif (inFlight.current || activeRegion === void 0) return;\n\t\t\t\tinFlight.current = true;\n\t\t\t\tif (mounted.current) setBusy(true);\n\t\t\t\ttry {\n\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_USAGE_PATH, activeRegion), {\n\t\t\t\t\t\theaders: { accept: \"application/json\" },\n\t\t\t\t\t\tcredentials: \"same-origin\",\n\t\t\t\t\t\t...signal === void 0 ? {} : { signal }\n\t\t\t\t\t});\n\t\t\t\t\tif (!response.ok) throw new Error(`HTTP ${response.status}`);\n\t\t\t\t\tconst value = await response.json();\n\t\t\t\t\tif (!mounted.current || signal?.aborted === true) return;\n\t\t\t\t\tsetUsage(value);\n\t\t\t\t\tsetLastRefresh(Date.now());\n\t\t\t\t\tsetFailed(false);\n\t\t\t\t} catch {\n\t\t\t\t\tif (mounted.current && signal?.aborted !== true) setFailed(true);\n\t\t\t\t} finally {\n\t\t\t\t\tinFlight.current = false;\n\t\t\t\t\tif (mounted.current) setBusy(false);\n\t\t\t\t}\n\t\t\t}, [activeRegion]);\n\t\t\t/**\n\t\t\t* Every account's general balance — one upstream read per account.\n\t\t\t*\n\t\t\t* Paid only while the panel is open (see the note at the top of this file).\n\t\t\t* A failure keeps whatever we already have rather than clearing it: a number\n\t\t\t* that went stale is better than a switch that vanished.\n\t\t\t*/\n\t\t\tconst fetchAccountCredits = (0, react.useCallback)(async (signal) => {\n\t\t\t\tif (activeRegion === void 0) return;\n\t\t\t\ttry {\n\t\t\t\t\tconst response = await fetch(withTraeRegion(TRAE_ACCOUNT_CREDITS_PATH, activeRegion), {\n\t\t\t\t\t\theaders: { accept: \"application/json\" },\n\t\t\t\t\t\tcredentials: \"same-origin\",\n\t\t\t\t\t\t...signal === void 0 ? {} : { signal }\n\t\t\t\t\t});\n\t\t\t\t\tif (!response.ok) throw new Error(`HTTP ${response.status}`);\n\t\t\t\t\tconst data = await response.json();\n\t\t\t\t\tif (!mounted.current || signal?.aborted === true) return;\n\t\t\t\t\tif (Array.isArray(data.accounts)) setAccountCredits(data.accounts);\n\t\t\t\t} catch {}\n\t\t\t}, [activeRegion]);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tif (owned === void 0) return void 0;\n\t\t\t\tlet cancelled = false;\n\t\t\t\tlet timer;\n\t\t\t\tconst controller = new AbortController();\n\t\t\t\tfetchUsage(controller.signal).finally(() => {\n\t\t\t\t\tif (cancelled) return;\n\t\t\t\t\ttimer = window.setInterval(() => {\n\t\t\t\t\t\tfetchUsage(controller.signal);\n\t\t\t\t\t}, COMPOSER_POINTS_REFRESH_INTERVAL_MS);\n\t\t\t\t});\n\t\t\t\treturn () => {\n\t\t\t\t\tcancelled = true;\n\t\t\t\t\tif (timer !== void 0) window.clearInterval(timer);\n\t\t\t\t\tcontroller.abort();\n\t\t\t\t};\n\t\t\t}, [owned, fetchUsage]);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tif (!open || activeRegion === void 0) return void 0;\n\t\t\t\tconst controller = new AbortController();\n\t\t\t\tfetchAccountCredits(controller.signal);\n\t\t\t\treturn () => {\n\t\t\t\t\tcontroller.abort();\n\t\t\t\t};\n\t\t\t}, [\n\t\t\t\topen,\n\t\t\t\tactiveRegion,\n\t\t\t\tfetchAccountCredits\n\t\t\t]);\n\t\t\t(0, react.useEffect)(() => {\n\t\t\t\tif (!open) return void 0;\n\t\t\t\tconst onKeyDown = (event) => {\n\t\t\t\t\tif (event.key === \"Escape\") setOpen(false);\n\t\t\t\t};\n\t\t\t\tdocument.addEventListener(\"keydown\", onKeyDown);\n\t\t\t\treturn () => {\n\t\t\t\t\tdocument.removeEventListener(\"keydown\", onKeyDown);\n\t\t\t\t};\n\t\t\t}, [open]);\n\t\t\t/**\n\t\t\t* Switch to another account, then re-read both the usage document and the\n\t\t\t* table so the marker, the readout, and the panel all move together.\n\t\t\t*\n\t\t\t* The merge goes through the shared `configuredAccountsOf` helper (the card\n\t\t\t* uses the same one): writing only `[region]: id` would drop the other\n\t\t\t* region's selection. The write is read-back checked — `set()` resolving is\n\t\t\t* not proof it landed — so a refused write reports failure instead of\n\t\t\t* showing a marker on an account that was never selected.\n\t\t\t*/\n\t\t\tconst switchTo = async (accountId) => {\n\t\t\t\tif (settingsScope === void 0 || settingsScope.getSnapshot().writable !== true) return;\n\t\t\t\tif (activeRegion === void 0 || switchingId !== void 0) return;\n\t\t\t\tif (accountId === (accountCredits?.find((account) => account.selected)?.id ?? (usage?.status === \"signed-in\" ? usage.accountId : void 0))) return;\n\t\t\t\tsetSwitchingId(accountId);\n\t\t\t\tsetFailed(false);\n\t\t\t\ttry {\n\t\t\t\t\tconst configured = configuredAccountsOf(settingsScope.getSnapshot().value);\n\t\t\t\t\tconst accepted = await settingsScope.set(\"accounts\", {\n\t\t\t\t\t\t...configured,\n\t\t\t\t\t\t[activeRegion]: accountId\n\t\t\t\t\t});\n\t\t\t\t\tconst readBack = configuredAccountsOf(settingsScope.getSnapshot().value);\n\t\t\t\t\tif (accepted === false || readBack[activeRegion] !== accountId) throw new Error(\"the Host did not persist the switch\");\n\t\t\t\t\tawait fetchUsage();\n\t\t\t\t\tawait fetchAccountCredits();\n\t\t\t\t} catch {\n\t\t\t\t\tif (mounted.current) setFailed(true);\n\t\t\t\t} finally {\n\t\t\t\t\tif (mounted.current) setSwitchingId(void 0);\n\t\t\t\t}\n\t\t\t};\n\t\t\tif (owned === void 0) return null;\n\t\t\tconst signedIn = usage?.status === \"signed-in\" ? usage : void 0;\n\t\t\tconst general = signedIn === void 0 ? void 0 : generalCreditsOf(signedIn);\n\t\t\tconst signedOut = usage !== void 0 && usage.status === \"signed-out\";\n\t\t\tconst valueText = general === void 0 ? \"—\" : formatCredits(general);\n\t\t\tconst label = t(\"composer.points\");\n\t\t\t/**\n\t\t\t* The table's rows: every account in this region, with its general balance.\n\t\t\t*\n\t\t\t* The endpoint's answer is authoritative (it carries the figures). Before it\n\t\t\t* lands — or if it fails — fall back to the usage document's account list so\n\t\t\t* the switches are reachable immediately, showing `—` for the figure rather\n\t\t\t* than a spinner the user has to wait on.\n\t\t\t*/\n\t\t\tconst selectedId = accountCredits?.find((account) => account.selected)?.id ?? (signedIn === void 0 ? void 0 : signedIn.accountId);\n\t\t\tconst rows = (accountCredits ?? (signedIn === void 0 ? [] : signedIn.accounts.filter((account) => account.region === activeRegion).map((account) => ({\n\t\t\t\tid: account.id,\n\t\t\t\taccountName: account.accountName,\n\t\t\t\tselected: account.selected\n\t\t\t})))).map((row) => {\n\t\t\t\tif (row.id !== selectedId || row.generalAvailable !== void 0 || general === void 0) return row;\n\t\t\t\treturn {\n\t\t\t\t\t...row,\n\t\t\t\t\tgeneralAvailable: general\n\t\t\t\t};\n\t\t\t});\n\t\t\tconst canSwitch = settingsScope !== void 0 && settingsScope.getSnapshot().writable === true;\n\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", {\n\t\t\t\tref: rootRef,\n\t\t\t\tclassName: \"dsm-trae-composer-points\",\n\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"button\", {\n\t\t\t\t\ttype: \"button\",\n\t\t\t\t\tclassName: \"dsm-trae-composer-points-trigger\",\n\t\t\t\t\t\"aria-haspopup\": \"dialog\",\n\t\t\t\t\t\"aria-expanded\": open,\n\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\tsetOpen(!open);\n\t\t\t\t\t},\n\t\t\t\t\tchildren: [\n\t\t\t\t\t\tlabel,\n\t\t\t\t\t\t\" · \",\n\t\t\t\t\t\tvalueText\n\t\t\t\t\t]\n\t\t\t\t}), open && (0, react_dom.createPortal)(/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\tref: panelRef,\n\t\t\t\t\tclassName: \"dsm-trae-composer-panel\",\n\t\t\t\t\tstyle: position ?? {\n\t\t\t\t\t\tvisibility: \"hidden\",\n\t\t\t\t\t\tleft: 0,\n\t\t\t\t\t\ttop: 0\n\t\t\t\t\t},\n\t\t\t\t\trole: \"dialog\",\n\t\t\t\t\t\"aria-label\": t(\"composer.panelTitle\"),\n\t\t\t\t\tchildren: [\n\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"div\", {\n\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-head\",\n\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-title\",\n\t\t\t\t\t\t\t\tchildren: t(\"composer.panelTitle\")\n\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"button\", {\n\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-refresh\",\n\t\t\t\t\t\t\t\tdisabled: busy || switchingId !== void 0,\n\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\tfetchUsage();\n\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\tchildren: busy ? t(\"composer.refreshing\") : t(\"composer.refresh\")\n\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t}),\n\t\t\t\t\t\tsignedOut ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-empty\",\n\t\t\t\t\t\t\tchildren: t(\"composer.signedOut\")\n\t\t\t\t\t\t}) : rows.length === 0 ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-empty\",\n\t\t\t\t\t\t\tchildren: t(\"composer.noAccounts\")\n\t\t\t\t\t\t}) : /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"table\", {\n\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-table\",\n\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"thead\", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"tr\", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"th\", {\n\t\t\t\t\t\t\t\tscope: \"col\",\n\t\t\t\t\t\t\t\tchildren: t(\"composer.account\")\n\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"th\", {\n\t\t\t\t\t\t\t\tscope: \"col\",\n\t\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-num\",\n\t\t\t\t\t\t\t\tchildren: t(\"composer.generalCredits\")\n\t\t\t\t\t\t\t})] }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"tbody\", { children: rows.map((row) => {\n\t\t\t\t\t\t\t\tconst current = row.id === selectedId;\n\t\t\t\t\t\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"tr\", {\n\t\t\t\t\t\t\t\t\tclassName: current ? \"dsm-trae-composer-panel-row-current\" : void 0,\n\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"th\", {\n\t\t\t\t\t\t\t\t\t\tscope: \"row\",\n\t\t\t\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"button\", {\n\t\t\t\t\t\t\t\t\t\t\ttype: \"button\",\n\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-switch\",\n\t\t\t\t\t\t\t\t\t\t\tdisabled: !canSwitch || switchingId !== void 0 || current,\n\t\t\t\t\t\t\t\t\t\t\t\"aria-label\": t(\"composer.switchTo\", { account: row.accountName }),\n\t\t\t\t\t\t\t\t\t\t\tonClick: () => {\n\t\t\t\t\t\t\t\t\t\t\t\tswitchTo(row.id);\n\t\t\t\t\t\t\t\t\t\t\t},\n\t\t\t\t\t\t\t\t\t\t\tchildren: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"span\", {\n\t\t\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-dot\",\n\t\t\t\t\t\t\t\t\t\t\t\t\"aria-hidden\": \"true\"\n\t\t\t\t\t\t\t\t\t\t\t}), row.accountName]\n\t\t\t\t\t\t\t\t\t\t})\n\t\t\t\t\t\t\t\t\t}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"td\", {\n\t\t\t\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-num\",\n\t\t\t\t\t\t\t\t\t\tchildren: row.generalAvailable === void 0 ? \"—\" : formatCredits(row.generalAvailable)\n\t\t\t\t\t\t\t\t\t})]\n\t\t\t\t\t\t\t\t}, row.id);\n\t\t\t\t\t\t\t}) })]\n\t\t\t\t\t\t}),\n\t\t\t\t\t\t/* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"div\", {\n\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-foot\",\n\t\t\t\t\t\t\tchildren: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(\"span\", { children: [\n\t\t\t\t\t\t\t\tt(\"composer.lastRefresh\"),\n\t\t\t\t\t\t\t\t\" \",\n\t\t\t\t\t\t\t\tlastRefresh === void 0 ? \"—\" : formatClock(lastRefresh)\n\t\t\t\t\t\t\t] })\n\t\t\t\t\t\t}),\n\t\t\t\t\t\tfailed ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)(\"p\", {\n\t\t\t\t\t\t\tclassName: \"dsm-trae-composer-panel-error\",\n\t\t\t\t\t\t\trole: \"status\",\n\t\t\t\t\t\t\tchildren: t(\"composer.refreshFailed\")\n\t\t\t\t\t\t}) : null\n\t\t\t\t\t]\n\t\t\t\t}), document.body)]\n\t\t\t});\n\t\t}\n\t\t//#endregion\n\t\t//#region src/client/ComposerPointsGate.tsx\n\t\t/**\n\t\t* Decides whether the composer credit readout belongs in this session, by\n\t\t* reading the Host's own `modelSelection` projection and the plugin's\n\t\t* `showPointsInMainUi` switch.\n\t\t*\n\t\t* Kept separate from {@link ComposerPoints} (and from the browser-plugin entry)\n\t\t* so the decision can be unit-tested without a Host: the entry imports\n\t\t* browser-only DSH packages the test environment cannot load, while this module\n\t\t* depends only on React and a narrow projection shape.\n\t\t*\n\t\t* WHY the projection rather than this plugin's own state: the projection is\n\t\t* what the model picker writes and what the next request will use, so the\n\t\t* readout cannot disagree with the model actually in effect. `next` outranks\n\t\t* `lastUsed` because a selection that has been made but not yet sent is still\n\t\t* what the composer shows the user.\n\t\t*\n\t\t* The switch is read the same way the retired sidebar gate read it: absent or\n\t\t* false means OFF, and only an explicit `true` shows the readout. The composer\n\t\t* row is shared with the shell's own permission/agent/model controls, so the\n\t\t* readout must be asked for, not imposed — 2.13.0 rendered it unconditionally\n\t\t* and 2.13.3 restored the opt-in after the user went looking for the switch.\n\t\t*/\n\t\t/**\n\t\t* The provider route the session is currently pointed at.\n\t\t*\n\t\t* `next` wins over `lastUsed`: a switch that has landed but not yet been sent\n\t\t* is still the selection the composer displays.\n\t\t*/\n\t\tfunction selectedProviderOf(projection) {\n\t\t\tconst provider = (projection?.next ?? projection?.lastUsed)?.provider;\n\t\t\treturn typeof provider === \"string\" && provider !== \"\" ? provider : void 0;\n\t\t}\n\t\t/**\n\t\t* Read the composer-readout switch out of a committed settings snapshot.\n\t\t*\n\t\t* Absent means OFF, matching the host default (`false`): a scope that has not\n\t\t* populated yet, or a host too old to serve the field, must not put a row in\n\t\t* the composer toolbar that the user never asked for.\n\t\t*/\n\t\tfunction composerPointsEnabledOf(scope) {\n\t\t\tif (scope === void 0) return false;\n\t\t\treturn unwrapVolatileDeep(scope.getSnapshot().value)?.showPointsInMainUi === true;\n\t\t}\n\t\tfunction ComposerPointsGate(props) {\n\t\t\tconst { t, settingsScope, useProjection } = props;\n\t\t\tconst [enabled, setEnabled] = (0, react.useState)(() => composerPointsEnabledOf(settingsScope));\n\t\t\t(0, react.useEffect)(() => settingsScope?.subscribe(() => {\n\t\t\t\tsetEnabled(composerPointsEnabledOf(settingsScope));\n\t\t\t}), [settingsScope]);\n\t\t\tconst projection = useProjection === void 0 ? void 0 : useProjection(\"modelSelection\");\n\t\t\tif (!enabled) return null;\n\t\t\tconst provider = selectedProviderOf(projection);\n\t\t\tconst region = provider === void 0 ? void 0 : TRAE_COMPOSER_PROVIDERS[provider];\n\t\t\tif (region === void 0) return null;\n\t\t\treturn /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ComposerPoints, {\n\t\t\t\tt,\n\t\t\t\tprovider,\n\t\t\t\tregion,\n\t\t\t\t...settingsScope === void 0 ? {} : { settingsScope }\n\t\t\t});\n\t\t}\n\t\t//#endregion\n\t\t//#region src/client/locales.ts\n\t\t/**\n\t\t* Plugin-card copy registered under the settings.trae locale namespace.\n\t\t* Key shape follows `dsh-subagent-default-model`'s `row.*` convention so the\n\t\t* two plugins share one external-presentation language.\n\t\t*/\n\t\tconst en = {\n\t\t\t\"row.title\": \"Trae credits & models (dsh-connect-trae)\",\n\t\t\t\"row.desc\": \"Use Trae models in DSH and see your remaining credits; the domestic and international sides are two independent providers, each with its own account — use both at the same time.\",\n\t\t\t\"row.expand\": \"Expand\",\n\t\t\t\"row.collapse\": \"Collapse\",\n\t\t\t\"row.tabCn\": \"Domestic\",\n\t\t\t\"row.tabAi\": \"Global\",\n\t\t\t\"row.tabHint\": \"Each tab is a separate provider (trae / trae-global) with its own account, usage, and models. Both sides are live at once: different sessions can pick from either side, and changes on one tab never touch the other.\",\n\t\t\t\"row.tabSwitchHint\": \"Uncheck to switch this provider off. Its models disappear from the DSH model picker; its account, usage, and model settings are kept and return when you check it again.\",\n\t\t\t\"row.tabSwitchAria\": \"Offer the {region} provider to DSH\",\n\t\t\t\"row.tabOffNotice\": \"This provider is switched off: none of its models are offered to DSH. Your account, usage, and model settings are kept — check the box above the tab to bring it back.\",\n\t\t\t\"row.settingsWriteFailed\": \"The setting was not saved: {message}\",\n\t\t\t\"row.signedOut\": \"Not signed in\",\n\t\t\t\"row.signedOutHint\": \"Sign in once in the Trae desktop app; this plugin follows that sign-in automatically.\",\n\t\t\t\"row.searchedTitle\": \"Paths checked\",\n\t\t\t\"row.searchedHint\": \"No sign-in was found. These locations were probed; if your Trae stores its login elsewhere, please report the path.\",\n\t\t\t\"row.searchedMore\": \"Show {count} more\",\n\t\t\t\"row.reasonMissing\": \"not found\",\n\t\t\t\"row.reasonUnreadable\": \"unreadable\",\n\t\t\t\"row.reasonInvalid\": \"unreadable format\",\n\t\t\t\"row.sourceDesktop\": \"desktop app\",\n\t\t\t\"row.sourceCli\": \"Trae CLI\",\n\t\t\t\"row.signedIn\": \"Signed in: {accountName}\",\n\t\t\t\"row.tokenExpiry\": \"Access token expires {expiresAt} (auto-renewal)\",\n\t\t\t\"row.requestFailed\": \"Request failed\",\n\t\t\t\"row.creditsAvailableLabel\": \"Available\",\n\t\t\t\"row.workCreditsLabel\": \"Work credits\",\n\t\t\t\"row.generalCreditsLabel\": \"General credits\",\n\t\t\t\"row.workNotUsable\": \"Not usable in DSH\",\n\t\t\t\"row.generalUsable\": \"Usable\",\n\t\t\t\"row.workUsableHint\": \"Only inside the Trae app\",\n\t\t\t\"row.generalUsableHint\": \"Powers DSH chat & tools\",\n\t\t\t\"row.creditsConsumedLabel\": \"Consumed\",\n\t\t\t\"row.creditsTotalLabel\": \"Total\",\n\t\t\t\"row.creditsError\": \"Usage unavailable: {message}\",\n\t\t\t\"row.checkinLabel\": \"Daily check-in\",\n\t\t\t\"row.checkinReward\": \"{reward} credits per day\",\n\t\t\t\"row.checkinClaim\": \"Claim today\",\n\t\t\t\"row.checkinClaiming\": \"Claiming…\",\n\t\t\t\"row.checkinClaimed\": \"Claimed today\",\n\t\t\t\"row.checkinDoneHint\": \"come back tomorrow\",\n\t\t\t\"row.checkinRefused\": \"Trae refused the check-in (code {code})\",\n\t\t\t\"row.checkinError\": \"Check-in failed: {message}\",\n\t\t\t\"row.checkinDeviceSpent\": \"This machine already used today's check-in — Trae allows one per device per day, so this account cannot claim here today. Claim it on another device or from the account that checked in, or come back tomorrow.\",\n\t\t\t\"row.checkinDisabled\": \"This account has no check-in activity available.\",\n\t\t\t\"row.regionCn\": \"CN\",\n\t\t\t\"row.regionAi\": \"International\",\n\t\t\t\"row.subscriptionLabel\": \"Subscription\",\n\t\t\t\"row.subscribed\": \"Active package\",\n\t\t\t\"row.noPackage\": \"No active package\",\n\t\t\t\"row.trialUntil\": \"Trial until {date}\",\n\t\t\t\"row.payStatusError\": \"Subscription status unavailable: {message}\",\n\t\t\t\"row.refresh\": \"Refresh\",\n\t\t\t\"row.refreshTokens\": \"Refresh accounts & tokens\",\n\t\t\t\"row.refreshCredits\": \"Refresh usage\",\n\t\t\t\"row.refreshing\": \"Refreshing…\",\n\t\t\t\"row.accountsTitle\": \"Trae account\",\n\t\t\t\"row.accountsHint\": \"Choose from locally detected sign-ins. Tokens are never shown or saved in DSH settings.\",\n\t\t\t\"row.accountsRescan\": \"Detect accounts again\",\n\t\t\t\"row.accountsScanning\": \"Detecting…\",\n\t\t\t\"row.modelsTitle\": \"Models\",\n\t\t\t\"row.modelsSummary\": \"{count} enabled\",\n\t\t\t\"row.modelsRefresh\": \"Refresh from Trae\",\n\t\t\t\"row.modelsRefreshing\": \"Refreshing models…\",\n\t\t\t\"row.modelsTestEnabled\": \"Test enabled models\",\n\t\t\t\"row.modelsTesting\": \"Testing {done}/{total}…\",\n\t\t\t\"row.modelsTestHint\": \"Sends one minimal message per enabled model to see which ones actually answer. Costs a small amount of quota.\",\n\t\t\t\"row.showPointsInMainUi\": \"Show credits in the composer row\",\n\t\t\t\"row.showPointsInMainUiHint\": \"Show a clickable Trae CN · <balance> readout in the composer tool row, only while the selected model belongs to this plugin. Click it for the account and balance panel.\",\n\t\t\t\"composer.switchTo\": \"Switch to {account}\",\n\t\t\t\"composer.noAccounts\": \"No account in this region\",\n\t\t\t\"composer.panelTitle\": \"Trae credits\",\n\t\t\t\"composer.account\": \"Account\",\n\t\t\t\"composer.generalCredits\": \"General credits\",\n\t\t\t\"composer.lastRefresh\": \"Last refreshed\",\n\t\t\t\"composer.signedOut\": \"Not signed in\",\n\t\t\t\"composer.points\": \"Trae CN\",\n\t\t\t\"composer.refresh\": \"Refresh credits\",\n\t\t\t\"composer.refreshing\": \"Refreshing credits…\",\n\t\t\t\"composer.refreshFailed\": \"Could not refresh credits\",\n\t\t\t\"row.accountsRefreshed\": \"Accounts refreshed: {count} found{selected}\",\n\t\t\t\"row.accountsKept\": \"still bound to\",\n\t\t\t\"row.accountsRefreshedNone\": \"Accounts refreshed: no usable Trae account found\",\n\t\t\t\"row.accountsRescanFailed\": \"Could not refresh accounts: {message}\",\n\t\t\t\"row.editionCn\": \"Trae\",\n\t\t\t\"row.editionSg\": \"Trae (international)\",\n\t\t\t\"row.editionSolo\": \"TRAE SOLO\",\n\t\t\t\"row.editionSoloSg\": \"TRAE SOLO (international)\",\n\t\t\t\"row.creditsExhausted\": \"The bound account ({account}) has run out of credit\",\n\t\t\t\"row.creditsAlternative\": \"Another account on this machine still has credit: {accounts}\",\n\t\t\t\"row.creditsAlternativeSwitch\": \"Switch to it\",\n\t\t\t\"row.modelsTestEmpty\": \"Enable at least one model first.\",\n\t\t\t\"row.modelsTestError\": \"Test failed: {message}\",\n\t\t\t\"row.modelsTestDone\": \"{available} of {total} answered.\",\n\t\t\t\"row.probeAvailable\": \"works\",\n\t\t\t\"row.probeGated\": \"needs a higher plan\",\n\t\t\t\"row.probeUnsupported\": \"not served\",\n\t\t\t\"row.probeRateLimited\": \"throttled\",\n\t\t\t\"row.probeAuth\": \"sign-in rejected\",\n\t\t\t\"row.probeUnknown\": \"not determined\",\n\t\t\t\"row.modelEnabled\": \"Enabled\",\n\t\t\t\"row.discard\": \"Discard changes\",\n\t\t\t\"row.save\": \"Save\",\n\t\t\t\"row.saving\": \"Saving…\",\n\t\t\t\"row.modelContext\": \"Max context {context}\",\n\t\t\t\"row.contextBudget\": \"DSH context budget\",\n\t\t\t\"row.modelOutput\": \"Output {output}\",\n\t\t\t\"row.modelImage\": \"Image\",\n\t\t\t\"row.modelImageAuto\": \"Enabled automatically: Trae marks this model multimodal.\",\n\t\t\t\"row.modelRate\": \"{rate}x credits\",\n\t\t\t\"row.modelReasoning\": \"Reasoning: {efforts}\",\n\t\t\t\"row.modelReasoningSupported\": \"Reasoning: supported\",\n\t\t\t\"row.modelUnknown\": \"Unknown\",\n\t\t\t\"row.modelCapabilityPending\": \"Image input follows Trae's own multimodal flag, plus anything you tick yourself.\",\n\t\t\t\"row.cheer\": \"Star on GitHub\"\n\t\t};\n\t\tconst zh = {\n\t\t\t\"row.title\": \"接入使用Trae积分与模型（dsh-connect-trae）\",\n\t\t\t\"row.desc\": \"在 DSH 中使用 Trae 模型并随时查看剩余积分；国内版与国际版是两个独立供应商，各有自己的账号，可同时使用。\",\n\t\t\t\"row.expand\": \"展开\",\n\t\t\t\"row.collapse\": \"收起\",\n\t\t\t\"row.tabCn\": \"国内版\",\n\t\t\t\"row.tabAi\": \"国际版\",\n\t\t\t\"row.tabHint\": \"每个 tab 是一个独立供应商（trae / trae-global），各有自己的账号、用量与模型。两边同时生效：不同会话可各选一边，一侧的改动不影响另一侧。\",\n\t\t\t\"row.tabSwitchHint\": \"取消勾选即关闭该供应商：它的模型不再出现在 DSH 模型选择器里；账号、用量与模型设置都会保留，重新勾选即恢复。\",\n\t\t\t\"row.tabSwitchAria\": \"是否向 DSH 提供{region}供应商\",\n\t\t\t\"row.tabOffNotice\": \"该供应商已关闭：它的模型不会提供给 DSH。账号、用量与模型设置均已保留——勾选上方复选框即可恢复。\",\n\t\t\t\"row.settingsWriteFailed\": \"设置未能保存：{message}\",\n\t\t\t\"row.signedOut\": \"未登录\",\n\t\t\t\"row.signedOutHint\": \"在 Trae 桌面 App 里登录一次即可，插件会自动跟随当前登录的账号。\",\n\t\t\t\"row.searchedTitle\": \"已检查的路径\",\n\t\t\t\"row.searchedHint\": \"未找到登录信息。以下是插件探测过的位置；如果你的 Trae 把登录信息存在别处，请把该路径反馈给我们。\",\n\t\t\t\"row.searchedMore\": \"展开其余 {count} 条\",\n\t\t\t\"row.reasonMissing\": \"文件不存在\",\n\t\t\t\"row.reasonUnreadable\": \"无法读取\",\n\t\t\t\"row.reasonInvalid\": \"格式无法识别\",\n\t\t\t\"row.sourceDesktop\": \"桌面版\",\n\t\t\t\"row.sourceCli\": \"Trae CLI\",\n\t\t\t\"row.signedIn\": \"已登录：{accountName}\",\n\t\t\t\"row.tokenExpiry\": \"访问令牌 {expiresAt} 过期（自动续期）\",\n\t\t\t\"row.requestFailed\": \"请求失败\",\n\t\t\t\"row.creditsAvailableLabel\": \"可用\",\n\t\t\t\"row.workCreditsLabel\": \"Work 积分\",\n\t\t\t\"row.generalCreditsLabel\": \"通用积分\",\n\t\t\t\"row.workNotUsable\": \"DSH 不可用\",\n\t\t\t\"row.generalUsable\": \"可用\",\n\t\t\t\"row.workUsableHint\": \"仅限 Trae 客户端内使用\",\n\t\t\t\"row.generalUsableHint\": \"供 DSH 聊天与工具使用\",\n\t\t\t\"row.creditsConsumedLabel\": \"消耗\",\n\t\t\t\"row.creditsTotalLabel\": \"合计\",\n\t\t\t\"row.creditsError\": \"用量查询失败：{message}\",\n\t\t\t\"row.checkinLabel\": \"每日签到\",\n\t\t\t\"row.checkinReward\": \"每日 {reward} 积分\",\n\t\t\t\"row.checkinClaim\": \"立即领取\",\n\t\t\t\"row.checkinClaiming\": \"领取中…\",\n\t\t\t\"row.checkinClaimed\": \"今日已领取\",\n\t\t\t\"row.checkinDoneHint\": \"明天再来\",\n\t\t\t\"row.checkinRefused\": \"Trae 拒绝了本次签到（业务码 {code}）\",\n\t\t\t\"row.checkinError\": \"签到失败：{message}\",\n\t\t\t\"row.checkinDeviceSpent\": \"本机今日的签到已用掉——Trae 按「每台设备每天一次」限制，所以当前账号在本机今天无法再签。可换一台设备领取，或用今天已签到的那台设备/账号，或明天再来。\",\n\t\t\t\"row.checkinDisabled\": \"该账号当前没有可用的签到活动。\",\n\t\t\t\"row.regionCn\": \"国内版\",\n\t\t\t\"row.regionAi\": \"国际版\",\n\t\t\t\"row.subscriptionLabel\": \"订阅状态\",\n\t\t\t\"row.subscribed\": \"已有有效套餐\",\n\t\t\t\"row.noPackage\": \"暂无有效套餐\",\n\t\t\t\"row.trialUntil\": \"试用至 {date}\",\n\t\t\t\"row.payStatusError\": \"订阅状态查询失败：{message}\",\n\t\t\t\"row.refresh\": \"刷新\",\n\t\t\t\"row.refreshTokens\": \"刷新账号与 Token\",\n\t\t\t\"row.refreshCredits\": \"刷新用量\",\n\t\t\t\"row.refreshing\": \"正在刷新…\",\n\t\t\t\"row.accountsTitle\": \"Trae 账号\",\n\t\t\t\"row.accountsHint\": \"选择本机检测到的登录账号；Token 不会显示，也不会保存到 DSH 设置。\",\n\t\t\t\"row.accountsRescan\": \"重新检测账号\",\n\t\t\t\"row.accountsScanning\": \"正在检测…\",\n\t\t\t\"row.modelsTitle\": \"模型\",\n\t\t\t\"row.modelsSummary\": \"已启用 {count} 个\",\n\t\t\t\"row.modelsRefresh\": \"从 Trae 刷新\",\n\t\t\t\"row.modelsRefreshing\": \"正在刷新模型…\",\n\t\t\t\"row.modelsTestEnabled\": \"一键测试启用模型\",\n\t\t\t\"row.modelsTesting\": \"正在测试 {done}/{total}…\",\n\t\t\t\"row.modelsTestHint\": \"给每个已启用模型发一条最小消息，看哪些真的能应答。会消耗少量额度。\",\n\t\t\t\"row.showPointsInMainUi\": \"在输入框工具栏显示积分读数\",\n\t\t\t\"row.showPointsInMainUiHint\": \"在输入框工具栏显示可点击的「Trae CN · 余额」读数，仅当选中的模型属于本插件时出现；点击可查看账号与积分明细。\",\n\t\t\t\"composer.switchTo\": \"切换到 {account}\",\n\t\t\t\"composer.noAccounts\": \"该区域暂无账号\",\n\t\t\t\"composer.panelTitle\": \"Trae 积分\",\n\t\t\t\"composer.account\": \"账号\",\n\t\t\t\"composer.generalCredits\": \"通用积分\",\n\t\t\t\"composer.lastRefresh\": \"最近刷新\",\n\t\t\t\"composer.signedOut\": \"未登录\",\n\t\t\t\"composer.points\": \"Trae CN\",\n\t\t\t\"composer.refresh\": \"刷新积分\",\n\t\t\t\"composer.refreshing\": \"正在刷新积分…\",\n\t\t\t\"composer.refreshFailed\": \"积分刷新失败\",\n\t\t\t\"row.accountsRefreshed\": \"已刷新账号：找到 {count} 个账号{selected}\",\n\t\t\t\"row.accountsKept\": \"仍绑定\",\n\t\t\t\"row.accountsRefreshedNone\": \"已刷新账号：未找到可用的 Trae 账号\",\n\t\t\t\"row.accountsRescanFailed\": \"刷新账号失败：{message}\",\n\t\t\t\"row.editionCn\": \"Trae\",\n\t\t\t\"row.editionSg\": \"Trae 国际版\",\n\t\t\t\"row.editionSolo\": \"TRAE SOLO\",\n\t\t\t\"row.editionSoloSg\": \"TRAE SOLO 国际版\",\n\t\t\t\"row.creditsExhausted\": \"当前绑定账号（{account}）额度已用尽\",\n\t\t\t\"row.creditsAlternative\": \"本机还有可用账号：{accounts}\",\n\t\t\t\"row.creditsAlternativeSwitch\": \"切换到它\",\n\t\t\t\"row.modelsTestEmpty\": \"请先启用至少一个模型。\",\n\t\t\t\"row.modelsTestError\": \"测试失败：{message}\",\n\t\t\t\"row.modelsTestDone\": \"{total} 个里有 {available} 个正常应答。\",\n\t\t\t\"row.probeAvailable\": \"可用\",\n\t\t\t\"row.probeGated\": \"需要更高档位\",\n\t\t\t\"row.probeUnsupported\": \"上游不提供\",\n\t\t\t\"row.probeRateLimited\": \"被限流\",\n\t\t\t\"row.probeAuth\": \"登录凭据被拒\",\n\t\t\t\"row.probeUnknown\": \"本次未测出\",\n\t\t\t\"row.modelEnabled\": \"启用模型\",\n\t\t\t\"row.discard\": \"放弃修改\",\n\t\t\t\"row.save\": \"保存\",\n\t\t\t\"row.saving\": \"保存中…\",\n\t\t\t\"row.modelContext\": \"最大上下文 {context}\",\n\t\t\t\"row.contextBudget\": \"DSH 上下文预算\",\n\t\t\t\"row.modelOutput\": \"最大输出 {output}\",\n\t\t\t\"row.modelImage\": \"图片\",\n\t\t\t\"row.modelImageAuto\": \"已自动开启：Trae 把该模型标为多模态。\",\n\t\t\t\"row.modelRate\": \"积分 {rate}x\",\n\t\t\t\"row.modelReasoning\": \"推理强度：{efforts}\",\n\t\t\t\"row.modelReasoningSupported\": \"推理：支持\",\n\t\t\t\"row.modelUnknown\": \"未知\",\n\t\t\t\"row.modelCapabilityPending\": \"图片输入跟随 Trae 自身的多模态标注，并叠加你手动勾选的模型。\",\n\t\t\t\"row.cheer\": \"鼓励一下\"\n\t\t};\n\t\t//#endregion\n\t\t//#region src/client/index.tsx\n\t\t/** Stable browser-plugin name. */\n\t\tconst name = \"dsh-connect-trae-client\";\n\t\t/**\n\t\t* Client services required by the Plugin configuration contribution.\n\t\t*\n\t\t* Deliberately only the two services the 0.1.7 line provides unconditionally:\n\t\t* `slots` (card injection) and `locale` (copy). The settings surface is probed\n\t\t* through `ctx.get()` (which returns undefined, never throws, for an absent\n\t\t* service), so the card degrades to read-only rather than failing to load if\n\t\t* configForms is not served yet.\n\t\t*/\n\t\tconst inject = [\"slots\", \"locale\"];\n\t\t/**\n\t\t* Register card copy and the Trae card under Plugin configuration.\n\t\t*\n\t\t* The entire body is wrapped so that a DSH slot-API breaking change (for\n\t\t* example the rc.6→rc.7 `id`→`key` / `order`→`priority` rename) degrades\n\t\t* to a `console.error` instead of throwing into the DSH loader and raising\n\t\t* the red \"Failed to load plugins\" banner. The host provider keeps working:\n\t\t* the `trae` model channel is unaffected.\n\t\t*\n\t\t* NOTE: the try/catch boundary of this function is mirrored (duplicated) in\n\t\t* `tests/client-fallback.spec.ts`, because the real client entry imports\n\t\t* browser-only DSH packages that cannot load in the Node test environment.\n\t\t* If you change the guarded body, the soft probe, or the per-slot\n\t\t* registration here, update that mirror too.\n\t\t*/\n\t\tfunction apply(ctx) {\n\t\t\ttry {\n\t\t\t\tconst namespace = \"settings.trae\";\n\t\t\t\tctx.effect(() => ctx.locale.register(namespace, {\n\t\t\t\t\tzh,\n\t\t\t\t\ten\n\t\t\t\t}), \"dsh-connect-trae: settings copy\");\n\t\t\t\tconst t = ctx.locale.bind(namespace);\n\t\t\t\tconst softGet = (name) => ctx.get(name);\n\t\t\t\tconst forms = softGet(\"configForms\");\n\t\t\t\t/**\n\t\t\t\t* The card's settings scope, bound to whichever namespace the Host actually\n\t\t\t\t* serves — resolved from the describe mirror, and RE-BOUND whenever the\n\t\t\t\t* mirror changes.\n\t\t\t\t*\n\t\t\t\t* The mirror answers asynchronously relative to this plugin's `apply()`\n\t\t\t\t* (and, on a profile reload, may gain namespaces that did not exist at\n\t\t\t\t* boot — this plugin's entry is exactly such a case). Resolving the\n\t\t\t\t* namespace ONCE at apply time and falling back to the declared constant\n\t\t\t\t* is a real failure: the form controller is bound to its namespace forever,\n\t\t\t\t* so a card whose entry appeared after the mirror's first load writes to\n\t\t\t\t* `trae` — a namespace the host does not serve — and every write is\n\t\t\t\t* refused (`No configurable plugin entry \"trae\"`), while the controls stay\n\t\t\t\t* enabled (the mirror reports global `writable` even when the namespace is\n\t\t\t\t* missing).\n\t\t\t\t*\n\t\t\t\t* The scope therefore forwards every read/write to the CURRENT controller:\n\t\t\t\t* once the mirror lists the trae namespace (any name matching `/trae/i`,\n\t\t\t\t* e.g. `dsh-connect-trae` or `include:dsh-connect-trae`), the card lands on\n\t\t\t\t* the right namespace and re-renders through its own subscription. Before\n\t\t\t\t* the mirror answers, the scope reports `writable: false` so the card is\n\t\t\t\t* read-only rather than offering controls that cannot save.\n\t\t\t\t*/\n\t\t\t\tconst settingsScope = (() => {\n\t\t\t\t\tlet current;\n\t\t\t\t\tlet currentOff;\n\t\t\t\t\tlet refreshedOnce = false;\n\t\t\t\t\tconst listeners = /* @__PURE__ */ new Set();\n\t\t\t\t\tconst notify = () => {\n\t\t\t\t\t\tfor (const listener of [...listeners]) listener();\n\t\t\t\t\t};\n\t\t\t\t\tconst scope = {\n\t\t\t\t\t\tgetSnapshot: () => current?.getSnapshot() ?? {\n\t\t\t\t\t\t\tstatus: \"unavailable\",\n\t\t\t\t\t\t\tvalue: void 0,\n\t\t\t\t\t\t\twritable: false\n\t\t\t\t\t\t},\n\t\t\t\t\t\tsubscribe: (listener) => {\n\t\t\t\t\t\t\tlisteners.add(listener);\n\t\t\t\t\t\t\treturn () => {\n\t\t\t\t\t\t\t\tlisteners.delete(listener);\n\t\t\t\t\t\t\t};\n\t\t\t\t\t\t},\n\t\t\t\t\t\tset: (field, value) => current !== void 0 ? current.set(field, value) : Promise.resolve(false)\n\t\t\t\t\t};\n\t\t\t\t\tconst rebind = () => {\n\t\t\t\t\t\tlet served;\n\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\tserved = (forms?.describe().getSnapshot().view?.namespaces ?? []).find((entry) => entry.ns === \"trae\" || /trae/i.test(entry.ns));\n\t\t\t\t\t\t} catch {}\n\t\t\t\t\t\tconst next = served === void 0 || forms === void 0 ? void 0 : forms.get(served.ns);\n\t\t\t\t\t\tif (next !== current) {\n\t\t\t\t\t\t\tcurrentOff?.();\n\t\t\t\t\t\t\tcurrent = next;\n\t\t\t\t\t\t\tcurrentOff = current?.subscribe(notify);\n\t\t\t\t\t\t\tnotify();\n\t\t\t\t\t\t}\n\t\t\t\t\t\tif (next === void 0 && !refreshedOnce) {\n\t\t\t\t\t\t\trefreshedOnce = true;\n\t\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\t\t(forms?.describe()).load?.();\n\t\t\t\t\t\t\t} catch {}\n\t\t\t\t\t\t}\n\t\t\t\t\t};\n\t\t\t\t\trebind();\n\t\t\t\t\tforms?.describe().subscribe?.(rebind);\n\t\t\t\t\treturn scope;\n\t\t\t\t})();\n\t\t\t\tconst registerCard = (slotName, key) => {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tctx.slots.inject(slotName, () => ctx.slots.register({\n\t\t\t\t\t\t\tname: slotName,\n\t\t\t\t\t\t\tkey,\n\t\t\t\t\t\t\tpriority: 30,\n\t\t\t\t\t\t\tinject: () => ({\n\t\t\t\t\t\t\t\tt,\n\t\t\t\t\t\t\t\tsettingsScope\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t}, TraeUsageCard));\n\t\t\t\t\t} catch (error) {\n\t\t\t\t\t\tconsole.error(`[dsh-connect-trae] card slot \"${slotName}\" failed to register (host provider unaffected):`, error);\n\t\t\t\t\t}\n\t\t\t\t};\n\t\t\t\tregisterCard(\"plugins.bundle.config\", \"dsh-connect-trae\");\n\t\t\t\tregisterCard(\"plugins.row.config\", \"dsh-connect-trae#dsh-connect-trae\");\n\t\t\t\t/**\n\t\t\t\t* Credit readout in the composer tool row (`conversation.input.left`, a\n\t\t\t\t* session-scope list slot).\n\t\t\t\t*\n\t\t\t\t* Provider-scoped on purpose: it renders only while the session's selected\n\t\t\t\t* model belongs to this plugin. That is what keeps two connector plugins\n\t\t\t\t* from competing for one shared row — the sidebar foot, where this line used\n\t\t\t\t* to live, is a single root row, and the observed result beside\n\t\t\t\t* dsh-connect-workbuddy's two rows was this plugin's line squeezed down to a\n\t\t\t\t* clipped \"Tr\".\n\t\t\t\t*\n\t\t\t\t* Registration is unconditional; the gate reads the Host's modelSelection\n\t\t\t\t* projection and returns null for every other provider, so nothing is drawn\n\t\t\t\t* and no fetch loop starts while another provider is selected.\n\t\t\t\t*/\n\t\t\t\tconst registerComposerPoints = () => {\n\t\t\t\t\ttry {\n\t\t\t\t\t\tctx.slots.inject(\"conversation.input.left\", () => ctx.slots.register({\n\t\t\t\t\t\t\tname: \"conversation.input.left\",\n\t\t\t\t\t\t\tid: \"dsh-connect-trae-composer-points\",\n\t\t\t\t\t\t\torder: 4,\n\t\t\t\t\t\t\tlocale: namespace,\n\t\t\t\t\t\t\tinject: () => ({\n\t\t\t\t\t\t\t\tt,\n\t\t\t\t\t\t\t\tsettingsScope\n\t\t\t\t\t\t\t})\n\t\t\t\t\t\t}, ComposerPointsGate));\n\t\t\t\t\t} catch (error) {\n\t\t\t\t\t\tconsole.error(\"[dsh-connect-trae] composer points slot failed to register (host provider unaffected):\", error);\n\t\t\t\t\t}\n\t\t\t\t};\n\t\t\t\tregisterComposerPoints();\n\t\t\t} catch (error) {\n\t\t\t\tconsole.error(\"[dsh-connect-trae] client card failed to load (host provider unaffected):\", error);\n\t\t\t}\n\t\t}\n\t\t//#endregion\n\t\texports.apply = apply;\n\t\texports.inject = inject;\n\t\texports.name = name;\n\t\treturn module.exports;\n\t}\n});\n";
-//#endregion GENERATED: trae client source
 
 // —— 本包装模块 ——
 //
 // 把上面两段 vendored 的客户端（WorkBuddy 账号池卡片 + Trae 卡片）与
-// 本插件自己的四标签页并进同一个 bundle。
+// 本插件自己的六标签页并进同一个 bundle。
 //
 // 保留内联注入的原因：两个 vendored 客户端都是
 // `window.__ModuleLoader__.load({id, factory})` 形态的自注册脚本，
@@ -1100,23 +3247,313 @@ window.__ModuleLoader__.load({
     }
 
     const xdpoolClient = inlineVendoredClient(XDPOOL_CLIENT_SRC, 'xdpool client');
-    const traeClient = inlineVendoredClient(TRAE_CLIENT_SRC, 'trae client');
 
     /**
-     * 管理页组件：账号 / 积分 / 使用记录。
+     * 合并后不再需要、且**必须**拦掉的 ctx.effect 标签。
+     *
+     * `installNavIcon` 给「XD Pool」那条**设置导航行**画自定义图标：它往
+     * `document.body` 挂一个 `MutationObserver`（childList + subtree +
+     * characterData），每次 DOM 变动都全页扫一遍 `[role="dialog"] nav button`
+     * 找那条行。
+     *
+     * 合并后那条导航行**不存在了**（入口改叫 WOTR），于是它：
+     *   - 永远匹配不到目标，纯做无用功；
+     *   - 却仍然常驻监听整个应用 DOM，每次渲染/输入都触发一次全页扫描。
+     *
+     * 所以这个 effect 直接不装。它只影响那个已经不存在的图标，
+     * 池卡片本体、文案、settings 作用域全都不经过它。
+     */
+    const DROPPED_EFFECT_LABELS = [/settings nav icon/];
+
+    /**
+     * WorkBuddy 池的设置命名空间与宿主入口 id。
+     *
+     * 与 vendored 客户端里的同名常量保持一致（刻意不改名）：
+     *   - `WORKBUDDY_POOL_SETTINGS_NS` 是 0.1.5 那条线 `settingsScope.bind()`
+     *     用的命名空间；
+     *   - `WORKBUDDY_POOL_ENTRY_ID` 是 0.1.7 那条线 `configForms.get()` 的默认
+     *     入口 id —— 也是本插件在 cordis.patch.yml 里的宿主入口名。
+     */
+    const WORKBUDDY_POOL_SETTINGS_NS = 'workbuddy-xdpool';
+    const WORKBUDDY_POOL_ENTRY_ID = 'llm-workbuddy-xdpool';
+
+    /**
+     * 转发一段 vendored 客户端的 apply，但**拦掉它的设置卡片注册**。
+     *
+     * vendored 的 xdpool 客户端原本把 PoolCard 注册成独立设置入口
+     * （`settings.section` id=workbuddy-xdpool）。合并后这个入口不该再单独出现
+     * —— 配置收进「WOTR 管理」页的 XD Pool 标签页（本包自写的 PoolConfigTab）。
+     * 但 vendored 源码一行都不能改（要能逐字节对照上游升级），所以这里给它一层
+     * **替身 ctx**：把 `settings.section` 的 `register` 拦成空注册，其余槽位与
+     * 服务原样转发；等价于「它以为自己注册成功了」，但我们不留下那个入口。
+     *
+     * 保留转发 apply 的理由：它顺带注册了 locale 文案
+     * （`settings.workbuddy-xdpool`）并解析了自己的 settings 作用域。
+     *
+     * `ctx.effect` 中命中 DROPPED_EFFECT_LABELS 的按标签丢弃：`installNavIcon`
+     * 给「XD Pool」那条**已不存在**的设置导航行画图标，却会常驻一个
+     * MutationObserver 全页扫描，纯做无用功。
+     *
+     * 未被拦截的槽位原样转发给真正的 ctx，功能不受影响。
+     */
+    function forwardVendoredApply(ctx, vendoredClient, label) {
+      if (vendoredClient === null || vendoredClient === undefined) return;
+
+      const slots = ctx?.slots;
+      const hasSlots = slots !== undefined && slots !== null && typeof slots.register === 'function';
+
+      /**
+       * 拦下 `settings.section` 注册（返回空 disposer，调用方照常 dispose）；
+       * 其余槽位原样注册。
+       */
+      const swallowSectionRegister = (opts, Component) => {
+        if (opts?.name === 'settings.section') return () => {};
+        return slots.register(opts, Component);
+      };
+
+      const proxySlots = hasSlots
+        ? new Proxy(slots, {
+            get(target, prop) {
+              if (prop === 'register') return swallowSectionRegister;
+              const value = target[prop];
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          })
+        : undefined;
+
+      /** 只放行需要的 effect；被丢弃的返回空 disposer，调用方照常 dispose */
+      const proxyEffect = (fn, effectLabel) => {
+        const name = String(effectLabel ?? '');
+        if (DROPPED_EFFECT_LABELS.some((re) => re.test(name))) return () => {};
+        return ctx.effect(fn, effectLabel);
+      };
+
+      const proxyCtx = new Proxy(ctx, {
+        get(target, prop) {
+          if (prop === 'slots' && proxySlots !== undefined) return proxySlots;
+          if (prop === 'effect') return proxyEffect;
+          const value = target[prop];
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+
+      try {
+        vendoredClient.apply?.(proxyCtx);
+      } catch (e) {
+        console.error('[dsh-wotr-console] ' + label + ' apply 失败（provider 不受影响）:', e);
+      }
+    }
+
+    /**
+     * 解析 WorkBuddy 池的 settings 作用域，包成给管理页的**活句柄**。
+     *
+     * XD Pool 的配置页是本包自写的（console.mjs 的 PoolConfigTab），不再嵌入
+     * vendored 卡片，但它读写设置的**规则**必须与上游一致 —— 也就是
+     * vendor/xdpool/lib/client.js 的 resolveSettingsScope：
+     *
+     *   1. 优先 `configForms`：命名空间从 describe() 镜像里找，先精确匹配宿主
+     *      入口 id `llm-workbuddy-xdpool`，再退回 /workbuddy-xdpool/ 正则。
+     *      不能写死 `workbuddy-xdpool`：宿主实际提供的命名空间常带包名前缀，
+     *      绑到不存在的 ns 时每次写入都被拒，而控件照常亮着 —— 就是
+     *      「保存了又弹回去」。
+     *   2. 没有 configForms 就退回 0.1.5 那条线的
+     *      `settingsScope.bind({ namespace: 'workbuddy-xdpool' })`。
+     *   3. 都没有 → 作用域恒为只读（writable: false），页面显示诊断提示，
+     *      而不是给出按不动却看似可用的控件。
+     *
+     * 包成活句柄的原因与 Trae 半边一致：解析可能在 apply 返回后才就绪，
+     * 管理页必须在**渲染期**取值。
+     */
+    function resolveWorkbuddySettings(ctx) {
+      const listeners = new Set();
+      let currentScope = null;
+      const notify = () => {
+        for (const fn of [...listeners]) {
+          try {
+            fn();
+          } catch (e) {
+            console.error('[dsh-wotr-console] WorkBuddy settings 订阅者抛错:', e);
+          }
+        }
+      };
+      const handle = {
+        get: () => currentScope,
+        subscribe: (fn) => {
+          if (typeof fn !== 'function') return () => {};
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+      };
+      /** 找不到可写作用域时的只读替身：让页面显示诊断而不是假控件 */
+      const readOnly = {
+        getSnapshot: () => ({ status: 'unavailable', value: undefined, writable: false }),
+        subscribe: () => () => {},
+        set: () => Promise.resolve(false),
+      };
+      try {
+        const softGet = (name) => (typeof ctx?.get === 'function' ? ctx.get(name) : undefined);
+        const forms = softGet('configForms');
+        if (forms !== undefined) {
+          let entryId = WORKBUDDY_POOL_ENTRY_ID;
+          try {
+            const namespaces = forms.describe().getSnapshot().view?.namespaces ?? [];
+            const served =
+              namespaces.find((entry) => entry.ns === WORKBUDDY_POOL_ENTRY_ID) ??
+              namespaces.find((entry) => /workbuddy-xdpool/.test(entry.ns));
+            if (served !== undefined) entryId = served.ns;
+          } catch {
+            /* 镜像还没就绪，用默认入口 id */
+          }
+          currentScope = forms.get(entryId) ?? readOnly;
+          return handle;
+        }
+        const legacy = softGet('settingsScope');
+        if (legacy !== undefined) {
+          currentScope = legacy.bind({ namespace: WORKBUDDY_POOL_SETTINGS_NS }) ?? readOnly;
+          return handle;
+        }
+        currentScope = readOnly;
+        return handle;
+      } catch (e) {
+        console.error('[dsh-wotr-console] WorkBuddy settings 作用域解析失败（配置页将只读）:', e);
+        currentScope = readOnly;
+        return handle;
+      }
+    }
+
+    /**
+     * 解析 Trae 半边的 settings 作用域，包成给管理页的**活句柄**。
+     *
+     * Trae 的配置页是本包自写的（console.mjs 的 TraeConfigTab），不再走
+     * vendored 卡片那一套，但它读写设置的**规则**必须与上游一致
+     * （上游 dsh-connect-trae 的浏览器卡片就是这么解析的，见其 client 的
+     * settingsScope 构造）：
+     *
+     *   1. 优先 `configForms.get(ns)`，ns 由 describe() 镜像里**匹配 /trae/i
+     *      的那个**决定 —— 不能写死 `trae`。写死是上游踩过的实打实的坑：
+     *      宿主实际提供的命名空间常常带包名前缀（`dsh-connect-trae`、
+     *      `include:dsh-connect-trae`…），绑到不存在的 ns 时每次写入都被拒
+     *      （`No configurable plugin entry "trae"`），而控件照常亮着，
+     *      表现为「保存了又弹回去」。
+     *   2. 镜像未就绪时**重新绑定**：describe 是异步的，且 profile 重载后可能
+     *      多出启动时还不存在的命名空间，所以要订阅镜像变化。
+     *   3. 没有 configForms 就退回 0.1.5 那条线的 `settingsScope.bind()`。
+     *   4. 都没有 → 作用域恒为只读（writable: false），页面显示诊断提示，
+     *      而不是给出按不动却看似可用的控件。
+     *
+     * 包成活句柄的原因与 XD Pool 卡片一致：解析是异步的，apply 返回时通常
+     * 还没绑上，管理页必须在**渲染期**取值。
+     */
+    function resolveTraeSettings(ctx) {
+      const listeners = new Set();
+      let currentScope = null;
+      const notify = () => {
+        for (const fn of [...listeners]) {
+          try {
+            fn();
+          } catch (e) {
+            console.error('[dsh-wotr-console] Trae settings 订阅者抛错:', e);
+          }
+        }
+      };
+      const handle = {
+        get: () => currentScope,
+        subscribe: (fn) => {
+          if (typeof fn !== 'function') return () => {};
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+      };
+      try {
+        const softGet = (name) => (typeof ctx?.get === 'function' ? ctx.get(name) : undefined);
+        const forms = softGet('configForms');
+        /** 找不到可写作用域时的只读替身：让页面显示诊断而不是假控件 */
+        const readOnly = {
+          getSnapshot: () => ({ status: 'unavailable', value: undefined, writable: false }),
+          subscribe: () => () => {},
+          set: () => Promise.resolve(false),
+        };
+        if (forms !== undefined) {
+          /** 转发到当前控制器，绑定关系变了也能跟上 */
+          const forward = {
+            getSnapshot: () => currentScope?.getSnapshot() ?? readOnly.getSnapshot(),
+            subscribe: (listener) => {
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            },
+            set: (field, value) =>
+              currentScope === null ? Promise.resolve(false) : currentScope.set(field, value),
+          };
+          let bound = null;
+          let boundOff = null;
+          let refreshedOnce = false;
+          const rebind = () => {
+            let served;
+            try {
+              served = (forms.describe().getSnapshot().view?.namespaces ?? []).find(
+                (entry) => entry.ns === 'trae' || /trae/i.test(entry.ns),
+              );
+            } catch {
+              /* 镜像还没就绪 */
+            }
+            const next = served === undefined ? undefined : forms.get(served.ns);
+            if (next !== bound) {
+              boundOff?.();
+              bound = next ?? null;
+              boundOff = bound?.subscribe(notify);
+            }
+            currentScope = bound ?? readOnly;
+            notify();
+            if (bound === null && !refreshedOnce) {
+              refreshedOnce = true;
+              try {
+                forms.describe().load?.();
+              } catch {
+                /* 触发一次加载是尽力而为 */
+              }
+            }
+          };
+          rebind();
+          try {
+            forms.describe().subscribe?.(rebind);
+          } catch {
+            /* 老宿主没有订阅接口 */
+          }
+          return { get: () => forward, subscribe: handle.subscribe };
+        }
+        const legacy = softGet('settingsScope');
+        if (legacy !== undefined) {
+          currentScope = legacy.bind({ namespace: 'trae' });
+          return handle;
+        }
+        currentScope = readOnly;
+        return handle;
+      } catch (e) {
+        console.error('[dsh-wotr-console] Trae settings 作用域解析失败（配置页将只读）:', e);
+        currentScope = {
+          getSnapshot: () => ({ status: 'unavailable', value: undefined, writable: false }),
+          subscribe: () => () => {},
+          set: () => Promise.resolve(false),
+        };
+        return handle;
+      }
+    }
+
+    /**
+     * 管理页组件：配置 + 查看。
      *
      * 组件本体在 console.mjs（普通 ES 模块，便于阅读与测试），
      * 由 scripts/gen-console-inline.mjs 生成为上面的 __WBC_CONSOLE_FACTORY__
      * （一个真函数，不是字符串 + eval —— 后者可能被 CSP 拒绝）。
      * 不开独立页面、不引 web/ 目录：只是设置面板里多注册一个 tab。
      */
-    function registerConsolePage(ctx, react_, jsxRuntime_) {
+    function registerConsolePage(ctx, react_, jsxRuntime_, embedded) {
       try {
         // 运行时缺失就跳过：宁可不显示管理页，也不能让 apply 抛错。
         if (react_ === null || jsxRuntime_ === null) return;
         if (ctx?.slots === undefined || ctx?.locale === undefined) return;
 
-        const Pkg = __WBC_CONSOLE_FACTORY__(react_, jsxRuntime_);
+        const Pkg = __WBC_CONSOLE_FACTORY__(react_, jsxRuntime_, embedded);
         if (typeof Pkg !== 'function') return;
 
         const NS = 'wotr-console-page';
@@ -1131,8 +3568,8 @@ window.__ModuleLoader__.load({
             {
               name: 'settings.section',
               id: 'wotr-console-page',
-              // 排在账号池卡片（order 440）之后，两者都在设置面板里
-              order: 441,
+              // 账号池原来的独立页（order 440）已并入本页，本页成为唯一入口
+              order: 440,
               label: () => t('nav.label'),
             },
             Pkg,
@@ -1152,23 +3589,20 @@ window.__ModuleLoader__.load({
      */
     function apply(ctx) {
       try {
-        // 1) WorkBuddy 账号池卡片（vendored xdpool 自注册 settings.section）
-        try {
-          xdpoolClient?.apply?.(ctx);
-        } catch (e) {
-          console.error('[dsh-wotr-console] pool card failed to load:', e);
-        }
+        // 1) vendored xdpool 客户端：转发 apply 拿到它的 locale 文案，但拦掉
+        //    它的 settings.section 注册（不再单独成页）。它解析出的作用域由
+        //    下面 resolveWorkbuddySettings 按同一规则再取一份给自写配置页用。
+        forwardVendoredApply(ctx, xdpoolClient, 'xdpool client');
 
-        // 2) Trae 卡片与输入框积分读数（vendored trae 自注册
-        //    plugins.bundle.config / plugins.row.config / conversation.input.left）
-        try {
-          traeClient?.apply?.(ctx);
-        } catch (e) {
-          console.error('[dsh-wotr-console] trae card failed to load:', e);
-        }
+        // 2) WorkBuddy 池的 settings 作用域（活句柄，渲染期取值）
+        const wbSettings = resolveWorkbuddySettings(ctx);
 
-        // 3) 四标签页管理页（WorkBuddy 账号 / 积分 / 使用记录 / Trae 账号）
-        registerConsolePage(ctx, react, jsxRuntime);
+        // 3) Trae 侧：不再嵌入上游的浏览器卡片，改成**本包自写**的配置页
+        //    （console.mjs 的 TraeConfigTab），它只需要一份 Trae settings 作用域。
+        const traeSettings = resolveTraeSettings(ctx);
+
+        // 4) 管理页：XD Pool 配置 / Trae 配置 / 账号 / 积分 / 使用记录
+        registerConsolePage(ctx, react, jsxRuntime, { wbSettings, traeSettings });
       } catch (e) {
         console.error('[dsh-wotr-console] apply failed (UI only; provider unaffected):', e);
       }

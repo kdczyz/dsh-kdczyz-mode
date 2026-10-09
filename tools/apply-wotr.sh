@@ -56,7 +56,7 @@ echo "== 源码门禁 =="
   echo "      先跑：node $SRC/scripts/gen-console-inline.mjs" >&2
   exit 1
 }
-for t in credit-store client-apply console-render; do
+for t in credit-store client-apply console-render trae-pool wb-auth trae-auth; do
   if (cd "$SRC" && "$NODE" "test/$t.test.mjs" >/dev/null 2>&1); then
     echo "  ✓ $t"
   else
@@ -171,6 +171,6 @@ fi
 
 echo
 echo "完成。**下一步必须重启 DSH**（退出后重新打开），改动才会生效。"
-echo "重启后应看到：设置 → 插件里 XD Pool 卡片 + Trae 卡片 + 一张「WOTR 管理」四标签页；"
+echo "重启后应看到：设置 → WOTR 一个入口、五个标签页（XD Pool / Trae 配置 / 账号[左右两列] / 积分 / 使用记录）；"
 echo "模型选择器里 workbuddy-xdpool / workbuddy-xdpool-global / trae / trae-global 四个 provider 都在。"
 [ "$DRY" = 0 ] && echo "回滚：把 $BACKUP 里的文件拷回 profile，并恢复两个旧包目录。"

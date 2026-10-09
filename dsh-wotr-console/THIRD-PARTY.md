@@ -2,7 +2,7 @@
 
 本项目是 `dsh-workbuddy-console`（作者 dhdbvcg）与 `dsh-connect-trae`
 （作者 dingminhua）的合并版：两个桌面 App 的模型各作为一个独立 provider
-接入 DeepSeek Harness，并在设置里共用一张四标签页管理页。
+接入 DeepSeek Harness，并在设置里共用一张五标签页管理页（含两边配置，账号页左右两列）。
 
 合并方式是**原样并入、不改上游代码**，因此两份上游的版权声明都必须保留。
 
@@ -28,9 +28,16 @@
 - **来源**：https://github.com/dingminhua/dsh-connect-trae
 - **作者**：dingminhua（LaoDing）
 - **许可**：MIT（`Copyright (c) 2026 LaoDing`）
-- **位置**：`lib/trae.js`（宿主半边）、`vendor/trae/client.js`（浏览器半边）
+- **位置**：`lib/trae.js`（宿主半边；浏览器半边已不再随本包分发，见下）
 
-这两个文件是对上游 `lib/index.js` 与 `lib/client.js` 的**逐字节拷贝，未做修改**。
+`lib/trae.js` 是对上游宿主半边 `lib/index.js` 的并入，**含本项目的新增改动**
+（账号池 `TraeAccountPool`、按账号 id 分文件的凭据落盘、号池管理路由）。
+
+上游的**浏览器半边**（`lib/client.js`）**已不再随本包分发**：Trae 的配置页改为
+本包自写（`console.mjs` 的 `TraeConfigTab`），不再嵌入上游卡片，因此不再有
+`vendor/trae/` 目录。上游浏览器客户端的**设置解析规则**仍被沿用（见 README
+「Trae 配置 tab：本包自写」一节的命名空间探测说明），那是行为约定而非代码拷贝。
+
 另有 `icons/` 下的图标同样来自该上游项目。
 
 ### 为什么合并
