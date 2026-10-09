@@ -2,6 +2,12 @@
   "name": "dsh-wotr-console",
   "version": "1.0.0",
   "description": "WorkBuddy + Trae merged into one DSH plugin: the WorkBuddy desktop account/model pool and the Trae connector as two independent providers, plus one settings page with four tabs (WorkBuddy accounts / credits / usage history / Trae accounts).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kdczyz/dsh-workbuddy-mode.git",
+    "directory": "dsh-wotr-console"
+  },
+  "homepage": "https://github.com/kdczyz/dsh-workbuddy-mode#readme",
   "license": "MIT",
   "author": "dhdbvcg",
   "contributors": [
