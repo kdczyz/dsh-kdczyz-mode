@@ -23,7 +23,56 @@
 >   `loadTrae` 的 `const` 定义之前引用它（TDZ），渲染期抛错 → 设置面板白屏。
 > - WorkBuddy 的独立 Web 控制台（`/wb-console`）此前已移除，形态对齐 Trae —— 只注册 LLM provider。
 > - DSH 原生管理页（设置面板内）**扩展为四标签页**：WorkBuddy 账号 / 积分 / 使用记录 / Trae 账号。
+> - 仓库根新增 `package.json`（**安装壳**）：让 DSH 插件管理页能直接从这个 GitHub 地址安装。
+>   详见下面「零、安装」。
 
+---
+
+## 零、安装
+
+### 方式一：DSH 插件管理页直接装（推荐）
+
+设置 → 插件 → 安装，填：
+
+```text
+github:kdczyz/dsh-workbuddy-mode
+```
+
+或完整地址 `https://github.com/kdczyz/dsh-workbuddy-mode`。
+
+**为什么以前装不上**：插件管理页 `pnpm add <git 地址>` 装的是**仓库根**，
+装完后它读包根的 `package.json` 找 `dsh.bundle.patch` —— 组合包的判定标准就是这一个字段
+（DSH 文档原文：*A bundle is a package whose `package.json` declares `dsh.bundle.patch`*）。
+而这个仓库以前根目录**没有 package.json**，真正的插件在子目录 `dsh-wotr-console/`，
+于是 pnpm 生成占位包、DSH 找不到组合包声明，报「这个包没有声明组合包，不能作为插件管理」。
+
+**现在为什么能装上**：仓库根的 `package.json` 是一个薄壳——
+
+| 字段 | 值 | 作用 |
+|---|---|---|
+| `name` | `dsh-wotr-console` | 与已部署的包名保持一致，profile 里存的 entry id / 设置项全部沿用 |
+| `main` / `exports["."]` | `./dsh-wotr-console/lib/index.js` | WorkBuddy 半边入口 |
+| `exports["./trae"]` | `./dsh-wotr-console/lib/trae.js` | Trae 半边入口（第二个 Loader entry） |
+| `exports["./client"]` | `./dsh-wotr-console/lib/client.js` | 浏览器端 bundle（四标签页） |
+| `dsh.bundle.patch` | `./dsh-wotr-console/cordis.patch.yml` | **组合包声明**，管理页据此识别 |
+| `dsh.client` | `platform: web` + inject 列表 | 客户端注入目标 |
+
+壳只在包根做转发，插件代码仍在 `dsh-wotr-console/` 下，两个 Loader entry 的名字
+（`dsh-wotr-console`、`dsh-wotr-console/trae`）与 profile 里已保存的配置**完全不变**。
+
+### 方式二：本地开发部署（link:）
+
+```bash
+./tools/apply-wotr.sh            # 部署到 desktop profile
+./tools/apply-wotr.sh --dry-run  # 只看计划
+```
+
+这条路径把 `dsh-wotr-console/` 直接同步进 `~/.dsh/profiles/desktop/node_modules/dsh-wotr-console`，
+并在 profile 的 `dependencies`（`link:`）与 `dsh.profile.bundles` 里登记。
+改代码即时生效（要重启 DSH）。
+
+> 两种方式的包名都是 `dsh-wotr-console`，但**同时只能走一条**：
+> 管理页装了 git 版本后，本地 `link:` 会被替换掉，反之亦然。
 
 ---
 
