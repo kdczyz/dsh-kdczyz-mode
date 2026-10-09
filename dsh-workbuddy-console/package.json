@@ -1,0 +1,84 @@
+{
+  "name": "dsh-workbuddy-console",
+  "version": "2.0.48",
+  "description": "Connect the WorkBuddy desktop model pool to DeepSeek Harness: the account/model pool (merged from dsh-workbuddy-xdpool) as a model provider, configured from the host's own settings panel. Provider-only — no standalone console.",
+  "license": "MIT",
+  "author": "dhdbvcg",
+  "contributors": [
+    "XDTrees (dsh-workbuddy-xdpool, vendored under vendor/xdpool — MIT)"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "vendor",
+    "scripts",
+    "test",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "THIRD-PARTY.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "workbuddy",
+    "codebuddy",
+    "model-provider",
+    "account-pool",
+    "multi-account",
+    "credits",
+    "usage-history"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhdbvcg/dsh-workbuddy-console.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dhdbvcg/dsh-workbuddy-console/issues"
+  },
+  "homepage": "https://github.com/dhdbvcg/dsh-workbuddy-console#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install:plugin": "node scripts/install.mjs",
+    "build:console": "node scripts/gen-console-inline.mjs",
+    "check:console": "node scripts/gen-console-inline.mjs --check",
+    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs",
+    "test:store": "node test/credit-store.test.mjs",
+    "test:client": "node test/client-apply.test.mjs",
+    "test:render": "node test/console-render.test.mjs"
+  },
+  "dependencies": {
+    "dsh-workbuddy-xdpool": ">=1.7.0"
+  },
+  "dependenciesMeta": {
+    "dsh-workbuddy-xdpool": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  }
+}

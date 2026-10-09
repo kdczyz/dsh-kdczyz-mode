@@ -1,0 +1,77 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -34,7 +34,7 @@
+ import { fileURLToPath } from 'node:url';
+ import { dirname, join } from 'node:path';
+ 
+-import { healthCheck, openUrl, launchDesktopApp, LOGIN_URL, ACCOUNT_URL, scanCredentialFiles } from './account-check.mjs';
++import { healthCheck, openUrl, launchDesktopApp, LOGIN_URL, ACCOUNT_URL, scanCredentialFiles, scanDecryptedAccounts } from './account-check.mjs';
+ import { pendingTasks, claimTask } from './tasks.mjs';
+ import * as history from './history.mjs';
+ import { getCredit, allCredits, stats as creditStats } from './credit-meter.mjs';
+@@ -620,14 +620,27 @@
+ }
+ 
+ /**
++ * 上游调用用的账号列表（解密后的凭证优先）。
++ *
++ * WorkBuddy 5.6+ 的 accessToken 是 $wbEncrypted 信封，localAccounts() 拿到的
++ * 只是对象，当 Bearer 发出去必然 401。账号池能在运行时从桌面端取到解密密钥，
++ * 所以先问它；拿不到再退回本地文件扫描。
++ */
++async function upstreamAccounts() {
++  const decrypted = await scanDecryptedAccounts();
++  if (Array.isArray(decrypted) && decrypted.length > 0) return decrypted;
++  return localAccounts();
++}
++
++/**
+  * 挑一个凭证用于调用上游（技能市场等只需要一个账号）。
+  *
+  * 优先用有 live 文件的账号；否则用第一个。
+  * 返回 { accessToken, uid, endpoint }——注意这不是完整的 credential 对象，
+  * 只带单次请求需要的字段。
+  */
+-function pickAuthAccount() {
+-  const accounts = localAccounts();
++async function pickAuthAccount() {
++  const accounts = await upstreamAccounts();
+   if (accounts.length === 0) return null;
+   const files = scanCredentialFiles();
+   const live = files.find((f) => f.kind === 'live' && f.accessToken);
+@@ -1161,7 +1174,7 @@
+ 
+   /** 真去上游拉一次任务列表，顺带写缓存 */
+   async function fetchTasks(port, includeAll, cacheKey) {
+-    const accounts = localAccounts();
++    const accounts = await upstreamAccounts();
+     if (accounts.length === 0) {
+       return {
+         ok: true,
+@@ -1193,7 +1206,7 @@
+           const taskCode = typeof body.taskCode === 'string' ? body.taskCode : '';
+           if (!uid || !taskCode) return json(res, 400, { ok: false, error: '缺少 uid 或 taskCode' });
+ 
+-          const account = localAccounts().find((a) => a.uid === uid);
++          const account = (await upstreamAccounts()).find((a) => a.uid === uid);
+           if (!account) return json(res, 404, { ok: false, error: '账号不存在于本机凭证中' });
+ 
+           const r = await claimTask(account.credential, taskCode);
+@@ -1371,7 +1384,7 @@
+           const pageSize = Number(url.searchParams.get('pageSize')) || 20;
+           const keyword = url.searchParams.get('keyword') || '';
+ 
+-          const auth = pickAuthAccount();
++          const auth = await pickAuthAccount();
+           if (!auth) return json(res, 200, { ok: false, code: 'NO_AUTH', error: '本机没有可用的 WorkBuddy 凭证' });
+ 
+           const r = await skillMarket.listSkills(auth, { page, pageSize, keyword });
+@@ -1423,7 +1436,7 @@
+           const name = typeof body.name === 'string' ? body.name : '';
+           if (!skillId || !name) return json(res, 400, { ok: false, error: '缺少 skillId 或 name' });
+ 
+-          const auth = pickAuthAccount();
++          const auth = await pickAuthAccount();
+           if (!auth) return json(res, 400, { ok: false, error: '本机没有可用的 WorkBuddy 凭证' });
+ 
+           const r = await skillMarket.installSkill(

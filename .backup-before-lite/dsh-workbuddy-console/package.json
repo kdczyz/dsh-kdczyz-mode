@@ -1,0 +1,94 @@
+{
+  "name": "dsh-workbuddy-console",
+  "version": "2.0.48",
+  "description": "WorkBuddy console for DeepSeek Harness, in one plugin: the account/model pool (merged from dsh-workbuddy-xdpool), the skill market with an in-composer skill picker, batch check-in, pending tasks, session health, history and credit usage. Bilingual.",
+  "license": "MIT",
+  "author": "dhdbvcg",
+  "contributors": [
+    "XDTrees (dsh-workbuddy-xdpool, vendored under vendor/xdpool — MIT)"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "web",
+    "vendor",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "THIRD-PARTY.md",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "workbuddy",
+    "codebuddy",
+    "account-manager",
+    "multi-account",
+    "checkin",
+    "daily-checkin",
+    "credits",
+    "dashboard"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhdbvcg/dsh-workbuddy-console.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dhdbvcg/dsh-workbuddy-console/issues"
+  },
+  "homepage": "https://github.com/dhdbvcg/dsh-workbuddy-console#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/run-all.mjs",
+    "test:ci": "node test/run-ci.mjs",
+    "test:e2e": "node test/e2e-i18n.mjs",
+    "build:dict": "node scripts/build-dict.mjs",
+    "install:plugin": "node scripts/install.mjs",
+    "bench:latency": "node test/latency-bench.mjs",
+    "screenshot": "node test/screenshot.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.1-rc.1 <0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "dsh-workbuddy-xdpool": ">=1.7.0"
+  },
+  "dependenciesMeta": {
+    "dsh-workbuddy-xdpool": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  }
+}

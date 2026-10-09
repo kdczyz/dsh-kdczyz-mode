@@ -1,0 +1,137 @@
+--- a/lib/account-check.mjs
++++ b/lib/account-check.mjs
+@@ -15,7 +15,7 @@
+ import fs from 'node:fs';
+ import path from 'node:path';
+ import os from 'node:os';
+-import { spawn } from 'node:child_process';
++import { spawn, spawnSync } from 'node:child_process';
+ 
+ /** 上游计费/签到接口，用于探活（只读） */
+ const PROBE_PATH = '/v2/billing/meter/checkin-activity-status';
+@@ -232,7 +232,97 @@
+  * 同一 uid 可能有多份凭证（live + 多个快照），保留「更新的那份」作为代表，
+  * 但把全部来源路径都报出来，方便你判断该删哪个。
+  */
++/**
++ * 用 vendored 账号池读一份**解密后**的凭证。
++ *
++ * 为什么需要：
++ *   WorkBuddy 5.6+ 把 accessToken / refreshToken 写成了 $wbEncrypted 信封，
++ *   而本模块的 scanCredentialFiles() 只做 JSON.parse，拿到的 accessToken 其实是
++ *   `{$wbEncrypted:1, envelope:"…"}` **对象**。把它当 Bearer 发出去，上游只会回
++ *   HTTP 401（实测 refresh 接口报 "10000:token format error"），于是好账号被
++ *   误报成「已失效 / 需要重新登录」。
++ *
++ *   解密密钥由账号池在运行时从桌面端 App 取得（本模块拿不到），
++ *   所以这里直接借用它的 WorkBuddyAccountPool。
++ *   拿不到就返回 null，调用方回退到原来的文件扫描。
++ */
++export async function scanDecryptedAccounts() {
++  try {
++    const mod = await import(new URL('../vendor/xdpool/lib/index.js', import.meta.url).href);
++
++    // 首选：已经在跑的那个账号池实例（它启动时就扫过、密钥也已取到）。
++    let pool = null;
++    if (typeof mod.currentApi === 'function') {
++      const api = mod.currentApi();
++      if (api && api.pool && typeof api.pool.list === 'function') pool = api.pool;
++    }
++    if (pool === null) {
++      if (typeof mod.WorkBuddyAccountPool !== 'function') return null;
++      pool = new mod.WorkBuddyAccountPool({});
++      await pool.scan();
++    }
++
++    const list = pool.list();
++    if (!Array.isArray(list) || list.length === 0) return null;
++    return list.map((a) => ({
++      uid: (a.credential && a.credential.uid) || a.id,
++      nickname: (a.credential && a.credential.nickname) || a.label || a.id,
++      credential: a.credential,
++    }));
++  } catch {
++    return null;
++  }
++}
++
+ export async function healthCheck(opts = {}) {
++  // 优先走账号池解密后的凭证；否则退回文件扫描（旧版 WorkBuddy 的明文格式）。
++  const decrypted = await scanDecryptedAccounts();
++  if (decrypted !== null) {
++    const accounts = [];
++    for (const a of decrypted) {
++      const cred = a.credential;
++      const probe = await probeCredential(cred, opts);
++      accounts.push({
++        uid: cred.uid || a.uid,
++        nickname: cred.nickname || a.nickname,
++        uin: cred.uin,
++        phone: undefined,
++        domain: cred.domain,
++        state: probe.state,
++        detail: probe.detail,
++        httpStatus: probe.httpStatus,
++        expiresAt: cred.expiresAtMs && cred.expiresAtMs > 0 ? cred.expiresAtMs : tokenExpiryMs(cred.accessToken),
++        lastRefreshTime: cred.lastRefreshAtMs,
++        hasLiveFile: true,
++        hasLogoutMarker: false,
++        sources: [{ kind: 'pool', file: '(账号池解密后的凭证)', path: '', mtimeMs: null }],
++        checkin: probe.status
++          ? {
++              active: !!probe.status.active,
++              todayCheckedIn: !!probe.status.today_checked_in,
++              streakDays: probe.status.streak_days ?? 0,
++              todayCredit: probe.status.today_credit ?? 0,
++            }
++          : null,
++      });
++    }
++    accounts.sort((a, b) => {
++      const rank = { valid: 0, unknown: 1, invalid: 2 };
++      const d = (rank[a.state] ?? 3) - (rank[b.state] ?? 3);
++      if (d !== 0) return d;
++      return String(a.nickname || a.uid).localeCompare(String(b.nickname || b.uid));
++    });
++    const summary = {
++      total: accounts.length,
++      valid: accounts.filter((a) => a.state === 'valid').length,
++      invalid: accounts.filter((a) => a.state === 'invalid').length,
++      unknown: accounts.filter((a) => a.state === 'unknown').length,
++      hasLiveFile: true,
++      needsLogin: accounts.length === 0 || accounts.every((a) => a.state === 'invalid'),
++    };
++    return { ok: true, checkedAt: Date.now(), summary, accounts, unreadable: [] };
++  }
++
+   const files = scanCredentialFiles(opts.env);
+   const byUid = new Map();
+   const unreadable = [];
+@@ -338,6 +428,7 @@
+     } else {
+       child = spawn('xdg-open', [u.href], { detached: true, stdio: 'ignore' });
+     }
++    child.on('error', () => { /* spawn 失败绝不能冒泡成未捕获异常 */ });
+     child.unref();
+     return { ok: true, url: u.href };
+   } catch (e) {
+@@ -369,8 +460,17 @@
+     if (target.endsWith('.exe') && !path.isAbsolute(target)) continue; // 相对的只是占位，跳过
+     try {
+       if (path.isAbsolute(target) && !fs.existsSync(target)) continue;
+-      const child = spawn(target, [], { detached: true, stdio: 'ignore', windowsHide: false });
+-      child.unref();
++      // macOS 的 .app 是目录：直接 spawn 会 EACCES，而 spawn 的失败是**异步**
++      // `error` 事件，不挂监听就变成未捕获异常，会把 DSH 宿主进程整个打崩
++      // （见 ~/Library/Logs/DeepSeek Harness/crash-*-host.log 的
++      //  "fatal uncaught exception: Error: spawn /Applications/WorkBuddy.app EACCES"）。
++      // 改成同步 spawnSync + `open`：既能正确拉起 App，失败也只返回错误码。
++      const command = platform === 'darwin' && target.endsWith('.app') ? 'open' : target;
++      const result = spawnSync(command, command === 'open' ? [target] : [], {
++        stdio: 'ignore',
++        windowsHide: false,
++      });
++      if (result.error || result.status !== 0) continue;
+       return { ok: true, launched: target };
+     } catch {
+       /* 试下一个 */

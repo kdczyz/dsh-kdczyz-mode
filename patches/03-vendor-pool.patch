@@ -1,0 +1,151 @@
+--- a/vendor/xdpool/lib/index.js
++++ b/vendor/xdpool/lib/index.js
+@@ -11,6 +11,7 @@
+ import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
+ import { createServer } from "node:http";
+ import { Readable } from "node:stream";
++import { DsmlBridge } from "./dsml-bridge.mjs";
+ //#region src/upstream.ts
+ /** CN chat base per dingminhua's on-machine probe (HTTP 200 for chat/models). */
+ const CN_CHAT_BASE = "https://copilot.tencent.com";
+@@ -3370,29 +3371,52 @@
+ 	for (const block of content) if (typeof block === "object" && block !== null && typeof block.text === "string") parts.push(block.text);
+ 	return parts.join("\n");
+ }
++/**
++* Rebuild a host context into the transcript shape pi-ai actually reads.
++*
++* WHY THIS IS LOAD-BEARING (this was a silent, total loss of tool calling):
++* pi-ai resolves a request through `resolveTranscript()` ->
++* `collapseSystemMessages()`, which rebuilds the transcript from
++* `context.messages` ALONE. A top-level `context.systemPrompt` and
++* `context.tools` are dropped on that path; the only shape that survives is a
++* leading `role: "system"` message carrying the prompt as `content` and the
++* declarations as `toolsAdded` - exactly what pi-ai's own `normalizeContext()`
++* produces. The pi-ai `Models` wrapper normalises for its callers, but this
++* adapter calls `api.stream()` directly, so that normalisation never ran here.
++*
++* Symptom while it was missing: every request reached the upstream WITHOUT
++* `tools`. The model then had no native tool schema, answered with its own
++* tool-call markup (DeepSeek DSML), DSH rendered that markup as text (the
++* "garbled" transcript), and no tool ever executed.
++*/
+ function legacyContext(context) {
+ 	if (typeof context !== "object" || context === null) return context;
+ 	const messages = context["messages"];
+ 	if (!Array.isArray(messages)) return context;
+-	const system = messages.filter((message) => typeof message === "object" && message !== null && message["role"] === "system");
+-	if (system.length === 0) return context;
+ 	const tools = new Map();
+ 	for (const tool of Array.isArray(context["tools"]) ? context["tools"] : []) if (typeof tool === "object" && tool !== null && typeof tool["name"] === "string") tools.set(tool["name"], tool);
+ 	const prompt = [];
+ 	if (typeof context["systemPrompt"] === "string" && context["systemPrompt"] !== "") prompt.push(context["systemPrompt"]);
+-	for (const message of system) {
++	const kept = [];
++	for (const message of messages) {
++		if (typeof message !== "object" || message === null || Array.isArray(message)) continue;
++		if (message["role"] !== "system") {
++			kept.push(message);
++			continue;
++		}
+ 		for (const tool of Array.isArray(message["toolsRemoved"]) ? message["toolsRemoved"] : []) if (typeof tool === "object" && tool !== null) tools.delete(tool["name"]);
+ 		for (const tool of Array.isArray(message["toolsAdded"]) ? message["toolsAdded"] : []) if (typeof tool === "object" && tool !== null && typeof tool["name"] === "string") tools.set(tool["name"], tool);
+ 		const text = transcriptText(message["content"]);
+ 		if (text !== "") prompt.push(text);
+ 	}
+ 	const systemPrompt = prompt.join("\n\n");
+-	const kept = messages.filter((message) => !(typeof message === "object" && message !== null && message["role"] === "system"));
+-	return {
+-		...systemPrompt === "" ? {} : { systemPrompt },
+-		messages: kept,
+-		...tools.size === 0 ? {} : { tools: [...tools.values()] }
++	const initial = {
++		role: "system",
++		content: systemPrompt,
++		...tools.size === 0 ? {} : { toolsAdded: [...tools.values()] },
++		timestamp: 0
+ 	};
++	return { messages: [initial, ...kept] };
+ }
+ function hostCompatibleApi() {
+ 	const api = openAICompletionsApi();
+@@ -6176,7 +6200,7 @@
+ 			tried.push(account.label);
+ 			const result = await client.chatStream(account.credential, prepared, controller.signal);
+ 			if (result.ok) {
+-				await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool);
++				await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, modelId);
+ 				return;
+ 			}
+ 			last = {
+@@ -6238,7 +6262,7 @@
+ 				contextWindow: modelId === void 0 ? void 0 : catalog.current().find((m) => m.id === modelId)?.contextWindow
+ 			});
+ 			if (recovered.ok) {
+-				await serveSuccessfulStream(res, recovered.account, recovered.result, logger, refreshBalance, pool);
++				await serveSuccessfulStream(res, recovered.account, recovered.result, logger, refreshBalance, pool, modelId);
+ 				return;
+ 			}
+ 			writeOpenAIError(res, 400, "context_length_exceeded", contextOverflowMessage(modelId, recovered.detail));
+@@ -6289,7 +6313,7 @@
+ * Extracted so the context-overrun recovery path reuses the exact same
+ * bookkeeping (noteServed + background balance refresh) as a first-try hit.
+ */
+-async function serveSuccessfulStream(res, account, result, logger, refreshBalance, pool) {
++async function serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, modelId) {
+ 	logger?.info?.(`dsh-workbuddy-xdpool: served by ${account.label}`);
+ 	pool.noteServed(account.id);
+ 	refreshBalance(account);
+@@ -6301,14 +6325,49 @@
+ 	});
+ 	let sawDone = false;
+ 	const body = Readable.fromWeb(result.response.body);
++	/**
++	* The WorkBuddy gateway does not return OpenAI `tool_calls`; the model's
++	* tool-call markup (DeepSeek DSML and friends) arrives inside
++	* `delta.content`. Forwarding that verbatim made DSH print the markup as
++	* text and never execute the tool. `DsmlBridge` rewrites those blocks into
++	* real `delta.tool_calls` chunks; anything it cannot parse is passed
++	* through untouched, so a bad guess degrades to the old behaviour.
++	*/
++	const bridge = new DsmlBridge(modelId === void 0 ? {} : {
++		model: modelId
++	});
++	const decoder = new TextDecoder("utf-8");
++	const write = (text) => {
++		if (text !== "" && !res.writableEnded) res.write(text);
++	};
+ 	body.on("data", (chunk) => {
+-		if (chunk.includes("[DONE]")) sawDone = true;
++		const raw = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
++		if (raw.includes("[DONE]")) sawDone = true;
++		let out;
++		try {
++			out = bridge.push(raw);
++		} catch (error) {
++			logger?.warn("dsh-workbuddy-xdpool: tool-call bridge failed; passing bytes through", error);
++			out = raw;
++		}
++		write(out);
+ 	});
++	body.on("end", () => {
++		let out = "";
++		try {
++			out = bridge.end();
++			const stats = bridge.stats();
++			if (stats.toolCalls > 0) logger?.info?.(`dsh-workbuddy-xdpool: recovered ${stats.toolCalls} tool call(s) from model markup`);
++		} catch (error) {
++			logger?.warn("dsh-workbuddy-xdpool: tool-call bridge flush failed", error);
++		}
++		write(out);
++		if (!res.writableEnded) res.end();
++	});
+ 	body.on("error", (error) => {
+ 		logger?.warn("dsh-workbuddy-xdpool: upstream stream failed mid-flight", error);
+-		if (!sawDone && res.writable) res.end("data: [DONE]\n\n");
++		if (!sawDone && !res.writableEnded) res.end("data: [DONE]\n\n");
+ 	});
+-	body.pipe(res);
+ }
+ /**
+ * Compact an over-long conversation and retry it once.

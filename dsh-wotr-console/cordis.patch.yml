@@ -1,0 +1,36 @@
+# Register dsh-wotr-console — ONE package, TWO Loader entries.
+#
+# Why two entries, and why they use DIFFERENT module specifiers:
+#
+#   entry A  name: dsh-wotr-console        -> lib/index.js  (WorkBuddy pool half)
+#   entry B  name: dsh-wotr-console/trae   -> lib/trae.js   (Trae half)
+#
+# The two halves each declare `enabledModelIds` / `imageModelIds` /
+# `contextBudgets` / `authFile` with DIFFERENT semantics. Cordis keys a plugin's
+# runtime — and therefore its `Config` schema — by the resolved `apply`
+# FUNCTION IDENTITY (RegistryService._internal). Two entries that import the
+# SAME module share ONE runtime and ONE Config, so those four names would
+# collapse into a single field and the two halves would fight over one value.
+# Two different modules give two independent runtimes, hence two independent
+# Config schemas. That is the whole point of the split.
+#
+# A subpath name is safe for the client module system: `exactPackageSpecifier`
+# returns undefined for anything containing "/", so entry B contributes NO
+# client source. Only entry A resolves to the package root, so the package
+# still has exactly ONE `./client` bundle — no "resolves from multiple active
+# Loader sources" error, and the four-tab page is loaded once.
+#
+# The entry ids are deliberate and MUST NOT be renamed:
+#   - llm-workbuddy-xdpool: the vendored pool card looks its settings scope up
+#     by that exact id (vendor/xdpool/lib/client.js, WORKBUDDY_POOL_ENTRY_ID).
+#   - dsh-connect-trae: matches the /trae/i probe lib/trae.js and its client
+#     use, and keeps the already-saved Trae settings in this profile.
+# Renaming either makes that half's settings card read-only.
+#
+# NOTE: YAML comments are '#' only. JavaScript block-comment syntax is NOT a
+# comment in YAML and breaks parsing.
+- insert:
+    - id: llm-workbuddy-xdpool
+      name: dsh-wotr-console
+    - id: dsh-connect-trae
+      name: dsh-wotr-console/trae

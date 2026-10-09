@@ -1,0 +1,87 @@
+{
+  "name": "dsh-wotr-console",
+  "version": "1.0.0",
+  "description": "WorkBuddy + Trae merged into one DSH plugin: the WorkBuddy desktop account/model pool and the Trae connector as two independent providers, plus one settings page with four tabs (WorkBuddy accounts / credits / usage history / Trae accounts).",
+  "license": "MIT",
+  "author": "dhdbvcg",
+  "contributors": [
+    "XDTrees (dsh-workbuddy-xdpool, vendored under vendor/xdpool — MIT)",
+    "dingminhua (dsh-connect-trae, merged in as lib/trae.js)"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./trae": "./lib/trae.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "vendor",
+    "icons",
+    "scripts",
+    "test",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "workbuddy",
+    "codebuddy",
+    "trae",
+    "model-provider",
+    "account-pool",
+    "multi-account",
+    "credits",
+    "usage-history"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.4 <5.0.0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm-pi-ai": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": ">=3.18.4 <4.0.0",
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build:console": "node scripts/gen-console-inline.mjs && node scripts/gen-trae-client.mjs && node scripts/gen-xdpool-client.mjs",
+    "check:console": "node scripts/gen-console-inline.mjs --check",
+    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs",
+    "test:store": "node test/credit-store.test.mjs",
+    "test:client": "node test/client-apply.test.mjs",
+    "test:render": "node test/console-render.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  }
+}

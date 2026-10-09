@@ -1,0 +1,22 @@
+# Register dsh-workbuddy-console — ONE entry, ONE load.
+#
+# The entry id is llm-workbuddy-xdpool on purpose, not the package name:
+# the vendored account-pool card looks its own settings scope up by that exact
+# id (vendor/xdpool/lib/client.js, WORKBUDDY_POOL_ENTRY_ID), and its
+#   forms.get(entryId)
+# only returns a writable scope for an entry whose namespace matches it.
+# Renaming the id makes the pool card read-only.
+#
+# DO NOT add a second entry pointing at this same package.
+# DSH would then load the plugin twice, apply() would run twice, and the second
+# run can register duplicate providers / duplicate settings scopes, which takes
+# down BOTH entries — that is the "2 entries did not activate" failure seen in
+# the plugin list.
+# One package, one entry.
+#
+# NOTE: YAML comments are '#' only. An earlier revision used "/** */"
+# (JavaScript block-comment syntax) here, which is NOT a comment in YAML and
+# broke parsing with "end of the stream or a document separator is expected".
+- insert:
+    - id: llm-workbuddy-xdpool
+      name: dsh-workbuddy-console
