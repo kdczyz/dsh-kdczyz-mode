@@ -400,6 +400,48 @@ if (mine.length === 1) {
 }
 
 /**
+ * —— 3a-bis) 输入框下方的额度胶囊 ——
+ *
+ * 它注册到 conversation.composer.dock —— 那是**内置 chat 包的地盘**
+ * （输入框正下方那行，tok/s 胶囊也在那）。契约有三条必须守住：
+ *   1. 用 list 槽要求的唯一 id，且 order 排在内置 stats 之后；
+ *   2. `inject` 必须把宿主给的 sessionId 原样往下传 —— 漏传的话组件里
+ *      sessionId 恒为 undefined，胶囊永远不渲染（且完全静默）；
+ *   3. `modelDirectories` 只能软取（ctx.get），**绝不能**写进
+ *      exports.inject：cordis 的依赖门禁是硬性的，声明了运行时不提供的
+ *      服务会让整个 apply 不执行，WOTR 设置页会跟着一起消失。
+ */
+const dockRegs = registrations.filter((r) => r && r.name === 'conversation.composer.dock');
+ok('额度胶囊已注册到 composer.dock', dockRegs.length === 1, `got ${dockRegs.length}`);
+if (dockRegs.length === 1) {
+  const r = dockRegs[0];
+  ok('胶囊用 list 槽要求的唯一 id', r.id === 'wotr-credits', String(r.id));
+  ok('胶囊 order 在内置 stats（0）之后', typeof r.order === 'number' && r.order > 0, String(r.order));
+  ok('胶囊注册的是组件（函数）', typeof r.Component === 'function');
+  ok('胶囊带 inject 面', typeof r.inject === 'function');
+
+  // inject 必须把 sessionId 往下传
+  if (typeof r.inject === 'function') {
+    let injected = null;
+    let err = null;
+    try {
+      injected = r.inject('session-abc');
+    } catch (e) {
+      err = e;
+    }
+    ok('inject 不抛', err === null, err?.message);
+    ok('inject 原样传出 sessionId', injected?.sessionId === 'session-abc', JSON.stringify(injected?.sessionId));
+    ok('inject 传出模型目录解析器', typeof injected?.resolveModelDirectory === 'function');
+  }
+}
+
+ok(
+  'exports.inject 仍只有 slots/locale（modelDirectories 必须软取，否则依赖门禁会让整个插件不加载）',
+  JSON.stringify(mod.inject) === JSON.stringify(['slots', 'locale']),
+  JSON.stringify(mod.inject),
+);
+
+/**
  * —— 3b) 端到端：settings 作用域真的传进管理页的两个配置标签页 ——
  *
  * 这是合并的**真正难点所在**，也是最容易静默坏掉的一环：

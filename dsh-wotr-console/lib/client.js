@@ -234,6 +234,13 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
   .wbc-col-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:28px}
   .wbc-col-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}
   .wbc-col-sub{font-size:11px;color:var(--dsw-alias-label-secondary)}
+  /* 输入框下方「当前模型额度」小胶囊：与内置 stats 胶囊同高同色，融进那一行 */
+  .wotr-credit-pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:10px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1;cursor:pointer;white-space:nowrap}
+  .wotr-credit-pill:hover{background:var(--dsw-alias-bg-l2,rgba(127,127,127,.12))}
+  .wotr-credit-pill[data-busy="1"]{opacity:.6;cursor:progress}
+  .wotr-credit-pill[data-state="warn"]{color:var(--dsw-alias-label-warning,#d97706)}
+  .wotr-credit-pill-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  .wotr-credit-pill-num{font-variant-numeric:tabular-nums}
   `;
 
     function ensureCss() {
@@ -2712,6 +2719,235 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     }
     //#endregion
 
+    //#region 输入框下方的「当前模型额度」胶囊
+    //
+    // 挂在 `conversation.composer.dock`（conversation 包声明为
+    // `{ kind: "list", scope: "session" }`，输入框正下方那一行，内置的
+    // 「tok/s · 缓存命中」胶囊就在同一行）。
+    //
+    // 它回答一个问题：**当前选中的模型，这个池还剩多少积分。**
+    // 所以先要拿到「当前模型」—— 那是 model-selection 包的服务
+    // `modelDirectories`，按会话给一份目录 store：
+    //
+    //   models.directoryFor(sessionId).store.getSnapshot()
+    //     → { groups: [{id, models}], current: { provider, model } }
+    //
+    // `current.provider` 就是 provider id。只有四种属于本插件：
+    //   workbuddy-xdpool / workbuddy-xdpool-global / trae / trae-global
+    // 别的 provider（DeepSeek 官方等）一律**不渲染** —— 这行是内置胶囊的
+    // 地盘，不该被一个显示无关信息的控件占位。
+    //
+    // 取数成本是这里最需要克制的地方：两个状态接口都会真的向上游发起
+    // **计费调用**（WorkBuddy 每账号一次 credits 查询），所以：
+    //   - 绝不定时轮询，只在挂载、切模型、点击时取；
+    //   - 结果按 provider 缓存 90 秒，同一 provider 反复切换不重复打；
+    //   - 失败静默降级为不显示，绝不因为拿不到额度影响输入框。
+
+    /** provider id → 这个胶囊要查的池 */
+    const CREDIT_SOURCES = {
+      'workbuddy-xdpool': { kind: 'wb', region: 'cn', label: 'WorkBuddy' },
+      'workbuddy-xdpool-global': { kind: 'wb', region: 'global', label: 'WorkBuddy 国际版' },
+      trae: { kind: 'trae', region: 'cn', label: 'Trae' },
+      'trae-global': { kind: 'trae', region: 'ai', label: 'Trae 国际版' },
+    };
+
+    /** 缓存 TTL：90 秒内同一 provider 不重复请求（每次请求都是真实计费调用） */
+    const CREDIT_TTL_MS = 90000;
+    /**
+     * 模块级缓存：key 是 provider id。
+     *
+     * 刻意放在组件外 —— 胶囊在每次会话切换时都会重新挂载，缓存放组件内
+     * 就等于没有缓存。挂起中的 promise 也一起存，避免快速切换时并发打两发。
+     */
+    const creditCache = new Map();
+
+    function readCreditCache(provider) {
+      const hit = creditCache.get(provider);
+      if (hit === undefined) return undefined;
+      if (hit.pending !== undefined) return hit;
+      if (Date.now() - hit.atMs > CREDIT_TTL_MS) {
+        creditCache.delete(provider);
+        return undefined;
+      }
+      return hit;
+    }
+
+    /**
+     * 取某个 provider 的剩余积分。
+     *
+     * 返回值形如 `{ total, accounts }`，取不到时 `total` 为 undefined ——
+     * 调用方一律按「不显示数字」处理，不区分失败原因（原因进 title）。
+     */
+    async function fetchCredits(source) {
+      if (source.kind === 'wb') {
+        const data = await fetchJson(`${POOL_API}/status?region=${source.region}`);
+        const accounts = asArray(data?.accounts);
+        let total = 0;
+        let seen = false;
+        for (const a of accounts) {
+          const v = a?.credits?.total;
+          if (typeof v === 'number' && Number.isFinite(v)) {
+            total += v;
+            seen = true;
+          }
+        }
+        return { total: seen ? total : undefined, accounts: accounts.length };
+      }
+      const data = await fetchJson(`${TRAE_API}/usage?region=${source.region}`);
+      const general = data?.credits?.generalAvailable;
+      const work = data?.credits?.workAvailable;
+      let total;
+      if (typeof general === 'number' && Number.isFinite(general)) {
+        total = general + (typeof work === 'number' && Number.isFinite(work) ? work : 0);
+      }
+      return { total, accounts: asArray(data?.accounts).length };
+    }
+
+    /** 发起（或复用）一次取数，返回缓存记录 */
+    function requestCredits(provider, source) {
+      const existing = readCreditCache(provider);
+      if (existing !== undefined) return existing;
+      const rec = { atMs: Date.now(), pending: undefined, total: undefined, error: undefined };
+      rec.pending = fetchCredits(source)
+        .then((r) => {
+          rec.total = r.total;
+          rec.accounts = r.accounts;
+        })
+        .catch((e) => {
+          rec.error = e?.message ?? String(e);
+        })
+        .finally(() => {
+          rec.pending = undefined;
+          rec.atMs = Date.now();
+        });
+      creditCache.set(provider, rec);
+      return rec;
+    }
+
+    /**
+     * 订阅一个 model directory store 的当前选中项。
+     *
+     * 刻意不用 `useSyncExternalStore`：它对 getSnapshot 的返回做引用相等检查，
+     * 而这个 store 每次可能给出新对象，容易被判定为「每次都在变」并触发
+     * React 警告或无限重渲染。用订阅 + setState 的朴素写法最稳。
+     */
+    function useCurrentModel(resolveModelDirectory, sessionId) {
+      const [current, setCurrent] = useState(null);
+      useEffect(() => {
+        if (typeof resolveModelDirectory !== 'function' || sessionId === undefined) return undefined;
+        let store;
+        try {
+          store = resolveModelDirectory(sessionId);
+        } catch {
+          return undefined;
+        }
+        if (store === undefined || typeof store.subscribe !== 'function') return undefined;
+        const sync = () => {
+          try {
+            const snap = store.getSnapshot?.();
+            const cur = snap?.current;
+            setCurrent(
+              cur === undefined || cur === null
+                ? null
+                : { provider: cur.provider ?? '', model: cur.model ?? '' },
+            );
+          } catch {
+            setCurrent(null);
+          }
+        };
+        sync();
+        try {
+          return store.subscribe(sync);
+        } catch {
+          return undefined;
+        }
+      }, [resolveModelDirectory, sessionId]);
+      return current;
+    }
+
+    /**
+     * 输入框下方的额度胶囊。
+     *
+     * props 由 slot 契约给出：`sessionId`（scope: session）+ 本包 inject 的
+     * `resolveModelDirectory`。任何一环拿不到就返回 null —— 这是「只增不减」
+     * 的边界：宁可不显示，也绝不能让 composer 这一行报错。
+     */
+    function ComposerCreditsPill({ sessionId, resolveModelDirectory }) {
+      const current = useCurrentModel(resolveModelDirectory, sessionId);
+      const provider = current?.provider ?? '';
+      const source = CREDIT_SOURCES[provider];
+
+      const [tick, setTick] = useState(0);
+      const [busy, setBusy] = useState(false);
+
+      useEffect(() => {
+        if (source === undefined) return undefined;
+        ensureCss();
+        let alive = true;
+        const rec = readCreditCache(provider);
+        if (rec !== undefined) {
+          if (rec.pending !== undefined) {
+            rec.pending.then(() => {
+              if (alive) setTick((n) => n + 1);
+            });
+          }
+          return () => {
+            alive = false;
+          };
+        }
+        // 冷缓存：挂载时取一次。失败在下面按「无数字」渲染。
+        setBusy(true);
+        const fresh = requestCredits(provider, source);
+        fresh.pending?.then(() => {
+          if (alive) {
+            setBusy(false);
+            setTick((n) => n + 1);
+          }
+        });
+        return () => {
+          alive = false;
+        };
+        // provider 变了要重新取；tick 只用于强制重渲染，不进依赖
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [provider]);
+
+      if (source === undefined) return null;
+      const rec = readCreditCache(provider);
+      const total = rec?.total;
+      const title =
+        total === undefined
+          ? `${source.label}：额度读取中…（点击重试）`
+          : `${source.label} · 剩余 ${fmtNum(total)} 积分` +
+            (typeof rec?.accounts === 'number' && rec.accounts > 0 ? ` · ${rec.accounts} 个账号` : '') +
+            (rec?.error ? ` · ${rec.error}` : '');
+
+      return jsx('button', {
+        type: 'button',
+        className: 'wotr-credit-pill',
+        'data-busy': busy ? '1' : '0',
+        'data-state': typeof total === 'number' && total <= 0 ? 'warn' : 'ok',
+        title,
+        onClick: () => {
+          // 点击强制刷新：先清缓存再取，绕开 TTL
+          creditCache.delete(provider);
+          setBusy(true);
+          const fresh = requestCredits(provider, source);
+          fresh.pending?.then(() => {
+            setBusy(false);
+            setTick((n) => n + 1);
+          });
+        },
+        children: [
+          jsx('span', { className: 'wotr-credit-pill-dot' }),
+          jsx('span', {
+            className: 'wotr-credit-pill-num',
+            children: total === undefined ? '积分 –' : `积分 ${fmtNum(total)}`,
+          }),
+        ],
+      });
+    }
+    //#endregion
+
     /** 设置页主组件。props 来自 slots 契约：{ close, ...inject 的返回值 } */
     function WotrPage(props) {
       ensureCss();
@@ -3154,6 +3390,16 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       });
     }
 
+    /**
+     * 把「输入框下方的额度胶囊」挂到页面组件上一起交出去。
+     *
+     * 为什么挂在函数属性上而不是改返回值形状：生成脚本约定
+     * `createConsoleSection(...)` 返回的就是页面组件本身（client.js 会判
+     * `typeof Pkg !== 'function'`），改成一个对象会破坏那个既有契约。
+     * 挂个静态属性则两边都不用动。
+     */
+    WotrPage.ComposerCreditsPill = ComposerCreditsPill;
+
     return WotrPage;
   }
 
@@ -3540,6 +3786,39 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 解析「某个会话当前的模型目录 store」，供输入框下方的额度胶囊使用。
+     *
+     * 数据来自 model-selection 包的 `modelDirectories` 服务：
+     *
+     *   models.directoryFor(sessionId).store.getSnapshot()
+     *     → { groups: [{id, models}], current: { provider, model } }
+     *
+     * `current.provider` 就是 provider id，胶囊据此判断该显示哪个池的额度。
+     *
+     * **为什么用 ctx.get() 软取而不是写进 exports.inject：**
+     * cordis 的依赖门禁是硬性的 —— inject 里声明了运行时不提供的服务，
+     * 本插件的 apply 会**整个不执行**，WOTR 设置页会跟着一起消失。
+     * 而额度胶囊只是个锦上添花的小控件，不值得拿整个插件去赌。
+     * 软取拿不到时它自己返回 undefined，胶囊静默不渲染，其余一切照常。
+     *
+     * 每次调用都重新 ctx.get()：服务可能晚于本插件注册，缓存住
+     * 一次失败会永久失灵。
+     */
+    function resolveModelDirectory(ctx, sessionId) {
+      try {
+        if (typeof ctx?.get !== 'function') return undefined;
+        const models = ctx.get('modelDirectories');
+        if (models === undefined || models === null) return undefined;
+        if (typeof models.directoryFor !== 'function') return undefined;
+        const directory = models.directoryFor(sessionId);
+        return directory?.store ?? undefined;
+      } catch (e) {
+        console.error('[dsh-wotr-console] 模型目录解析失败（额度胶囊将不显示）:', e);
+        return undefined;
+      }
+    }
+
+    /**
      * 管理页组件：配置 + 查看。
      *
      * 组件本体在 console.mjs（普通 ES 模块，便于阅读与测试），
@@ -3555,6 +3834,9 @@ window.__ModuleLoader__.load({
 
         const Pkg = __WBC_CONSOLE_FACTORY__(react_, jsxRuntime_, embedded);
         if (typeof Pkg !== 'function') return;
+
+        // 传给额度胶囊的解析器：只依赖 ctx，绑定好会话后每次现取
+        const resolveModelDirectoryFn = (sessionId) => resolveModelDirectory(ctx, sessionId);
 
         const NS = 'wotr-console-page';
         ctx.effect(
@@ -3575,6 +3857,39 @@ window.__ModuleLoader__.load({
             Pkg,
           ),
         );
+
+        // 输入框下方的「当前模型额度」胶囊。
+        //
+        // 挂 conversation.composer.dock：conversation 包把它声明成
+        // `{ kind: "list", scope: "session" }`，就是输入框正下方那一行
+        // （内置的 tok/s · 缓存命中 胶囊也在那）。list 槽要求唯一的 id，
+        // order 取 10 让本胶囊排在内置 stats（order 0）之后。
+        //
+        // **inject 的第一个实参就是本会话的 sessionId**：renderer 的
+        // runInject 把 scope binding 的 key 当首参传给 inject。额度胶囊要靠
+        // 它去 modelDirectories 取当前模型，所以必须原样往下传 —— 漏传的话
+        // 组件里 sessionId 恒为 undefined，胶囊永远不渲染。
+        //
+        // 整段包 try：composer.dock 未必在每条宿主线上都被声明，
+        // 缺失时 register 会抛 "slot is not declared"，那不该连累设置页。
+        const Pill = Pkg?.ComposerCreditsPill;
+        if (typeof Pill === 'function' && typeof resolveModelDirectoryFn === 'function') {
+          try {
+            ctx.slots.inject('conversation.composer.dock', () =>
+              ctx.slots.register(
+                {
+                  name: 'conversation.composer.dock',
+                  id: 'wotr-credits',
+                  order: 10,
+                  inject: (sessionId) => ({ sessionId, resolveModelDirectory: resolveModelDirectoryFn }),
+                },
+                Pill,
+              ),
+            );
+          } catch (e) {
+            console.error('[dsh-wotr-console] 额度胶囊注册失败（不影响输入框）:', e);
+          }
+        }
       } catch (e) {
         console.error('[dsh-wotr-console] console page failed to register:', e);
       }

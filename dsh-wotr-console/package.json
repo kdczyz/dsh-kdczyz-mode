@@ -69,11 +69,13 @@
   "scripts": {
     "build:console": "node scripts/gen-console-inline.mjs && node scripts/gen-xdpool-client.mjs",
     "check:console": "node scripts/gen-console-inline.mjs --check",
-    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs && node test/trae-pool.test.mjs",
+    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs && node test/trae-pool.test.mjs && node test/wb-auth.test.mjs && node test/trae-auth.test.mjs",
     "test:store": "node test/credit-store.test.mjs",
     "test:client": "node test/client-apply.test.mjs",
     "test:render": "node test/console-render.test.mjs",
-    "test:pool": "node test/trae-pool.test.mjs"
+    "test:pool": "node test/trae-pool.test.mjs",
+    "test:wb-auth": "node test/wb-auth.test.mjs",
+    "test:trae-auth": "node test/trae-auth.test.mjs"
   },
   "dsh": {
     "bundle": {

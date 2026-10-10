@@ -1486,5 +1486,214 @@ for (const [name, traeStatus] of [
   ok('右列坏数据时左列仍渲染', err2 === null && text2.includes('测试账号'), err2?.message);
 }
 
+//#region 输入框下方的「当前模型额度」胶囊
+//
+// 这个组件挂在 conversation.composer.dock（输入框正下方那一行），
+// 与设置面板**完全无关** —— 它在对话页渲染。所以它必须满足两个更严的约束：
+//   1. 任何一环拿不到（没有 modelDirectories / 没有 sessionId / provider 不是
+//      本插件的）都要**返回 null**，不能在 composer 那一行渲染出东西；
+//   2. 绝不能抛 —— 它旁边就是输入框，抛错会连累整个 compose 区域。
+console.log('\n输入框额度胶囊\n');
+
+{
+  const Pill = createConsoleSection({ react: makeReact(), jsxRuntime: makeJsxRuntime(), embedded: {} })
+    .ComposerCreditsPill;
+  ok('工厂在页面组件上挂出了 ComposerCreditsPill', typeof Pill === 'function');
+}
+
+/** 造一个最小 model directory store */
+function makeModelStore(provider, model = 'some-model') {
+  let listener = null;
+  return {
+    store: {
+      subscribe: (fn) => {
+        listener = fn;
+        return () => {
+          listener = null;
+        };
+      },
+      getSnapshot: () => ({ groups: [], current: { provider, model } }),
+    },
+    fire: () => listener?.(),
+  };
+}
+
+/** 渲染胶囊一次，返回 {node, text} */
+function renderPill(provider, { modelDir, sessionId = 's1', preset = {}, runEffects = false } = {}) {
+  const react = makeReact(preset, runEffects);
+  const jsxRuntime = makeJsxRuntime();
+  const Pill = createConsoleSection({ react, jsxRuntime, embedded: {} }).ComposerCreditsPill;
+  const node = Pill({ sessionId, resolveModelDirectory: modelDir });
+  const out = [];
+  collectText(node, out);
+  return { node, text: out.join('') };
+}
+
+// 非本插件的 provider：必须不渲染任何东西
+for (const foreign of ['deepseek', 'deepseek-v4.1-flash', '', undefined]) {
+  const { node } = renderPill(foreign, { modelDir: () => makeModelStore(foreign).store, preset: { 0: null } });
+  ok(`provider=${JSON.stringify(foreign)} 时不渲染`, node === null);
+}
+
+// 没有 sessionId / 没有解析器：也不能崩、不能渲染
+{
+  const react = makeReact({}, false);
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let err = null;
+  let node = 'unset';
+  try {
+    node = Pill({});
+  } catch (e) {
+    err = e;
+  }
+  ok('缺 props 时不抛且返回 null', err === null && node === null, err?.message);
+
+  let err2 = null;
+  try {
+    Pill({ sessionId: 's1', resolveModelDirectory: () => undefined });
+  } catch (e) {
+    err2 = e;
+  }
+  ok('解析器返回 undefined 时不抛', err2 === null, err2?.message);
+}
+
+// 解析器自身抛错：必须被吞掉
+{
+  const react = makeReact({}, false);
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let err = null;
+  try {
+    Pill({
+      sessionId: 's1',
+      resolveModelDirectory: () => {
+        throw new Error('boom');
+      },
+    });
+  } catch (e) {
+    err = e;
+  }
+  ok('解析器抛错时被吞掉（不连累输入框）', err === null, err?.message);
+}
+
+// 本插件的四个 provider 都要认出来，并渲染出胶囊节点
+//
+// 预置 state[0]（useCurrentModel 的 current）而不是靠 effect 跑出来：
+// 本文件的 react 桩里 setState 只改 hook 槽位、不会触发重渲染，所以
+// 「effect 里 setState」在同一次调用里看不出来。既有用例同样用 preset。
+for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', 'trae-global']) {
+  const { node } = renderPill(provider, {
+    modelDir: () => makeModelStore(provider).store,
+    preset: { 0: { provider, model: 'some-model' } },
+  });
+  const cls = String(node?.props?.className ?? '');
+  ok(`provider=${provider} 渲染胶囊`, cls.includes('wotr-credit-pill'), cls);
+  const out = [];
+  collectText(node, out);
+  ok(`provider=${provider} 胶囊含「积分」字样`, out.join('').includes('积分'), out.join(''));
+}
+
+// 真取到额度后要显示数字（走 fetch 桩 + 点击强制刷新绕开模块级缓存）
+{
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ ok: true, accounts: [{ credits: { total: 1234 } }, { credits: { total: 66 } }] }),
+  });
+  const store = makeModelStore('workbuddy-xdpool');
+  const react = makeReact({ 0: { provider: 'workbuddy-xdpool', model: 'm' } }, false);
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let node = null;
+  let err = null;
+  try {
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+    // 点击 = 清缓存 + 重新取，是真实用户能走的路径
+    node?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  const text = out.join('');
+  ok('取到额度后显示合计数字', err === null && text.includes('1,300'), text);
+  globalThis.fetch = prevFetch;
+}
+
+// fetch 失败：显示占位而不是崩
+{
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('network down');
+  };
+  const store = makeModelStore('trae');
+  const react = makeReact({ 0: { provider: 'trae', model: 'm' } }, false);
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let err = null;
+  let node = null;
+  try {
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+    node?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  ok('取数失败时不抛且显示占位', err === null && out.join('').includes('积分'), err?.message);
+  globalThis.fetch = prevFetch;
+}
+
+// Trae usage 的 general + work 要相加
+{
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ credits: { generalAvailable: 500, workAvailable: 25 } }),
+  });
+  const store = makeModelStore('trae-global');
+  const react = makeReact({ 0: { provider: 'trae-global', model: 'm' } }, false);
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let node = null;
+  let err = null;
+  try {
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+    node?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  ok('Trae 的通用+工作余额相加', err === null && out.join('').includes('525'), out.join(''));
+  globalThis.fetch = prevFetch;
+}
+
+// 点击不抛（强制刷新路径）
+{
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = () => new Promise(() => {});
+  const store = makeModelStore('workbuddy-xdpool-global');
+  const { node } = renderPill('workbuddy-xdpool-global', {
+    modelDir: () => store.store,
+    preset: { 0: { provider: 'workbuddy-xdpool-global', model: 'm' } },
+  });
+  let err = null;
+  try {
+    node?.props?.onClick?.();
+  } catch (e) {
+    err = e;
+  }
+  ok('点击胶囊强制刷新不抛', err === null, err?.message);
+  globalThis.fetch = prevFetch;
+}
+
+//#endregion
+
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);
