@@ -813,6 +813,73 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         }
       };
 
+      /**
+       * 从 WorkBuddy 刷新实时目录 —— 对齐 Trae 页的「从 Trae 刷新」：拉取即落盘。
+       *
+       * 服务端（lib/index.js 的 POST /wb/models/refresh）负责拉一次上游目录并更新
+       * 内存 catalog；这里把返回的 fresh 目录整表写入本区域选择：全部启用
+       * （Trae 同款），图片能力跟随上游 supportsImages，上下文/推理强度沿用既有
+       * 选择（新模型跟目录默认）。写完读回确认才丢草稿，用户不需要再点「保存」。
+       */
+      const refreshCatalog = async () => {
+        if (!writable) return;
+        setBusy('refresh');
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          const body = await fetchJson(`${SELF_API}/wb/models/refresh?region=${region}`, {
+            method: 'POST',
+          });
+          const fresh = asArray(body?.models).filter(
+            (model) => typeof model?.id === 'string' && model.id !== '',
+          );
+          if (fresh.length === 0) throw new Error('WorkBuddy 未返回任何模型');
+          const freshIds = fresh.map((model) => model.id);
+          const prevBase = poolDraftFromStatus(status);
+          const next = {};
+          const contextBudgets = {};
+          const reasoningEfforts = {};
+          const imageModelIds = [];
+          for (const model of fresh) {
+            const prev = prevBase[model.id] ?? {};
+            const images = model.supportsImages === true;
+            next[model.id] = {
+              enabled: true,
+              images,
+              ...(prev.budget !== undefined ? { budget: prev.budget } : {}),
+              ...(prev.effort !== undefined ? { effort: prev.effort } : {}),
+            };
+            if (prev.budget !== undefined) contextBudgets[model.id] = prev.budget;
+            const offered = asArray(model.supportedEfforts);
+            if (prev.effort !== undefined && (offered.length === 0 || offered.includes(prev.effort))) {
+              reasoningEfforts[model.id] = prev.effort;
+            }
+            if (images) imageModelIds.push(model.id);
+          }
+          await writeField(poolSelectionKey(region), {
+            enabledModelIds: freshIds,
+            imageModelIds,
+            contextBudgets,
+            reasoningEfforts,
+            maxMode,
+          });
+          // 先读回确认，再丢弃草稿（顺序反了会「闪一下又弹回去」）
+          await onRefresh();
+          dropDraft();
+          setMaxModeByRegion((prev) => {
+            if (prev[region] === undefined) return prev;
+            const copy = { ...prev };
+            delete copy[region];
+            return copy;
+          });
+          setSavedNote(`已刷新：${freshIds.length} 个模型，已全部启用`);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setBusy(null);
+        }
+      };
+
       const totals = poolAutomationTotals(status);
       const dirty = modelsDirty;
 
@@ -1132,7 +1199,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                       jsx('span', { className: 'wbc-col-title', children: '模型' }),
                       jsx('span', {
                         className: 'wbc-col-sub',
-                        children: `已启用 ${enabledCount} / ${models.length}`,
+                        children: `已启用 ${enabledCount} 个 · 实时目录 ${models.length} 个`,
                       }),
                       jsx('div', { className: 'wbc-spacer' }),
                       jsx('label', {
@@ -1146,6 +1213,14 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                           }),
                           jsx('span', { children: 'Max 模式（满上下文 + 最强思考）' }),
                         ],
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        title: '拉一次上游实时目录：列表更新 + 所有模型自动全启用，立即生效（无需再点保存）。',
+                        disabled: !writable || busy === 'refresh' || loading,
+                        onClick: refreshCatalog,
+                        children: busy === 'refresh' ? '刷新中…' : '从 WorkBuddy 刷新',
                       }),
                       jsx('button', {
                         type: 'button',
@@ -1164,7 +1239,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                       jsx('button', {
                         type: 'button',
                         className: 'wbc-btn wbc-btn-primary',
-                        disabled: !writable || busy === 'models' || enabledCount === 0,
+                        disabled: !writable || busy !== null || enabledCount === 0,
                         onClick: saveModels,
                         children: busy === 'models' ? '保存中…' : '保存',
                       }),

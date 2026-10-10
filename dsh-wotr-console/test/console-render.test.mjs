@@ -960,7 +960,8 @@ await (async () => {
     'Max 模式（满上下文 + 最强思考）',
     '一键启用所有模型',
     '保存',
-    '已启用 1 / 2',          // 勾选计数
+    '已启用 1 个 · 实时目录 2 个', // 勾选计数（与 Trae 页同款文案）
+    '从 WorkBuddy 刷新',     // 目录刷新（拉取即落盘）
   ]) {
     ok(`XD Pool 配置页渲染出「${must}」`, text.includes(must), text.slice(0, 200));
   }
@@ -1252,8 +1253,124 @@ await (async () => {
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     const text = collectAll(Page({}));
-    ok('一个模型都没启用时显示「已启用 0 / 2」', text.includes('已启用 0 / 2'), text.slice(0, 200));
+    ok('一个模型都没启用时显示「已启用 0 个 · 实时目录 2 个」', text.includes('已启用 0 个 · 实时目录 2 个'), text.slice(0, 200));
     ok('没有发生任何模型写入（保存被拒）', !writes.some(([f]) => f === 'modelSelectionCn'));
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+})();
+
+/**
+ * —— 2g-6) XD Pool「从 WorkBuddy 刷新」：拉取即落盘，对齐 Trae 的「从 Trae 刷新」 ——
+ *
+ * 点一次刷新必须同时完成三件事，不需要用户再点「保存」：
+ *   1. POST 本包的 /wb/models/refresh 拉实时目录（vendor 启动种子只在启动时拉一次）；
+ *   2. 整段覆盖本区域选择键（cn → modelSelectionCn）：fresh 全部启用、
+ *      图片能力跟随上游 supportsImages、既有上下文/推理强度沿用；
+ *   3. 丢弃草稿并刷新池状态。
+ */
+await (async () => {
+  const writes = [];
+  const refreshCalls = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (url) => {
+    if (typeof url === 'string' && url.includes('/plugins/dsh-wotr-console/wb/models/refresh')) {
+      refreshCalls.push(url);
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            region: 'cn',
+            models: [
+              { id: 'm1', name: 'DeepSeek-V4-Flash', contextWindow: 2e5, maxTokens: 8192, supportsImages: false },
+              { id: 'm3', name: 'Kimi-K3', contextWindow: 256000, maxTokens: 8192, supportsImages: true },
+            ],
+          }),
+      });
+    }
+    if (typeof url === 'string' && url.includes('/plugins/dsh-workbuddy-xdpool/status')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(poolStatusFixture) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    const react = makeReact({ 0: 'pool-config' }, true);
+    const jsxRuntime = makeJsxRuntime();
+    const wbScope = makeScope({});
+    wbScope.set = (field, value) => {
+      writes.push([field, value]);
+      return Promise.resolve(true);
+    };
+    const Page = createConsoleSection({
+      react,
+      jsxRuntime,
+      embedded: { wbSettings: makeHandle(wbScope), traeSettings: makeHandle(makeTraeScope({})) },
+    });
+    collectText(Page({}), []);
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    const tree = Page({});
+
+    const findButtonProps = (label) => {
+      let hit = null;
+      (function walk(n, d = 0) {
+        if (hit !== null || d > 40 || n === null || typeof n !== 'object') return;
+        if (Array.isArray(n)) {
+          for (const c of n) walk(c, d);
+          return;
+        }
+        const { type, props } = n;
+        if (typeof type === 'string' && type === 'button' && props?.children === label) {
+          hit = props;
+          return;
+        }
+        if (typeof type === 'function') {
+          try {
+            walk(type(props ?? {}), d + 1);
+          } catch {
+            /* 忽略渲染失败的子树 */
+          }
+          return;
+        }
+        if (typeof type === 'string') walk(props?.children, d + 1);
+      })(tree);
+      return hit;
+    };
+
+    const refreshBtn = findButtonProps('从 WorkBuddy 刷新');
+    ok('找得到「从 WorkBuddy 刷新」按钮', typeof refreshBtn?.onClick === 'function');
+    await refreshBtn.onClick();
+
+    ok('刷新调用的是本包 /wb/models/refresh 路由', refreshCalls.length === 1, JSON.stringify(refreshCalls));
+    ok('刷新路由带当前区域参数', refreshCalls[0]?.includes('region=cn') === true, refreshCalls[0]);
+    const modelWrite = writes.find(([f]) => f === 'modelSelectionCn');
+    ok('刷新直接落盘 modelSelectionCn（无需点保存）', modelWrite !== undefined, JSON.stringify(writes.map(([f]) => f)));
+    if (modelWrite !== undefined) {
+      const payload = modelWrite[1];
+      ok(
+        '刷新写入整段五键覆盖',
+        ['enabledModelIds', 'imageModelIds', 'contextBudgets', 'reasoningEfforts', 'maxMode'].every(
+          (k) => k in (payload ?? {}),
+        ),
+        JSON.stringify(Object.keys(payload ?? {})),
+      );
+      ok(
+        '刷新后 fresh 全部启用（含新模型 m3）',
+        Array.isArray(payload.enabledModelIds) && payload.enabledModelIds.join(',') === 'm1,m3',
+        JSON.stringify(payload.enabledModelIds),
+      );
+      ok(
+        '图片能力跟随上游 supportsImages（m3 → imageModelIds）',
+        payload.imageModelIds?.join(',') === 'm3',
+        JSON.stringify(payload.imageModelIds),
+      );
+      ok(
+        'Max 模式沿用当前区域既有值',
+        payload.maxMode === poolStatusFixture.selection.maxMode,
+        String(payload.maxMode),
+      );
+    }
   } finally {
     globalThis.fetch = prevFetch;
   }

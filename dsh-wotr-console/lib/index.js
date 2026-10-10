@@ -619,8 +619,85 @@ function mountConsoleRoutes(ctx, config) {
         }),
       );
 
+      // —— WorkBuddy 模型目录刷新 ——
+      //
+      // 对齐 Trae 半边的 POST /models/refresh：拉一次上游实时目录，立即更新
+      // 内存里的 catalog（vendor 的启动种子只在插件加载时拉一次，WorkBuddy
+      // 之后新上的模型要重启 DSH 才看得见），把解析后的目录行原样返回。
+      //
+      // 「自动全量启用」不放这半边：vendor 的启动种子同样只更新目录不动勾选，
+      // 勾选落盘由管理页走 settingsScope 完成（与 vendored 卡片同一写入路径，
+      // 写完读回确认），路由只负责「取目录」这一件事。
+      const modelRefreshInflight = new Map();
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/wb/models/refresh`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            const region =
+              new URL(req.url ?? '/', 'http://localhost').searchParams.get('region') === 'global'
+                ? 'global'
+                : 'cn';
+            let inflight = modelRefreshInflight.get(region);
+            if (inflight === undefined) {
+              inflight = (async () => {
+                const api = xdpoolModule.currentApi?.();
+                if (!api?.pool || !api?.client || !api?.catalogs?.[region]) {
+                  throw new Error('模型池尚未就绪，稍后再试');
+                }
+                let accounts = api.pool.list(region);
+                if (accounts.length === 0) {
+                  await api.pool.scan();
+                  accounts = api.pool.list(region);
+                }
+                if (accounts.length === 0) {
+                  throw new Error(
+                    `没有 ${region === 'global' ? '国际版' : '国内版'} WorkBuddy 账号，无法拉取模型目录`,
+                  );
+                }
+                // 优先用不在冷却里的账号拉目录（冷却账号的 token 可能已被上游限流）
+                const usable =
+                  accounts.find((a) => a.credential && (a.cooldownUntilMs ?? 0) <= Date.now()) ??
+                  accounts[0];
+                const models = await api.client.fetchModels(usable.credential);
+                if (!Array.isArray(models) || models.length === 0) {
+                  throw new Error('WorkBuddy 未返回任何模型');
+                }
+                api.catalogs[region].updateFromUpstream(models);
+                // 尽力让已注册的 provider 重建模型表（失败不影响目录本身已更新）
+                try {
+                  api.adapter?.invalidate?.();
+                } catch {
+                  /* 下一次请求仍会按新目录取模型 */
+                }
+                return api.catalogs[region].current().map((model) => ({
+                  id: model.id,
+                  name: model.name,
+                  contextWindow: model.contextWindow,
+                  maxTokens: model.maxOutputTokens,
+                  supportsImages: model.supportsImages === true,
+                  ...(model.supportedEfforts === undefined
+                    ? {}
+                    : { supportedEfforts: model.supportedEfforts }),
+                  ...(model.multiplier === undefined ? {} : { multiplier: model.multiplier }),
+                }));
+              })().finally(() => modelRefreshInflight.delete(region));
+              modelRefreshInflight.set(region, inflight);
+            }
+            try {
+              const models = await inflight;
+              json(res, 200, { ok: true, region, models });
+            } catch (e) {
+              json(res, 502, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
       ctx.logger?.info?.(
-        '[wotr-console] 管理页接口已挂载（history-summary / sample / wb+trae login）',
+        '[wotr-console] 管理页接口已挂载（history-summary / sample / wb+trae login / wb models refresh）',
       );
     });
   } catch (e) {
