@@ -41,13 +41,30 @@
 > 上游、既有上下文/推理强度沿用），写完读回确认。勾选落盘仍走管理页的
 > settingsScope 写入路径，路由只负责「取目录」。
 
-> XD Pool 的组件本体来自 vendored 代码（`PoolCard`），由 `lib/client.js` 在转发
-> apply 时**截获**它原本作为独立入口的注册，改由管理页渲染 —— 上游源码一行未改。
+> **两个配置页（XD Pool / Trae 配置）共用同一套前端样式。** 它们由 `console.mjs`
+> 的 `PoolConfigTab` 与 `TraeConfigTab` 各自实现，但页内骨架全部走共用模块
+> （`ColumnHead` / `StatsRow` / `AccountCard` / `ModelCard` / `EmptyBox`）：
 >
-> Trae 配置 tab 是**本包自写**的（`console.mjs` 的 `TraeConfigTab`）：不再嵌入上游
-> dsh-connect-trae 的浏览器卡片（`vendor/trae` 已移除），而是按本页 WorkBuddy 的
-> 模块样式直接实现，读写走 `lib/trae.js` 已有的路由与 `regions` / `accounts` 设置
-> 字段。它的 settings 作用域由 `client.js` 的 `resolveTraeSettings()` 解析后传入。
+> | 位置 | 两页统一的形态 |
+> |---|---|
+> | 列头 | `ColumnHead`：标题 + 区域切换 + 可选插件 + 右侧操作按钮 |
+> | 统计 | `StatsRow`：自适应网格的统计小卡 |
+> | 账号卡 | `AccountCard`：名称 + 状态标签 + KV 明细 + `extra` 内嵌控件 + 底部操作按钮 |
+> | 模型列表 | `ModelCard`：`wbc-cols` 网格，每模型一个单元（勾选 / 元信息 / 附加控件 / 测试徽章） |
+> | 保存条 | `wbc-model-actions`：列表底部 sticky，勾完最后一项就够得着 |
+>
+> 两页**功能集**不同（Trae 有供应商开关；XD Pool 有「已移出账号池」与「积分自动化」），
+> 这些差异保留 —— 统一的是骨架与控件排布，不是内容。`test/console-render.test.mjs`
+> 结尾有一组「两页样式一致性」断言守着这件事（列头骨架、账号卡骨架、模型网格），
+> 因为它不会让任何功能测试失败，只能显式断言。
+>
+> XD Pool 的 vendored 客户端（`vendor/xdpool/lib/client.js`）仍被内联执行，但只用于
+> 两件事：注册它那份 locale 文案，以及解析它原本绑定的 settings 作用域 ——
+> 配置界面本身已由本包自写，不再嵌入上游的 `PoolCard`。
+>
+> Trae 配置 tab 同样是**本包自写**：不嵌入上游 dsh-connect-trae 的浏览器卡片
+> （`vendor/trae` 已移除），读写走 `lib/trae.js` 已有的路由与 `regions` / `accounts`
+> 设置字段。它的 settings 作用域由 `client.js` 的 `resolveTraeSettings()` 解析后传入。
 
 打开本页默认停在 **XD Pool**。
 
@@ -114,8 +131,9 @@ props（`opts.inject()` 求值一次，`settingsScope` 是同一对象引用）�
 ### Trae 配置 tab：本包自写
 
 上游 `dsh-connect-trae` 的浏览器半边（`vendor/trae/client.js`）**已整体移除**，
-Trae 配置页改为本包自写（`console.mjs` 的 `TraeConfigTab`），按本页 WorkBuddy 的
-模块样式实现：供应商开关、账号绑定、模型勾选与测试、号池管理。
+Trae 配置页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 XD Pool 页共用同一套
+模块样式（`ColumnHead` / `StatsRow` / `AccountCard` / `ModelCard`）实现：供应商开关、
+账号绑定、模型勾选与测试、号池管理。
 
 它不需要上游的卡片组件，只需要一份 **Trae settings 作用域**，由
 `client.js` 的 `resolveTraeSettings()` 解析。解析规则与上游客户端一致，**尤其

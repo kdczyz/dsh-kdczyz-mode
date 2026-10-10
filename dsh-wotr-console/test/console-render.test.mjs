@@ -61,6 +61,13 @@ const ok = (name, cond, extra) => {
  */
 function makeReact(preset = {}, runEffects = false) {
   const hooks = [];
+  /**
+   * 每个跑过的 effect 返回的清理函数。
+   *
+   * 由调用方决定何时「卸载」（逐个跑一遍）。需要它的用例在
+   * makeReact(...) 之后读 `react.cleanups`。
+   */
+  const cleanups = [];
   let cursor = 0;
   /**
    * setState 是真的（不再是 no-op）。
@@ -86,7 +93,11 @@ function makeReact(preset = {}, runEffects = false) {
       cursor++;
       if (runEffects) {
         try {
-          fn();
+          // 清理函数统一收进 cleanups：要测「卸载」的用例自己跑一遍即可。
+          // 早期版本把返回值直接丢掉，于是任何「卸载时有没有清定时器/退订」
+          // 都无法验证 —— 而漏清定时器正是切会话越切越费的成因。
+          const r = fn();
+          if (typeof r === 'function') cleanups.push(r);
         } catch {
           /* 副作用里的错误不影响渲染层断言 */
         }
@@ -104,6 +115,17 @@ function makeReact(preset = {}, runEffects = false) {
      * 表现为页面莫名跳回另一个标签页。
      */
     reset() { cursor = 0; },
+    /** 跑掉所有 effect 的清理函数，模拟组件卸载 */
+    unmount() {
+      for (const fn of cleanups.splice(0)) {
+        try {
+          fn();
+        } catch {
+          /* 清理里抛错不该让用例崩，交由断言判断 */
+        }
+      }
+    },
+    cleanups,
     createElement: () => null,
     Fragment: 'Fragment',
   };
@@ -1810,7 +1832,337 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   globalThis.fetch = prevFetch;
 }
 
+/**
+ * —— 定时刷新（30 秒）——
+ *
+ * 这一组必须**真的跑 effect**，否则等于没测：胶囊的刷新全在 useEffect 里，
+ * 上面所有用例都用 runEffects=false，定时器那条分支根本没被执行过。
+ *
+ * 用假定时器（替换 globalThis.setInterval / clearInterval）来断言：
+ *   - 挂载时注册了一个 30 秒的 interval；
+ *   - 到点会真的再发一次请求；
+ *   - 卸载时 interval 被清掉（否则切会话会累积定时器，越切越费）。
+ * 同时给 document 一个最小桩，让 visibilityState 判定可走。
+ */
+{
+  const prevFetch = globalThis.fetch;
+  const prevSetInterval = globalThis.setInterval;
+  const prevClearInterval = globalThis.clearInterval;
+  const prevDocument = globalThis.document;
+
+  /** 记录注册的定时器：{fn, ms, id, cleared} */
+  const timers = [];
+  let nextId = 1;
+  globalThis.setInterval = (fn, ms) => {
+    const t = { fn, ms, id: nextId++, cleared: false };
+    timers.push(t);
+    return t.id;
+  };
+  globalThis.clearInterval = (id) => {
+    const t = timers.find((x) => x.id === id);
+    if (t !== undefined) t.cleared = true;
+  };
+  globalThis.document = {
+    visibilityState: 'visible',
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    head: { appendChild: () => {} },
+    createElement: () => ({ dataset: {}, textContent: '' }),
+    querySelector: () => null,
+  };
+
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: true, json: async () => ({ ok: true, accounts: [{ credits: { total: 700 + calls } }] }) };
+  };
+
+  const store = makeModelStore('workbuddy-xdpool');
+  const react = makeReact({ 0: { provider: 'workbuddy-xdpool', model: 'm' } }, true); // runEffects
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let err = null;
+  try {
+    Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+  } catch (e) {
+    err = e;
+  }
+  await new Promise((r) => setTimeout(r, 0));
+
+  ok('挂载后注册了定时器', err === null && timers.length === 1, err?.message ?? `timers=${timers.length}`);
+  if (timers.length === 1) {
+    ok('定时器间隔为 30 秒', timers[0].ms === 30000, String(timers[0].ms));
+    const before = calls;
+    // 触发到点回调
+    timers[0].fn();
+    await new Promise((r) => setTimeout(r, 0));
+    ok('到点会再次请求', calls > before, `before=${before} after=${calls}`);
+  }
+
+  // 卸载必须清掉定时器
+  let cleanupErr = null;
+  try {
+    react.unmount();
+  } catch (e) {
+    cleanupErr = e;
+  }
+  ok('卸载时不抛', cleanupErr === null, cleanupErr?.message);
+  ok('卸载时清掉了定时器', timers.length === 1 && timers[0].cleared === true, `cleared=${timers[0]?.cleared}`);
+
+  // 页面隐藏时那一拍不发请求
+  {
+    const timers2 = [];
+    let id2 = 1;
+    globalThis.setInterval = (fn, ms) => {
+      timers2.push({ fn, ms, id: id2++ });
+      return id2 - 1;
+    };
+    globalThis.document.visibilityState = 'hidden';
+    const store2 = makeModelStore('trae');
+    const react2 = makeReact({ 0: { provider: 'trae', model: 'm' } }, true);
+    const Pill2 = createConsoleSection({ react: react2, jsxRuntime: makeJsxRuntime(), embedded: {} })
+      .ComposerCreditsPill;
+    let node2 = null;
+    try {
+      const realUseEffect2 = react2.useEffect;
+      react2.useEffect = (fn) => {
+        fn();
+      };
+      node2 = Pill2({ sessionId: 's1', resolveModelDirectory: () => store2.store });
+      react2.useEffect = realUseEffect2;
+    } catch (e) {
+      err = e;
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    const beforeHidden = calls;
+    if (timers2.length > 0) timers2[0].fn();
+    await new Promise((r) => setTimeout(r, 0));
+    ok('页面隐藏时到点不发请求', calls === beforeHidden, `before=${beforeHidden} after=${calls}`);
+    void node2;
+  }
+
+  globalThis.fetch = prevFetch;
+  globalThis.setInterval = prevSetInterval;
+  globalThis.clearInterval = prevClearInterval;
+  globalThis.document = prevDocument;
+}
+
 //#endregion
+
+//#region 两个配置页的样式一致性
+//
+// 这一组守住「XD Pool 与 Trae 配置看起来是同一个东西」这件事。
+//
+// 先前两页各写各的：Trae 页的列头**没有标题**、号池账号卡是手写的（不走
+// AccountCard）、模型列表是 wbc-model 行式而 XD Pool 是 wbc-cols 网格、
+// 保存按钮一个在表头一个在底部。并排切换一眼就是两套设计。
+//
+// 这类问题**不会让任何测试失败**（页面照样渲染、功能照样能用），所以必须
+// 显式断言结构，否则下次再分叉也没人发现。
+console.log('\n两页样式一致性\n');
+
+/**
+ * 用 fetch 桩把两个页面都喂上完整数据，再抽「模块级 class 序列」。
+ *
+ * 与前面号池用例同一套路：喂数据而不是预置 hook 下标（下标会随组件改动漂移）。
+ */
+async function moduleSequenceOf(tabId, fixtures) {
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (url) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-connect-trae/usage')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(fixtures.trae) });
+    }
+    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(fixtures.pool) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    const react = makeReact({ 0: tabId }, true);
+    const jsxRuntime = makeJsxRuntime();
+    const Page = createConsoleSection({ react, jsxRuntime, embedded: makeEmbedded() });
+    /**
+     * 必须**遍历**元素树，不能只调用 Page()。
+     *
+     * `Page({})` 只返回元素树；子组件（TraeConfigTab 之类）要等遍历器调用
+     * `type(props)` 才会执行，它们的 useEffect 也才跑 —— 也就是数据请求
+     * 是在遍历时发出的。早先这里只写 `Page({})` 就把返回值丢了，于是
+     * Trae 页永远停在 loading 态，而 XD Pool 页因为数据来自主组件反而正常。
+     */
+    const drive = (node) => {
+      const sink = [];
+      collectText(node, sink);
+    };
+    drive(Page({}));
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    drive(Page({}));
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    const tree = Page({});
+
+    /** 只保留这一层级的模块 class，忽略文本与数量 */
+    const MODULE = /^(wbc-col-head|wbc-col-title|wbc-col-sub|wbc-sums|wbc-sum|wbc-sum-label|wbc-sum-value|wbc-sum-sub|wbc-models|wbc-bar|wbc-cards|wbc-card|wbc-card-head|wbc-name|wbc-tag|wbc-kv|wbc-k|wbc-v|wbc-btn|wbc-cols|wbc-col|wbc-check|wbc-model-name|wbc-model-meta|wbc-empty|wbc-note|wbc-probe|wbc-model-actions)$/;
+    const seq = [];
+    (function walk(node, depth = 0) {
+      if (depth > 40 || node === null || node === undefined || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const c of node) walk(c, depth);
+        return;
+      }
+      const { type, props } = node;
+      if (typeof type === 'function') {
+        try {
+          walk(type(props ?? {}), depth + 1);
+        } catch {
+          /* 子组件的降级分支，跳过 */
+        }
+        return;
+      }
+      const cls = props?.className;
+      if (typeof cls === 'string') {
+        const hit = cls.trim().split(/\s+/).find((c) => MODULE.test(c));
+        if (hit !== undefined) seq.push(hit);
+      }
+      walk(props?.children, depth + 1);
+    })(tree, 0);
+    return seq;
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+}
+
+const parityPool = {
+  ...poolStatusFixture,
+  models: [{ id: 'm1', name: 'M1', nativeContextWindow: 2e5, maxTokens: 8192, supportsImages: true, supportedEfforts: ['off', 'high'], enabled: true }],
+};
+const parityTrae = {
+  status: 'signed-in',
+  accountName: 'trae-user@example.com',
+  // 两个账号：Trae 页的绑定卡只在 accounts.length > 1 时出现（单账号没什么可切），
+  // 与 XD Pool 侧「账号卡无条件显示」不同 —— 这是**数据条件**的差异，
+  // 不是样式差异，所以夹具给两个账号才能真正比到卡片骨架。
+  accounts: [
+    { id: 't1', accountName: 'trae-user@example.com', selected: true },
+    { id: 't2', accountName: 'trae-backup@example.com', selected: false },
+  ],
+  models: [{ id: 'tm1', name: 'TM1', contextWindow: 2e5 }],
+  enabledModelIds: ['tm1'],
+  credits: { generalAvailable: 1200, workAvailable: 340 },
+  checkin: { checkedIn: false, credits: 50 },
+  pool: {
+    distribution: 'priority',
+    lastServedId: 't1',
+    accounts: [{ id: 't1', label: 't1', cooling: false, rateLimitHits: 0, disabled: false, creditReserve: 0 }],
+  },
+};
+
+{
+  const fixtures = { pool: parityPool, trae: parityTrae };
+  const poolSeq = await moduleSequenceOf('pool-config', fixtures);
+  const traeSeq = await moduleSequenceOf('trae-config', fixtures);
+
+  // ① 两页都要有列头标题 —— 先前 Trae 页没有，切换时视觉重心对不齐
+  ok('XD Pool 列头有标题', poolSeq[0] === 'wbc-col-head' && poolSeq[1] === 'wbc-col-title', poolSeq.slice(0, 3).join(','));
+  ok('Trae 列头有标题', traeSeq[0] === 'wbc-col-head' && traeSeq[1] === 'wbc-col-title', traeSeq.slice(0, 3).join(','));
+
+  // ② 两页的列头骨架一致：标题 → 区域按钮 → (可选插件) → 操作按钮
+  const headOf = (seq) => {
+    const out = [];
+    for (const c of seq) {
+      out.push(c);
+      if (c === 'wbc-btn' && out.filter((x) => x === 'wbc-btn').length >= 2) break;
+    }
+    return out.join('>');
+  };
+  ok(
+    '两页列头骨架一致（标题 + 区域按钮）',
+    headOf(poolSeq) === headOf(traeSeq),
+    `pool=${headOf(poolSeq)} trae=${headOf(traeSeq)}`,
+  );
+
+  // ③ 统计行：两页都有
+  ok('XD Pool 有统计行', poolSeq.includes('wbc-sums'));
+  ok('Trae 有统计行', traeSeq.includes('wbc-sums'));
+
+  // ④ 账号卡走同一套骨架（card → card-head → name → tag → kv）
+  const cardShape = (seq) => {
+    const i = seq.indexOf('wbc-card');
+    return i === -1 ? '' : seq.slice(i, i + 5).join('>');
+  };
+  ok(
+    '两页账号卡骨架一致',
+    cardShape(poolSeq) === cardShape(traeSeq),
+    `pool=${cardShape(poolSeq)} trae=${cardShape(traeSeq)}`,
+  );
+
+  // ⑤ 模型列表：两页都用 wbc-cols 网格 + wbc-col 单元（先前 Trae 是 wbc-model 行式）
+  ok('XD Pool 模型列表用网格', poolSeq.includes('wbc-cols') && poolSeq.includes('wbc-col'));
+  ok('Trae 模型列表用网格', traeSeq.includes('wbc-cols') && traeSeq.includes('wbc-col'));
+
+  // ⑥ 两页都**不再**使用行式的 wbc-model 容器
+  ok('两页都不再用行式 wbc-model 容器', !poolSeq.includes('wbc-model') && !traeSeq.includes('wbc-model'));
+}
+
+/**
+ * 号池账号卡必须走共用的 AccountCard，而不是各页手写一份。
+ *
+ * 判据：卡内的「保留积分 + 保存 + 停用」控件要出现在 **wbc-card 内部**
+ * （即 AccountCard 的 extra 插槽），而不是卡片外面另起一段。
+ */
+{
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (url) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-connect-trae/usage')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(parityTrae) });
+    }
+    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(parityPool) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    for (const [tabId, label] of [['pool-config', 'XD Pool'], ['trae-config', 'Trae']]) {
+      const react = makeReact({ 0: tabId }, true);
+      const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
+      // 同 moduleSequenceOf：要遍历才会执行子组件、发出请求
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      react.reset();
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      react.reset();
+      const tree = Page({});
+
+      /** 在元素树里找 wbc-card，看它子树里有没有「停用 / 重新启用」按钮 */
+      const cardHasDisable = (node, depth = 0) => {
+        if (depth > 40 || node === null || node === undefined || typeof node !== 'object') return false;
+        if (Array.isArray(node)) return node.some((c) => cardHasDisable(c, depth));
+        const { type, props } = node;
+        if (typeof type === 'function') {
+          try {
+            return cardHasDisable(type(props ?? {}), depth + 1);
+          } catch {
+            return false;
+          }
+        }
+        const cls = typeof props?.className === 'string' ? props.className : '';
+        if (/(^|\s)wbc-card(\s|$)/.test(cls)) {
+          // 卡内找「停用 / 重新启用」或「移出池子」（WorkBuddy 侧）
+          const texts = [];
+          collectText(props?.children, texts);
+          const joined = texts.join('');
+          return joined.includes('停用') || joined.includes('重新启用') || joined.includes('移出池子');
+        }
+        return cardHasDisable(props?.children, depth + 1);
+      };
+      ok(`${label} 的账号启停/保留控件在卡片内部（走共用 AccountCard.extra）`, cardHasDisable(tree));
+    }
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+}
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);
 process.exit(fail > 0 ? 1 : 0);

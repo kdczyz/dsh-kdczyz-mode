@@ -998,78 +998,89 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             a.cooldownUntil !== undefined
                               ? { k: '冷却至', v: fmtTime(a.cooldownUntil) }
                               : null,
-                          a.credits !== undefined ? { k: '通用余额', v: fmtNum(a.credits) } : null,
-                          a.creditReserve !== undefined && a.creditReserve > 0
-                            ? { k: '保留积分', v: fmtNum(a.creditReserve) }
-                            : null,
-                        ],
-                        action:
-                          a.cooling !== true
-                            ? {
-                                label: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
-                                disabled: busy === `checkin-${a.id}`,
-                                onClick: () => onCheckin(a.id),
-                              }
-                            : null,
-                      },
-                      String(a.id ?? a.label),
+                            a.credits !== undefined ? { k: '通用余额', v: fmtNum(a.credits) } : null,
+                            a.creditReserve !== undefined && a.creditReserve > 0
+                              ? { k: '保留积分', v: fmtNum(a.creditReserve) }
+                              : null,
+                          ],
+                          // 启停 / 保留 / 移出：原先挂在卡片**下方**的一整段
+                          // 「账号设置」条形控件里，账号一多就与卡片对不上号
+                          // （要来回数第几行）。收进 extra 后每张卡自带自己的
+                          // 控件，与 Trae 侧号池卡排布一致。
+                          extra: [
+                            jsxs(
+                              'div',
+                              {
+                                className: 'wbc-bar',
+                                children: [
+                                  jsx('label', {
+                                    className: 'wbc-check',
+                                    children: [
+                                      jsx('input', {
+                                        type: 'checkbox',
+                                        checked: a.disabled !== true,
+                                        disabled: !writable || busy === a.id,
+                                        onChange: (e) => onToggleDisabled(a.id, e.target.checked !== true),
+                                      }),
+                                      jsx('span', { children: '参与轮换' }),
+                                    ],
+                                  }),
+                                ],
+                              },
+                              'toggle',
+                            ),
+                            jsxs(
+                              'div',
+                              {
+                                className: 'wbc-bar',
+                                children: [
+                                  jsx('input', {
+                                    type: 'number',
+                                    min: 0,
+                                    step: 1,
+                                    className: 'wbc-reserve-input',
+                                    placeholder: '保留积分',
+                                    value: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
+                                    disabled: !writable || busy === `reserve-${a.id}`,
+                                    onChange: (e) =>
+                                      setReserveDraft((prev) => ({ ...prev, [a.id]: e.target.value })),
+                                    onKeyDown: (e) => {
+                                      if (e.key === 'Enter') onSaveReserve(a.id);
+                                    },
+                                  }),
+                                  jsx('button', {
+                                    type: 'button',
+                                    className: 'wbc-btn',
+                                    disabled: !writable || busy === `reserve-${a.id}`,
+                                    onClick: () => onSaveReserve(a.id),
+                                    children: busy === `reserve-${a.id}` ? '保存中…' : '保存保留',
+                                  }),
+                                  jsx('div', { className: 'wbc-spacer' }),
+                                  jsx('button', {
+                                    type: 'button',
+                                    className: 'wbc-btn',
+                                    disabled: busy === `ignore-${a.id}`,
+                                    onClick: () => onIgnore(a.id, true),
+                                    children: '移出池子',
+                                  }),
+                                ],
+                              },
+                              'reserve',
+                            ),
+                          ],
+                          action:
+                            a.cooling !== true
+                              ? {
+                                  label: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
+                                  disabled: busy === `checkin-${a.id}`,
+                                  onClick: () => onCheckin(a.id),
+                                }
+                              : null,
+                        },
+                        String(a.id ?? a.label),
+                      ),
                     ),
-                  ),
-                }),
-                // 每账号的启停 / 保留 / 移出（一行一个账号，紧凑条形控件）
-                jsx('div', {
-                  className: 'wbc-bar',
-                  children: jsx('span', { className: 'wbc-col-sub', children: '账号设置' }),
-                }),
-                ...accounts.map((a) =>
-                    jsxs(
-                      'div',
-                      {
-                        className: 'wbc-bar',
-                        children: [
-                          jsx('span', { className: 'wbc-k', children: a.nickname || a.label || a.id }),
-                          jsx('label', {
-                            className: 'wbc-check',
-                            children: [
-                              jsx('input', {
-                                type: 'checkbox',
-                                checked: a.disabled !== true,
-                                disabled: !writable || busy === a.id,
-                                onChange: (e) => onToggleDisabled(a.id, e.target.checked !== true),
-                              }),
-                              jsx('span', { children: '参与轮换' }),
-                            ],
-                          }),
-                          jsx('input', {
-                            type: 'number',
-                            min: 0,
-                            step: 1,
-                            className: 'wbc-reserve-input',
-                            placeholder: '保留积分',
-                            value: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
-                            disabled: !writable || busy === `reserve-${a.id}`,
-                            onChange: (e) =>
-                              setReserveDraft((prev) => ({ ...prev, [a.id]: e.target.value })),
-                          }),
-                          jsx('button', {
-                            type: 'button',
-                            className: 'wbc-btn',
-                            disabled: !writable || busy === `reserve-${a.id}`,
-                            onClick: () => onSaveReserve(a.id),
-                            children: busy === `reserve-${a.id}` ? '保存中…' : '保存保留',
-                          }),
-                          jsx('button', {
-                            type: 'button',
-                            className: 'wbc-btn',
-                            disabled: busy === `ignore-${a.id}`,
-                            onClick: () => onIgnore(a.id, true),
-                            children: '移出池子',
-                          }),
-                        ],
-                      },
-                      `ctl-${a.id}`,
-                    ),
-                ),
+                  }),
                 ],
               })
             : null,
@@ -1229,20 +1240,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         onClick: enableAllModels,
                         children: '一键启用所有模型',
                       }),
-                      jsx('button', {
-                        type: 'button',
-                        className: 'wbc-btn',
-                        disabled: !dirty || busy === 'models',
-                        onClick: discardModels,
-                        children: '放弃修改',
-                      }),
-                      jsx('button', {
-                        type: 'button',
-                        className: 'wbc-btn wbc-btn-primary',
-                        disabled: !writable || busy !== null || enabledCount === 0,
-                        onClick: saveModels,
-                        children: busy === 'models' ? '保存中…' : '保存',
-                      }),
                     ],
                   }),
                   jsx('div', {
@@ -1251,61 +1248,59 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                       const entry = modelBase[model.id] ?? { enabled: false, images: false };
                       const native = model.nativeContextWindow ?? model.contextWindow;
                       const capped = typeof native === 'number' && native > POOL_DEFAULT_CONTEXT_BUDGET;
-                      return jsxs(
-                        'div',
+                      return jsx(
+                        ModelCard,
                         {
-                          className: 'wbc-col',
-                          children: [
-                            jsxs('label', {
-                              className: 'wbc-check',
-                              children: [
-                                jsx('input', {
-                                  type: 'checkbox',
-                                  checked: entry.enabled === true,
-                                  disabled: !writable,
-                                  onChange: (e) => editModel(model.id, { enabled: e.target.checked }),
-                                }),
-                                jsx('span', { children: model.name ?? model.id }),
-                              ],
-                            }),
-                            jsx('div', {
-                              className: 'wbc-model-meta',
-                              children: [
-                                `上下文 ${fmtCapacity(native)}`,
-                                model.maxTokens !== undefined ? `输出 ${fmtCapacity(model.maxTokens)}` : null,
-                                asArray(model.supportedEfforts).length > 0
-                                  ? `推理强度：${asArray(model.supportedEfforts).join(' / ')}`
-                                  : null,
-                              ].filter(Boolean),
-                            }),
+                          id: model.id,
+                          name: model.name ?? model.id,
+                          checked: entry.enabled === true,
+                          disabled: !writable,
+                          onToggle: (next) => editModel(model.id, { enabled: next }),
+                          meta: [
+                            `上下文 ${fmtCapacity(native)}`,
+                            model.maxTokens !== undefined ? `输出 ${fmtCapacity(model.maxTokens)}` : null,
+                            asArray(model.supportedEfforts).length > 0
+                              ? `推理强度：${asArray(model.supportedEfforts).join(' / ')}`
+                              : null,
+                          ],
+                          extras: [
                             model.supportsImages === true
-                              ? jsx('label', {
-                                  className: 'wbc-check',
-                                  children: [
-                                    jsx('input', {
-                                      type: 'checkbox',
-                                      checked: entry.images === true,
-                                      disabled: !writable || entry.enabled !== true,
-                                      onChange: (e) => editModel(model.id, { images: e.target.checked }),
-                                    }),
-                                    jsx('span', { children: '支持图片' }),
-                                  ],
-                                })
+                              ? jsx(
+                                  'label',
+                                  {
+                                    className: 'wbc-check',
+                                    children: [
+                                      jsx('input', {
+                                        type: 'checkbox',
+                                        checked: entry.images === true,
+                                        disabled: !writable || entry.enabled !== true,
+                                        onChange: (e) => editModel(model.id, { images: e.target.checked }),
+                                      }),
+                                      jsx('span', { children: '支持图片' }),
+                                    ],
+                                  },
+                                  'images',
+                                )
                               : null,
                             capped
-                              ? jsx('label', {
-                                  className: 'wbc-check',
-                                  children: [
-                                    jsx('input', {
-                                      type: 'radio',
-                                      name: `budget-${region}-${model.id}`,
-                                      checked: entry.budget === POOL_DEFAULT_CONTEXT_BUDGET,
-                                      disabled: !writable,
-                                      onChange: () => editModel(model.id, { budget: POOL_DEFAULT_CONTEXT_BUDGET }),
-                                    }),
-                                    jsx('span', { children: `限制到 ${fmtCapacity(POOL_DEFAULT_CONTEXT_BUDGET)}` }),
-                                  ],
-                                })
+                              ? jsx(
+                                  'label',
+                                  {
+                                    className: 'wbc-check',
+                                    children: [
+                                      jsx('input', {
+                                        type: 'radio',
+                                        name: `budget-${region}-${model.id}`,
+                                        checked: entry.budget === POOL_DEFAULT_CONTEXT_BUDGET,
+                                        disabled: !writable,
+                                        onChange: () =>
+                                          editModel(model.id, { budget: POOL_DEFAULT_CONTEXT_BUDGET }),
+                                      }),
+                                      jsx('span', { children: `限制到 ${fmtCapacity(POOL_DEFAULT_CONTEXT_BUDGET)}` }),
+                                    ],
+                                  },
+                                  'budget',
+                                )
                               : null,
                           ],
                         },
@@ -1313,6 +1308,30 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                       );
                     }),
                   }),
+                  // 保存条挪到列表**底部并 sticky**（与 Trae 页同款）：
+                  // 模型多时表头会滚出视野，用户勾完最后一项正好在底部，
+                  // 按钮就在手边 —— 不必再滚回顶部。
+                  dirty
+                    ? jsxs('div', {
+                        className: 'wbc-model-actions',
+                        children: [
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn',
+                            disabled: busy === 'models',
+                            onClick: discardModels,
+                            children: '放弃修改',
+                          }),
+                          jsx('button', {
+                            type: 'button',
+                            className: 'wbc-btn wbc-btn-primary',
+                            disabled: !writable || busy !== null || enabledCount === 0,
+                            onClick: saveModels,
+                            children: busy === 'models' ? '保存中…' : '保存',
+                          }),
+                        ],
+                      })
+                    : null,
                 ],
               })
             : null,
@@ -1705,46 +1724,42 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       return jsxs('div', {
         className: 'wbc-body',
         children: [
-          jsxs('div', {
-            className: 'wbc-col-head',
-            children: [
-              ...TRAE_REGIONS.map((r) =>
-                jsx(
-                  'button',
-                  {
-                    type: 'button',
-                    className: region === r.id ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                    onClick: () => {
-                      setRegion(r.id);
-                      setDraft(null);
-                      setWriteError(null);
-                      setSavedNote(null);
-                    },
-                    children: r.label,
-                  },
-                  r.id,
-                ),
+          jsx(ColumnHead, {
+            title: 'Trae',
+            tabs: TRAE_REGIONS,
+            activeTab: region,
+            onTab: (next) => {
+              setRegion(next);
+              setDraft(null);
+              setWriteError(null);
+              setSavedNote(null);
+            },
+            // 供应商开关挨着区域按钮：它是对**当前区域**生效的设置，
+            // 与区域切换同属一组，不该被 spacer 推到右边去。
+            leading: [
+              jsx(
+                'label',
+                {
+                  className: 'wbc-check',
+                  children: [
+                    jsx('input', {
+                      type: 'checkbox',
+                      checked: regionOn,
+                      disabled: !writable || togglingRegion !== null,
+                      onChange: (e) => onToggleRegion(e.target.checked),
+                    }),
+                    jsx('span', { children: '向 DSH 提供该供应商' }),
+                  ],
+                },
+                'region-toggle',
               ),
-              jsx('label', {
-                className: 'wbc-check',
-                children: [
-                  jsx('input', {
-                    type: 'checkbox',
-                    checked: regionOn,
-                    disabled: !writable || togglingRegion !== null,
-                    onChange: (e) => onToggleRegion(e.target.checked),
-                  }),
-                  jsx('span', { children: '向 DSH 提供该供应商' }),
-                ],
-              }),
-              jsx('div', { className: 'wbc-spacer' }),
-              jsx('button', {
-                type: 'button',
-                className: 'wbc-btn',
+            ],
+            actions: [
+              {
+                label: usageLoading ? '刷新中…' : '刷新用量',
                 disabled: usageLoading,
                 onClick: () => loadUsage(),
-                children: usageLoading ? '刷新中…' : '刷新用量',
-              }),
+              },
             ],
           }),
           regionOn === false
@@ -1770,14 +1785,9 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
           usage === null && usageLoading
             ? jsx('div', { className: 'wbc-note', children: '正在读取 Trae 账号…' })
             : null,
-          usage !== null && !signedIn
-            ? jsx(EmptyBox, {
-                lines: [
-                  `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
-                  '请在 Trae 客户端里登录，或用「账号」页右列的「添加账号」在浏览器里登录。',
-                ],
-              })
-            : null,
+          // 顺序与 XD Pool 一致：先统计行，再空态。
+          // 先前 Trae 页把空态放在统计行之前，于是「没登录」时那一屏的
+          // 首屏元素与 XD Pool 完全不同（一个从统计卡起、一个从虚线框起）。
           signedIn
             ? jsx(StatsRow, {
                 items: [
@@ -1795,6 +1805,14 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                     sub: usage.checkin?.credits !== undefined ? `+${fmtNum(usage.checkin.credits)} 积分` : null,
                     small: true,
                   },
+                ],
+              })
+            : null,
+          usage !== null && !signedIn
+            ? jsx(EmptyBox, {
+                lines: [
+                  `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
+                  '请在 Trae 客户端里登录，或用「账号」页右列的「添加账号」在浏览器里登录。',
                 ],
               })
             : null,
@@ -1877,80 +1895,76 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                   jsx('div', {
                     className: 'wbc-cards',
                     children: poolAccounts.map((a) =>
-                      jsxs(
-                        'div',
+                      jsx(
+                        AccountCard,
                         {
-                          className: a.disabled === true || a.reserved === true ? 'wbc-card wbc-card-off' : 'wbc-card',
-                          children: [
-                            jsxs('div', {
-                              className: 'wbc-card-head',
-                              children: [
-                                jsx('span', { className: 'wbc-name', children: a.label ?? a.id }),
-                                a.cooling === true
-                                  ? jsx('span', { className: 'wbc-tag wbc-tag-warn', children: '冷却中' })
-                                  : null,
-                                a.disabled === true
-                                  ? jsx('span', { className: 'wbc-tag', children: '已停用' })
-                                  : jsx('span', { className: 'wbc-tag wbc-tag-on', children: '在轮换中' }),
-                                poolDoc?.lastServedId === a.id
-                                  ? jsx('span', { className: 'wbc-tag wbc-tag-on', children: '当前使用' })
-                                  : null,
-                                a.reserved === true
-                                  ? jsx('span', { className: 'wbc-tag', children: '已保留·暂停' })
-                                  : null,
-                              ],
-                            }),
-                            jsx(KV, {
-                              k: '触发限流',
-                              v: `${fmtNum(a.rateLimitHits ?? 0)} 次`,
-                            }),
+                          name: a.label ?? a.id,
+                          dim: a.disabled === true || a.reserved === true,
+                          tags: [
+                            a.cooling === true
+                              ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' }
+                              : null,
+                            a.disabled === true
+                              ? { text: '已停用', cls: 'wbc-tag' }
+                              : { text: '在轮换中', cls: 'wbc-tag wbc-tag-on' },
+                            poolDoc?.lastServedId === a.id
+                              ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
+                              : null,
+                            a.reserved === true ? { text: '已保留·暂停', cls: 'wbc-tag' } : null,
+                          ],
+                          rows: [
+                            { k: '触发限流', v: `${fmtNum(a.rateLimitHits ?? 0)} 次` },
                             a.cooldownUntilMs !== undefined
-                              ? jsx(KV, { k: '冷却至', v: fmtTime(a.cooldownUntilMs) })
+                              ? { k: '冷却至', v: fmtTime(a.cooldownUntilMs) }
                               : null,
-                            a.credits !== undefined
-                              ? jsx(KV, { k: '通用余额', v: fmtNum(a.credits) })
-                              : null,
-                            // 保留积分：失焦提交太激进，改成显式保存（WorkBuddy 卡片
-                            // 也是这么改的 —— 一次写入就是一次 settings 写 + 一次刷新）
-                            jsxs('div', {
-                              className: 'wbc-bar',
-                              children: [
-                                jsx('input', {
-                                  type: 'number',
-                                  min: 0,
-                                  step: 1,
-                                  className: 'wbc-reserve-input',
-                                  placeholder: '保留积分',
-                                  value: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
-                                  disabled: !writable || savingPool === `reserve-${a.id}`,
-                                  onChange: (e) =>
-                                    setReserveDraft((prev) => ({ ...prev, [a.id]: e.target.value })),
-                                  onKeyDown: (e) => {
-                                    if (e.key === 'Enter') onSaveReserve(a.id);
-                                  },
-                                }),
-                                jsx('button', {
-                                  type: 'button',
-                                  className: 'wbc-btn',
-                                  disabled: !writable || savingPool === `reserve-${a.id}`,
-                                  onClick: () => onSaveReserve(a.id),
-                                  children: savingPool === `reserve-${a.id}` ? '保存中…' : '保存',
-                                }),
-                                jsx('div', { className: 'wbc-spacer' }),
-                                jsx('button', {
-                                  type: 'button',
-                                  className: 'wbc-btn',
-                                  disabled: !writable || savingPool === a.id,
-                                  onClick: () => onToggleDisabled(a.id, a.disabled !== true),
-                                  children:
-                                    savingPool === a.id
-                                      ? '保存中…'
-                                      : a.disabled === true
-                                        ? '重新启用'
-                                        : '停用',
-                                }),
-                              ],
-                            }),
+                            a.credits !== undefined ? { k: '通用余额', v: fmtNum(a.credits) } : null,
+                          ],
+                          // 保留积分 + 启停：走 AccountCard 的 extra 插槽，
+                          // 与 WorkBuddy 侧的账号卡同一套内边距与控件排布。
+                          extra: [
+                            jsxs(
+                              'div',
+                              {
+                                className: 'wbc-bar',
+                                children: [
+                                  jsx('input', {
+                                    type: 'number',
+                                    min: 0,
+                                    step: 1,
+                                    className: 'wbc-reserve-input',
+                                    placeholder: '保留积分',
+                                    value: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
+                                    disabled: !writable || savingPool === `reserve-${a.id}`,
+                                    onChange: (e) =>
+                                      setReserveDraft((prev) => ({ ...prev, [a.id]: e.target.value })),
+                                    onKeyDown: (e) => {
+                                      if (e.key === 'Enter') onSaveReserve(a.id);
+                                    },
+                                  }),
+                                  jsx('button', {
+                                    type: 'button',
+                                    className: 'wbc-btn',
+                                    disabled: !writable || savingPool === `reserve-${a.id}`,
+                                    onClick: () => onSaveReserve(a.id),
+                                    children: savingPool === `reserve-${a.id}` ? '保存中…' : '保存',
+                                  }),
+                                  jsx('div', { className: 'wbc-spacer' }),
+                                  jsx('button', {
+                                    type: 'button',
+                                    className: 'wbc-btn',
+                                    disabled: !writable || savingPool === a.id,
+                                    onClick: () => onToggleDisabled(a.id, a.disabled !== true),
+                                    children:
+                                      savingPool === a.id
+                                        ? '保存中…'
+                                        : a.disabled === true
+                                          ? '重新启用'
+                                          : '停用',
+                                  }),
+                                ],
+                              },
+                              'reserve',
+                            ),
                           ],
                         },
                         a.id,
@@ -1973,14 +1987,9 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         children: `已启用 ${enabledSet.size} 个 · 实时目录 ${savedModels.length} 个`,
                       }),
                       jsx('div', { className: 'wbc-spacer' }),
-                      jsx('button', {
-                        type: 'button',
-                        className: 'wbc-btn',
-                        disabled: savedModels.length === 0 || !writable || saving,
-                        title: '把目录里的所有模型一次性全部勾选（仍需点保存落盘）。',
-                        onClick: enableAllModels,
-                        children: '一键启用所有模型',
-                      }),
+                      // 按钮顺序与 XD Pool 页对齐：**刷新 → 一键启用 → 测试**。
+                      // 先前 Trae 是「一键启用 → 刷新 → 测试」，同一个功能在
+                      // 两个页面里位置对调，肌肉记忆用不上。
                       jsx('button', {
                         type: 'button',
                         className: 'wbc-btn',
@@ -1988,6 +1997,14 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         title: '拉取 Trae 最新模型目录，立即更新列表并自动启用全部模型。',
                         onClick: refreshModels,
                         children: saving ? '刷新中…' : '从 Trae 刷新',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'wbc-btn',
+                        disabled: savedModels.length === 0 || !writable || saving,
+                        title: '把目录里的所有模型一次性全部勾选（仍需点保存落盘）。',
+                        onClick: enableAllModels,
+                        children: '一键启用所有模型',
                       }),
                       jsx('button', {
                         type: 'button',
@@ -2009,51 +2026,35 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                   savedModels.length === 0
                     ? jsx('div', { className: 'wbc-note', children: '暂无模型目录，先点「从 Trae 刷新」。' })
                     : jsx('div', {
+                        className: 'wbc-cols',
                         children: savedModels.map((model) => {
                           const probe = probes[model.id];
-                          return jsxs(
-                            'div',
+                          return jsx(
+                            ModelCard,
                             {
-                              className: 'wbc-model',
-                              children: [
-                                jsx('label', {
-                                  className: 'wbc-check',
-                                  children: [
-                                    jsx('input', {
-                                      type: 'checkbox',
-                                      checked: enabledSet.has(model.id),
-                                      disabled: !writable || saving,
-                                      onChange: () => toggleModel(model.id),
-                                    }),
-                                    jsx('span', {
-                                      className: 'wbc-model-name',
-                                      children: [
-                                        model.name,
-                                        typeof model.creditMultiplier === 'number'
-                                          ? ` · x${model.creditMultiplier.toFixed(2)}`
-                                          : null,
-                                      ],
-                                    }),
-                                  ],
-                                }),
-                                jsx('span', {
-                                  className: 'wbc-model-meta',
-                                  children: [
-                                    `最大上下文 ${fmtCapacity(model.maxContextWindow ?? model.contextWindow)}`,
-                                    model.maxTokens !== undefined ? `输出 ${fmtCapacity(model.maxTokens)}` : null,
-                                    model.reasoning?.supported?.length
-                                      ? `推理强度：${model.reasoning.supported.join(' / ')}`
-                                      : null,
-                                  ].filter(Boolean),
-                                }),
-                                probe === undefined
-                                  ? null
-                                  : jsx('span', {
-                                      className: `wbc-probe wbc-probe-${probe.verdict}`,
-                                      title: probe.detail,
-                                      children: TRAE_PROBE_LABELS[probe.verdict] ?? probe.verdict,
-                                    }),
+                              id: model.id,
+                              name: [
+                                model.name,
+                                typeof model.creditMultiplier === 'number'
+                                  ? ` · x${model.creditMultiplier.toFixed(2)}`
+                                  : null,
+                              ].filter(Boolean),
+                              checked: enabledSet.has(model.id),
+                              disabled: !writable || saving,
+                              onToggle: () => toggleModel(model.id),
+                              meta: [
+                                `上下文 ${fmtCapacity(model.maxContextWindow ?? model.contextWindow)}`,
+                                model.maxTokens !== undefined
+                                  ? `输出 ${fmtCapacity(model.maxTokens)}`
+                                  : null,
+                                model.reasoning?.supported?.length
+                                  ? `推理强度：${model.reasoning.supported.join(' / ')}`
+                                  : null,
                               ],
+                              probe,
+                              probeLabel: probe === undefined
+                                ? null
+                                : TRAE_PROBE_LABELS[probe.verdict] ?? probe.verdict,
                             },
                             model.id,
                           );
@@ -2101,11 +2102,23 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      */
 
     /** 列头：标题 + 区域切换 + 右侧操作按钮。两列共用。 */
-    function ColumnHead({ title, tabs, activeTab, onTab, actions }) {
+    /**
+     * 列头：标题 + 区域切换 + 两侧可选插槽 + 右侧操作按钮。两列共用。
+     *
+     * `title` 两个配置页都要给 —— 先前 Trae 页手写了一份列头且**没有标题**，
+     * 与 XD Pool 并排切换时视觉重心对不齐（一个从标题起、一个直接从按钮起）。
+     *
+     * `leading` 是标题之后、区域按钮之前的位置（Trae 的供应商开关用它）；
+     * `trailing` 是操作按钮之前的位置（模型区的 Max 模式勾选用它）。
+     * 两者都不传时骨架与旧版一致，向后兼容。
+     */
+    function ColumnHead({ title, tabs, activeTab, onTab, actions, leading, trailing }) {
       return jsxs('div', {
         className: 'wbc-col-head',
         children: [
-          jsx('span', { className: 'wbc-col-title', children: title }),
+          title === undefined || title === null
+            ? null
+            : jsx('span', { className: 'wbc-col-title', children: title }),
           ...asArray(tabs).map((r) =>
             jsx(
               'button',
@@ -2118,7 +2131,9 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
               r.id,
             ),
           ),
+          ...asArray(leading).filter((x) => x !== null && x !== undefined),
           jsx('div', { className: 'wbc-spacer' }),
+          ...asArray(trailing).filter((x) => x !== null && x !== undefined),
           ...asArray(actions).map((a, i) =>
             jsx(
               'button',
@@ -2189,11 +2204,16 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      *
      *   head   名称 + 若干状态标签
      *   rows   KV 明细
-     *   action 卡片底部一个按钮（WorkBuddy 是「签到领取」、Trae 是「签到」）
+     *   extra  卡片中部的自定义控件（号池账号的「保留积分 + 保存 + 停用」那行）
+     *   action 卡片底部一个按钮（WorkBuddy 是「签到领取」、Trae 是「切换到此账号」）
      *
      * `dim` 为 true 时整卡降透明度（停用 / 备用账号）。
+     *
+     * `extra` 是后加的：先前 Trae 页的号池账号卡是**手写**的（因为需要一行
+     * 多个控件），于是同一页里出现了两种账号卡 —— 卡片内边距、标签间距、
+     * 按钮位置都对不齐。把它做成插槽后两处都能走这一个组件。
      */
-    function AccountCard({ name, tags, rows, action, dim }) {
+    function AccountCard({ name, tags, rows, action, extra, dim }) {
       return jsxs('div', {
         className: dim === true ? 'wbc-card wbc-card-off' : 'wbc-card',
         children: [
@@ -2211,6 +2231,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
           ...asArray(rows)
             .filter((r) => r !== null && r !== undefined)
             .map((r, i) => jsx(KV, { k: r.k, v: r.v }, `row-${i}`)),
+          ...asArray(extra).filter((x) => x !== null && x !== undefined),
           action === null || action === undefined
             ? null
             : jsx('button', {
@@ -2222,6 +2243,56 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
               }),
         ],
       });
+    }
+
+    /**
+     * 模型勾选卡：两个配置页同一套网格单元。
+     *
+     * 先前的差异是这一处最显眼的不一致 —— XD Pool 用 `wbc-cols` 网格 +
+     * 每模型一个 `wbc-col`，Trae 用 `wbc-model` 单行流式排布。同一套设置里
+     * 两个页面切换时，模型列表的密度与列宽完全变样。
+     *
+     * 现在两页都用网格（`wbc-cols` + `wbc-col`），单元内容是并集：
+     *
+     *   check   勾选框 + 名称（Trae 侧名称后带 x 倍率）
+     *   meta    上下文 / 输出 / 推理强度
+     *   extras  页面自己的附加控件（XD Pool 的「支持图片」「限制到 200K」勾选）
+     *   probe   可用性测试徽章（只有 Trae 有）
+     */
+    function ModelCard({ id, name, checked, disabled, onToggle, meta, extras, probe, probeLabel }) {
+      return jsxs(
+        'div',
+        {
+          className: 'wbc-col',
+          children: [
+            jsx('label', {
+              className: 'wbc-check',
+              children: [
+                jsx('input', {
+                  type: 'checkbox',
+                  checked: checked === true,
+                  disabled: disabled === true,
+                  onChange: (e) => onToggle(e.target.checked),
+                }),
+                jsx('span', { className: 'wbc-model-name', children: name }),
+              ],
+            }),
+            jsx('div', {
+              className: 'wbc-model-meta',
+              children: asArray(meta).filter((x) => x !== null && x !== undefined),
+            }),
+            ...asArray(extras).filter((x) => x !== null && x !== undefined),
+            probe === undefined || probe === null
+              ? null
+              : jsx('span', {
+                  className: `wbc-probe wbc-probe-${probe.verdict}`,
+                  title: probe.detail,
+                  children: probeLabel,
+                }),
+          ],
+        },
+        id,
+      );
     }
     //#endregion
 
@@ -2826,8 +2897,18 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       'trae-global': { kind: 'trae', region: 'ai', label: 'Trae 国际版' },
     };
 
-    /** 缓存 TTL：90 秒内同一 provider 不重复请求（每次请求都是真实计费调用） */
-    const CREDIT_TTL_MS = 90000;
+    /**
+     * 自动刷新间隔：**30 秒**，与上游自己刷同一个接口的节奏一致。
+     *
+     * `vendor/xdpool/lib/client.js` 的 `POLL_INTERVAL_MS = 3e4` —— 那张卡片就是
+     * 这么刷 `/status` 的。为什么不能更快：这两个接口**每次都会发起真实的上游
+     * 计费调用**（WorkBuddy 侧对池里每个账号各查一次 credits），池子里那套 429
+     * 冷却重试正是为这类调用准备的。把它压到「几秒」会让请求量比号池任何既有
+     * 行为高一个数量级，很可能把账号打成限流、连带影响正常对话。
+     *
+     * 所以：跟随上游节奏，不更激进。
+     */
+    const CREDIT_REFRESH_MS = 30000;
     /**
      * 模块级缓存：key 是 provider id。
      *
@@ -2837,14 +2918,20 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     const creditCache = new Map();
 
     function readCreditCache(provider) {
-      const hit = creditCache.get(provider);
-      if (hit === undefined) return undefined;
-      if (hit.pending !== undefined) return hit;
-      if (Date.now() - hit.atMs > CREDIT_TTL_MS) {
-        creditCache.delete(provider);
-        return undefined;
-      }
-      return hit;
+      return creditCache.get(provider);
+    }
+
+    /**
+     * 缓存是否仍然「新鲜」。
+     *
+     * pending 中的记录一律算新鲜：已经在路上了，没必要再发一次。
+     * 判定用 `atMs`（上一次**完成**的时间），所以一次慢请求不会导致
+     * 刚回来就立刻又发一发。
+     */
+    function isCreditFresh(rec) {
+      if (rec === undefined) return false;
+      if (rec.pending !== undefined) return true;
+      return Date.now() - rec.atMs < CREDIT_REFRESH_MS;
     }
 
     /**
@@ -2878,17 +2965,31 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       return { total, accounts: asArray(data?.accounts).length };
     }
 
-    /** 发起（或复用）一次取数，返回缓存记录 */
-    function requestCredits(provider, source) {
-      const existing = readCreditCache(provider);
-      if (existing !== undefined) return existing;
-      const rec = { atMs: Date.now(), pending: undefined, total: undefined, error: undefined };
+    /**
+     * 发起一次取数（若已有在途请求则复用它），返回缓存记录。
+     *
+     * `force` 为真时绕开新鲜度判定（点击刷新、定时到点）。
+     */
+    function requestCredits(provider, source, force = false) {
+      const existing = creditCache.get(provider);
+      // 在途的一律复用：force 也不重复发，避免连点叠出多份计费调用
+      if (existing !== undefined && existing.pending !== undefined) return existing;
+      if (!force && isCreditFresh(existing)) return existing;
+      const rec = {
+        atMs: existing?.atMs ?? 0,
+        pending: undefined,
+        total: existing?.total,
+        accounts: existing?.accounts,
+        error: undefined,
+      };
       rec.pending = fetchCredits(source)
         .then((r) => {
           rec.total = r.total;
           rec.accounts = r.accounts;
+          rec.error = undefined;
         })
         .catch((e) => {
+          // 失败保留上一次的数字，只更新错误 —— 抖一下不该让余额消失
           rec.error = e?.message ?? String(e);
         })
         .finally(() => {
@@ -2946,6 +3047,13 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      * props 由 slot 契约给出：`sessionId`（scope: session）+ 本包 inject 的
      * `resolveModelDirectory`。任何一环拿不到就返回 null —— 这是「只增不减」
      * 的边界：宁可不显示，也绝不能让 composer 这一行报错。
+     *
+     * 刷新策略：**每 30 秒自动刷一次**（见 CREDIT_REFRESH_MS 的成本说明），
+     * 外加切换模型时立刻刷、点击时强制刷。不再需要手动点。
+     * 三个必须守住的细节：
+     *   1. 定时器只在 provider 属于本插件时才起，切走要清掉；
+     *   2. 组件卸载后回调不能再 setState（React 会警告，且可能写到已卸载的树）；
+     *   3. 页面隐藏（切到别的窗口/标签）时暂停 —— 没人看的时候不该继续烧上游调用。
      */
     function ComposerCreditsPill({ sessionId, resolveModelDirectory }) {
       const current = useCurrentModel(resolveModelDirectory, sessionId);
@@ -2953,64 +3061,98 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       const source = CREDIT_SOURCES[provider];
 
       const [tick, setTick] = useState(0);
-      const [busy, setBusy] = useState(false);
 
       useEffect(() => {
         if (source === undefined) return undefined;
         ensureCss();
+
         let alive = true;
-        const rec = readCreditCache(provider);
-        if (rec !== undefined) {
-          if (rec.pending !== undefined) {
-            rec.pending.then(() => {
-              if (alive) setTick((n) => n + 1);
-            });
-          }
-          return () => {
-            alive = false;
-          };
+        let timer = null;
+
+        /** 发一次取数；完成后触发重渲染。force 用于到点与点击。 */
+        const run = (force) => {
+          const rec = requestCredits(provider, source, force);
+          rec.pending?.then(() => {
+            if (alive) setTick((n) => n + 1);
+          });
+        };
+
+        // 挂载 / 切模型：缓存还新鲜就只订阅它的完成，不重复发请求
+        const cached = readCreditCache(provider);
+        if (isCreditFresh(cached)) {
+          cached.pending?.then(() => {
+            if (alive) setTick((n) => n + 1);
+          });
+        } else {
+          run(true);
         }
-        // 冷缓存：挂载时取一次。失败在下面按「无数字」渲染。
-        setBusy(true);
-        const fresh = requestCredits(provider, source);
-        fresh.pending?.then(() => {
-          if (alive) {
-            setBusy(false);
-            setTick((n) => n + 1);
-          }
-        });
+
+        const startTimer = () => {
+          if (timer !== null) return;
+          timer = setInterval(() => {
+            // 页面隐藏时跳过这一拍：没人看的时候不烧上游调用
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+            run(true);
+          }, CREDIT_REFRESH_MS);
+        };
+        const stopTimer = () => {
+          if (timer === null) return;
+          clearInterval(timer);
+          timer = null;
+        };
+
+        startTimer();
+
+        /**
+         * 回到前台立刻补一次。
+         *
+         * 隐藏期间定时器是空转的，回来时数字可能已经旧了几分钟；
+         * 而用户刚切回来正是最可能看它一眼的时刻。若缓存仍新鲜（比如只切走
+         * 两秒）就不重复打，交给原本那一拍。
+         */
+        const onVisible = () => {
+          if (typeof document === 'undefined') return;
+          if (document.visibilityState !== 'visible') return;
+          if (!isCreditFresh(readCreditCache(provider))) run(true);
+        };
+        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+          document.addEventListener('visibilitychange', onVisible);
+        }
+
         return () => {
           alive = false;
+          stopTimer();
+          if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+            document.removeEventListener('visibilitychange', onVisible);
+          }
         };
-        // provider 变了要重新取；tick 只用于强制重渲染，不进依赖
+        // provider 变了要重建定时器与缓存判定；tick 只用于强制重渲染，不进依赖
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [provider]);
 
       if (source === undefined) return null;
       const rec = readCreditCache(provider);
       const total = rec?.total;
+      const stale = rec !== undefined && rec.pending === undefined && !isCreditFresh(rec);
       const title =
         total === undefined
-          ? `${source.label}：额度读取中…（点击重试）`
+          ? `${source.label}：额度读取中…${rec?.error ? `（${rec.error}）` : ''}`
           : `${source.label} · 剩余 ${fmtNum(total)} 积分` +
             (typeof rec?.accounts === 'number' && rec.accounts > 0 ? ` · ${rec.accounts} 个账号` : '') +
-            (rec?.error ? ` · ${rec.error}` : '');
+            (rec?.error ? ` · 上次刷新失败：${rec.error}` : '') +
+            ` · 每 ${CREDIT_REFRESH_MS / 1000} 秒自动刷新（点击立即刷新）`;
 
       return jsx('button', {
         type: 'button',
         className: 'wotr-credit-pill',
-        'data-busy': busy ? '1' : '0',
+        'data-busy': stale ? '0' : rec?.pending !== undefined ? '1' : '0',
         'data-state': typeof total === 'number' && total <= 0 ? 'warn' : 'ok',
         title,
         onClick: () => {
-          // 点击强制刷新：先清缓存再取，绕开 TTL
-          creditCache.delete(provider);
-          setBusy(true);
-          const fresh = requestCredits(provider, source);
-          fresh.pending?.then(() => {
-            setBusy(false);
-            setTick((n) => n + 1);
-          });
+          // 点击 = 立即刷新，绕开新鲜度判定（在途时仍复用，不叠请求）
+          const r = requestCredits(provider, source, true);
+          r.pending?.then(() => setTick((n) => n + 1));
+          setTick((n) => n + 1);
         },
         children: [
           jsx('span', { className: 'wotr-credit-pill-dot' }),
