@@ -120,6 +120,16 @@ EOF
 # —— 5) 改 profile/cordis.patch.yml ——
 # 把指向旧包名的条目改成新包名；entry id 保持不变
 # （llm-workbuddy-xdpool 是 vendored 池卡片精确匹配设置作用域用的键）。
+#
+# **绝不删除条目。** profile 层的条目不只是「注册」，它下面的 `config:` 就是
+# 用户的设置本身 —— Trae 那条保存着账号绑定（accounts.<region>）、区域开关、
+# lastCatalog 与模型勾选，实测近 500 行。删掉它等于把用户配置清零。
+#
+# 早先这里写成「独立 trae 条目由插件自己的 cordis.patch.yml 插入，profile 层
+# 不再需要」并整段删除 —— 那个判断是错的：插件的 `- insert:` 只负责让条目
+# **存在**（不带 config），用户设置仍存在 profile 层这一份里。两者并存是正常的
+# （profile 层同名条目按 id 覆盖/配置插件插入的条目）。删掉的后果是 Trae 半边
+# 退回默认值、账号绑定丢失。
 if [ "$DRY" = 0 ]; then
   "$NODE" - "$PROFILE" <<'EOF'
 const fs = require('node:fs');
@@ -127,20 +137,20 @@ const path = require('node:path');
 const file = path.join(process.argv[2], 'cordis.patch.yml');
 let raw = fs.readFileSync(file, 'utf8');
 const before = raw;
+// 旧包名 → 合并后的包名（两处：WorkBuddy 半边、Trae 半边）
 raw = raw.replace(/^(\s*name:\s*)dsh-workbuddy-console\s*$/gm, '$1dsh-wotr-console');
-// 独立的 dsh-connect-trae 条目：合并后由 dsh-wotr-console 自己的
-// cordis.patch.yml 插入，profile 层不再需要
-raw = raw.replace(/^- id: dsh-connect-trae\n(?:[ \t].*\n)*/gm, '');
+// 独立的旧 trae 包名 → 合并包名的子路径。**只改 name，原文与 config 一律保留。**
+raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-wotr-console/trae');
 raw = raw.replace(/\n{3,}/g, '\n\n');
 if (raw !== before) {
   fs.writeFileSync(file, raw);
-  console.log('  cordis.patch.yml: 旧包名已替换为 dsh-wotr-console，独立 trae 条目已移除');
+  console.log('  cordis.patch.yml: 旧包名已替换为 dsh-wotr-console（条目与 config 原样保留）');
 } else {
   console.log('  cordis.patch.yml: 无需改动');
 }
 EOF
 else
-  echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-workbuddy-console 改为 dsh-wotr-console，并移除独立 dsh-connect-trae 条目"
+  echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-workbuddy-console 改为 dsh-wotr-console，dsh-connect-trae 改为 dsh-wotr-console/trae（条目与其 config 一律保留）"
 fi
 
 # —— 6) 卸掉旧包目录 ——
