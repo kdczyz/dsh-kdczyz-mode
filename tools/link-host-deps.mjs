@@ -82,7 +82,7 @@ const PLUGIN_DIR_ARG = args.find((a) => a.startsWith('--plugin='))?.slice('--plu
 const PROFILE = profileArg ?? path.join(os.homedir(), '.dsh', 'profiles', 'desktop');
 const VENDOR_NM = path.join(PROFILE, '.dsh-runtime-deps', 'node_modules');
 const PROFILE_NM = path.join(PROFILE, 'node_modules');
-const PLUGIN_DIR = PLUGIN_DIR_ARG ?? path.join(PROFILE_NM, 'dsh-wotr-console');
+const PLUGIN_DIR = PLUGIN_DIR_ARG ?? path.join(PROFILE_NM, 'dsh-kdczyz-mode');
 
 const log = (msg) => console.log(msg);
 

@@ -1,7 +1,7 @@
 # 三个反代「获取上游模型」链路审计 & Qoder 图片问题定位
 
 - **日期**：2026-10-11
-- **审计对象**：`dsh-wotr-console` 包内三个 provider
+- **审计对象**：`dsh-kdczyz-mode` 包内三个 provider
   - `llm-workbuddy-xdpool` → `vendor/xdpool/lib/index.js`（vendor 1.7.1 + 本 fork 1.1.0）
   - `dsh-connect-trae` → `lib/trae.js`
   - `dsh-connect-qoder` → `lib/qoder.js` + `lib/qoder-*.mjs`
@@ -39,7 +39,7 @@
 | 触发点 | 位置 | 说明 |
 |---|---|---|
 | vendor 启动种子 | `vendor/xdpool/lib/index.js:8271-8288` | 插件加载时按区域各拉一次，失败只 `logger.warn` |
-| 本 fork 管理页 | `POST /plugins/dsh-wotr-console/wb/models/refresh`，`lib/index.js:715-780`，前端 `lib/console.mjs:800` | 手动，带 per-region inflight 合流（`:714`、`726-727`） |
+| 本 fork 管理页 | `POST /plugins/dsh-kdczyz-mode/wb/models/refresh`，`lib/index.js:715-780`，前端 `lib/console.mjs:800` | 手动，带 per-region inflight 合流（`:714`、`726-727`） |
 
 - vendor 侧**不存在** `/models/refresh`；`POOL_MODELS_SAVE_PATH`（`index.js:7377-7398`）只写勾选、不拉目录。
 - 无任何定时器（全仓 `setInterval` 只有 `index.js:5252` 的签到调度，不碰目录）。
@@ -639,7 +639,7 @@ scripts/gen-console-inline.mjs --check → ✓ 生成块已同步
 ```sh
 # 一次问清两件事：路由在不在（404 = 旧代码）、图片第二层接没接上
 # （capabilities.imageAttachments 必须为 true，null/false = 进程里还是旧代码）
-curl -s http://127.0.0.1:19387/plugins/dsh-wotr-console/qoder/models/refresh \
+curl -s http://127.0.0.1:19387/plugins/dsh-kdczyz-mode/qoder/models/refresh \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print('capabilities =', d.get('capabilities'), '| 支持图片', sum(1 for m in d['models'] if m['supportsImages']), '个')"
 ```
 

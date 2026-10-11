@@ -551,7 +551,7 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
 
 /* —— 5) 装配层缺口：exports 白名单必须有 ./qoder —— */
 {
-  // 这条测的是 package.json 本身。缺它 Loader 解析 `dsh-wotr-console/qoder`
+  // 这条测的是 package.json 本身。缺它 Loader 解析 `dsh-kdczyz-mode/qoder`
   // 会直接失败，且报错发生在插件外，从插件代码里完全看不出来。
   const pkgPath = path.resolve(import.meta.dirname, '../package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -563,7 +563,7 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
   const patchPath = path.resolve(import.meta.dirname, '../cordis.patch.yml');
   const patch = fs.readFileSync(patchPath, 'utf8');
   ok('cordis.patch.yml 里有 dsh-connect-qoder 条目', patch.includes('dsh-connect-qoder'));
-  ok('该条目的 name 指向 dsh-wotr-console/qoder', /name:\s*dsh-wotr-console\/qoder\b/.test(patch));
+  ok('该条目的 name 指向 dsh-kdczyz-mode/qoder', /name:\s*dsh-kdczyz-mode\/qoder\b/.test(patch));
 }
 
 console.log(`\nqoder-provider: ${pass} 通过, ${fail} 失败`);

@@ -1,12 +1,12 @@
 # Trae 平台文件清单
 
-> 本文件是 [`dsh-wotr-console`](../../dsh-wotr-console/) 插件中 **Trae 侧**的
+> 本文件是 [`dsh-kdczyz-mode`](../../dsh-kdczyz-mode/) 插件中 **Trae 侧**的
 > 文件归档。三个平台的总览见 [`README.md`](README.md)。
 
 | 项 | 值 |
 |---|---|
 | Loader entry id | `dsh-connect-trae` |
-| 入口模块 | [`lib/trae.js`](../../dsh-wotr-console/lib/trae.js) |
+| 入口模块 | [`lib/trae.js`](../../dsh-kdczyz-mode/lib/trae.js) |
 | 注册的 provider | `trae`（国内版）、`trae-global`（国际版） |
 | 路由前缀 | `/plugins/dsh-connect-trae/*` |
 | 设置命名空间 | `trae` |
@@ -16,7 +16,7 @@
 > —— 与 WorkBuddy 侧形成鲜明对比（见 [workbuddy.md](workbuddy.md)）。
 > 合并时以 `lib/trae.js` **逐字节并入**，已核对零差异。
 > 上游的浏览器半边（`vendor/trae/client.js`）**已整体移除**，Trae 配置页
-> 改由本包自写（见 [`lib/console.mjs`](../../dsh-wotr-console/lib/console.mjs)）。
+> 改由本包自写（见 [`lib/console.mjs`](../../dsh-kdczyz-mode/lib/console.mjs)）。
 
 ---
 
@@ -51,7 +51,7 @@ HTTP**（WorkBuddy 是服务端发 authUrl + state 轮询，不开端口）。
 |---|---|
 | 凭据落盘 | `$DSH_HOME/.trae-auth.<region>.<accountId>.json`（**按账号一份文件**） |
 | 兼容读取 | 旧格式 `.trae-auth.<region>.json` 仍被 store 当作**迁移源**读取 |
-| 测试 | [`test/trae-auth.test.mjs`](../../dsh-wotr-console/test/trae-auth.test.mjs)（92 项） |
+| 测试 | [`test/trae-auth.test.mjs`](../../dsh-kdczyz-mode/test/trae-auth.test.mjs)（92 项） |
 
 ### 支持的安装与账号来源
 
@@ -104,7 +104,7 @@ HTTP**（WorkBuddy 是服务端发 authUrl + state 轮询，不开端口）。
 > **代价（刻意的）**：账号的设备身份不再是桌面安装那个 id，Trae 自己日志里的
 > `X-Device-Id` 与本插件发的对不上。换来的是同机每个登录都能签到自己那份。
 >
-> 回归测试：[`test/trae-auth.test.mjs`](../../dsh-wotr-console/test/trae-auth.test.mjs)
+> 回归测试：[`test/trae-auth.test.mjs`](../../dsh-kdczyz-mode/test/trae-auth.test.mjs)
 > 的「多账号」一组（每账号一个 id、重启后不变、凭据文件优先于注册表、未知账号不编造、
 > 换一个 `$DSH_HOME` 仍算出同一 id）。
 
@@ -159,7 +159,7 @@ cp ~/.dsh/.trae-auth.*.json ~/.dsh/trae-devices.json <新机>/.dsh/
 >
 > 选择规则取官方客户端自己的行为：**纯数字者优先**，没有纯数字候选时取首个（单键的
 > 旧安装行为不变）。回归测试在
-> [`test/trae-auth.test.mjs`](../../dsh-wotr-console/test/trae-auth.test.mjs)
+> [`test/trae-auth.test.mjs`](../../dsh-kdczyz-mode/test/trae-auth.test.mjs)
 > 的多候选断言里。
 
 ---
@@ -183,7 +183,7 @@ cp ~/.dsh/.trae-auth.*.json ~/.dsh/trae-devices.json <新机>/.dsh/
 
 ## 三、号池
 
-Trae 侧的账号池（[`lib/trae.js`](../../dsh-wotr-console/lib/trae.js) 内的
+Trae 侧的账号池（[`lib/trae.js`](../../dsh-kdczyz-mode/lib/trae.js) 内的
 `TraeAccountPool` / `TraeCredentialStore`）是**按 XD Pool 的做法**实现的，
 三种分配策略（`priority` / `round-robin` / `balanced`）与逐模型冷却一致。
 
@@ -217,12 +217,12 @@ Trae 签到是**按账号**的（每张卡签自己那个账号，不切换正�
 |---|---|
 | `GET /plugins/dsh-connect-trae/usage` | `TRAE_USAGE_PATH`（`lib/trae.js:4411`） |
 | `POST /plugins/dsh-connect-trae/checkin` | `TRAE_CHECKIN_PATH`（`lib/trae.js:4453`） |
-| `POST /plugins/dsh-wotr-console/trae/login/start` | `lib/index.js`（浏览器登录添加账号） |
-| `GET /plugins/dsh-wotr-console/trae/login/status` | 同上 |
-| `POST /plugins/dsh-wotr-console/trae/login/cancel` | 同上 |
+| `POST /plugins/dsh-kdczyz-mode/trae/login/start` | `lib/index.js`（浏览器登录添加账号） |
+| `GET /plugins/dsh-kdczyz-mode/trae/login/status` | 同上 |
+| `POST /plugins/dsh-kdczyz-mode/trae/login/cancel` | 同上 |
 
 > **前缀有两套，别搞混**：`/plugins/dsh-connect-trae/*` 是 Trae 半边自己按
-> 上游原 id 注册的（改名会让卡片变只读）；`/plugins/dsh-wotr-console/*` 是
+> 上游原 id 注册的（改名会让卡片变只读）；`/plugins/dsh-kdczyz-mode/*` 是
 > 合并后管理页自己的接口，用合并后的包名。
 
 ---
@@ -231,9 +231,9 @@ Trae 签到是**按账号**的（每张卡签自己那个账号，不切换正�
 
 | 文件 | 项数 | 守什么 |
 |---|---|---|
-| [`test/trae-auth.test.mjs`](../../dsh-wotr-console/test/trae-auth.test.mjs) | 71 | 登录（PKCE + 回环回调、自动回调）、凭据落盘 |
-| [`test/trae-pool.test.mjs`](../../dsh-wotr-console/test/trae-pool.test.mjs) | 46 | 账号池与凭据落盘 |
-| [`test/trae-checkin-route.test.mjs`](../../dsh-wotr-console/test/trae-checkin-route.test.mjs) | — | 按账号签到路由 |
+| [`test/trae-auth.test.mjs`](../../dsh-kdczyz-mode/test/trae-auth.test.mjs) | 71 | 登录（PKCE + 回环回调、自动回调）、凭据落盘 |
+| [`test/trae-pool.test.mjs`](../../dsh-kdczyz-mode/test/trae-pool.test.mjs) | 46 | 账号池与凭据落盘 |
+| [`test/trae-checkin-route.test.mjs`](../../dsh-kdczyz-mode/test/trae-checkin-route.test.mjs) | — | 按账号签到路由 |
 
 ---
 
@@ -281,6 +281,6 @@ Trae 签到是**按账号**的（每张卡签自己那个账号，不切换正�
 - 三平台总览：[`docs/platforms/README.md`](README.md)
 - WorkBuddy 侧：[`docs/platforms/workbuddy.md`](workbuddy.md)
 - Qoder 侧：[`docs/platforms/qoder.md`](qoder.md)
-- 入口分工与共用模块：[`dsh-wotr-console/lib/README.md`](../../dsh-wotr-console/lib/README.md)
+- 入口分工与共用模块：[`dsh-kdczyz-mode/lib/README.md`](../../dsh-kdczyz-mode/lib/README.md)
 - 合并前的单插件归档：[`dsh-connect-trae/`](../../dsh-connect-trae/)
 - 恢复单插件形态：[`tools/install-trae.sh`](../../tools/install-trae.sh)

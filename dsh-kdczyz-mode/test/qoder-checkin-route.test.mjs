@@ -123,7 +123,7 @@ const consoleCtx = {
 };
 mountConsoleRoutes(consoleCtx, {});
 
-const CHECKIN_PATH = '/plugins/dsh-wotr-console/qoder/checkin';
+const CHECKIN_PATH = '/plugins/dsh-kdczyz-mode/qoder/checkin';
 const handler = routes.get(CHECKIN_PATH);
 ok('挂上了 /qoder/checkin', typeof handler === 'function', [...routes.keys()].join(', '));
 

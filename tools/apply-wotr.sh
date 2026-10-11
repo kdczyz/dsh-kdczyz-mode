@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# 把合并版 dsh-wotr-console 部署到 DSH profile，并**移除**被它取代的两个旧插件。
+# 把合并版 dsh-kdczyz-mode 部署到 DSH profile，并**移除**被它取代的两个旧插件。
 #
 #   ./tools/apply-wotr.sh              部署到 desktop profile
 #   ./tools/apply-wotr.sh --dry-run    只显示计划，不改 profile
@@ -16,9 +16,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
-SRC="$ROOT/dsh-wotr-console"
-NEW_PKG="dsh-wotr-console"
-OLD_PKGS=("dsh-workbuddy-console" "dsh-connect-trae")
+SRC="$ROOT/dsh-kdczyz-mode"
+NEW_PKG="dsh-kdczyz-mode"
+OLD_PKGS=("dsh-wotr-console" "dsh-workbuddy-console" "dsh-connect-trae")
 # 旧包遗留的独立 vendor 依赖（合并版已把 xdpool 内联进 vendor/）
 OLD_EXTRA=("dsh-workbuddy-xdpool")
 
@@ -144,12 +144,12 @@ const [profile, root, dryStr] = process.argv.slice(2);
 const dry = dryStr === '1';
 const file = path.join(profile, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
-const NEW = 'dsh-wotr-console';
-const OLD = ['dsh-workbuddy-console', 'dsh-connect-trae'];
+const NEW = 'dsh-kdczyz-mode';
+const OLD = ['dsh-wotr-console', 'dsh-workbuddy-console', 'dsh-connect-trae'];
 
 pkg.dependencies = pkg.dependencies || {};
 for (const o of OLD) delete pkg.dependencies[o];
-pkg.dependencies[NEW] = 'link:' + path.join(root, 'dsh-wotr-console').replace(/\\/g, '/');
+pkg.dependencies[NEW] = 'link:' + path.join(root, 'dsh-kdczyz-mode').replace(/\\/g, '/');
 
 const bundles = (pkg.dsh?.profile?.bundles) ?? [];
 const kept = bundles.filter((b) => !OLD.includes(b));
@@ -181,10 +181,15 @@ const path = require('node:path');
 const file = path.join(process.argv[2], 'cordis.patch.yml');
 let raw = fs.readFileSync(file, 'utf8');
 const before = raw;
+// 上一代合并包名 → 本次包名。三条：裸名、/trae、/qoder。
+// 只改 name，条目与其 config 一律保留；正则里的 \s*$ 保证不会误伤子路径行。
+raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\s*$/gm, '$1dsh-kdczyz-mode');
+raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\/trae\s*$/gm, '$1dsh-kdczyz-mode/trae');
+raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\/qoder\s*$/gm, '$1dsh-kdczyz-mode/qoder');
 // 旧包名 → 合并后的包名（两处：WorkBuddy 半边、Trae 半边）
-raw = raw.replace(/^(\s*name:\s*)dsh-workbuddy-console\s*$/gm, '$1dsh-wotr-console');
+raw = raw.replace(/^(\s*name:\s*)dsh-workbuddy-console\s*$/gm, '$1dsh-kdczyz-mode');
 // 独立的旧 trae 包名 → 合并包名的子路径。**只改 name，原文与 config 一律保留。**
-raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-wotr-console/trae');
+raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-kdczyz-mode/trae');
 
 // —— 补 Qoder 条目 ——
 //
@@ -193,16 +198,16 @@ raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-wotr-console/tr
 // `- insert:` 只保证条目**存在**（不带 config）——实测这份 profile 里其余两个
 // 条目都是手写的，Qoder 那条从没被加进来，所以这里显式补齐。
 //
-// 幂等：已经有 `name: dsh-wotr-console/qoder` 就跳过，不重复插入、不覆盖
+// 幂等：已经有 `name: dsh-kdczyz-mode/qoder` 就跳过，不重复插入、不覆盖
 // 可能已存在的用户 config。
-if (!/^\s*name:\s*dsh-wotr-console\/qoder\s*$/m.test(raw)) {
+if (!/^\s*name:\s*dsh-kdczyz-mode\/qoder\s*$/m.test(raw)) {
   const block = [
     '- id: dsh-connect-qoder',
-    '  name: dsh-wotr-console/qoder',
+    '  name: dsh-kdczyz-mode/qoder',
     '',
   ].join('\n');
   raw = raw.replace(/\n*$/, '\n') + block;
-  console.log('  cordis.patch.yml: 已补上 Qoder 条目（dsh-connect-qoder → dsh-wotr-console/qoder）');
+  console.log('  cordis.patch.yml: 已补上 Qoder 条目（dsh-connect-qoder → dsh-kdczyz-mode/qoder）');
 }
 
 raw = raw.replace(/\n{3,}/g, '\n\n');
@@ -214,8 +219,8 @@ if (raw !== before) {
 }
 EOF
 else
-  echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-workbuddy-console 改为 dsh-wotr-console，dsh-connect-trae 改为 dsh-wotr-console/trae（条目与其 config 一律保留）"
-  echo "[dry-run] 将在缺失时补上 Qoder 条目：dsh-connect-qoder → dsh-wotr-console/qoder"
+  echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-wotr-console（含 /trae、/qoder 子路径）改为 dsh-kdczyz-mode，dsh-workbuddy-console 改为 dsh-kdczyz-mode，dsh-connect-trae 改为 dsh-kdczyz-mode/trae（条目与其 config 一律保留）"
+  echo "[dry-run] 将在缺失时补上 Qoder 条目：dsh-connect-qoder → dsh-kdczyz-mode/qoder"
 fi
 
 # —— 6) 卸掉旧包目录 ——
@@ -298,7 +303,7 @@ echo "  「从 Qoder 刷新」= 拉取即落盘（全部启用 + 图片/上下�
 echo "  拉取失败时一个字段都不写（不把内置兜底表固化成白名单）。"
 echo "  含图请求要两处接线都通（模型层声明 image + pi-ai 适配器的 resolveAttachments），"
 echo "  重启后确认进程里真的是这一版代码："
-echo "    curl -s http://127.0.0.1:19387/plugins/dsh-wotr-console/qoder/models/refresh"
+echo "    curl -s http://127.0.0.1:19387/plugins/dsh-kdczyz-mode/qoder/models/refresh"
 echo "  回执里 capabilities.imageAttachments 必须为 true —— null/false 说明还是旧代码；"
 echo "  同一份回执里每个模型都带正整数 contextWindow 与布尔 supportsImages。）"
 [ "$DRY" = 0 ] && echo "回滚：把 $BACKUP 里的文件拷回 profile，并恢复两个旧包目录。"

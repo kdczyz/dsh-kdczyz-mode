@@ -1,10 +1,10 @@
-# Register dsh-wotr-console — ONE package, THREE Loader entries.
+# Register dsh-kdczyz-mode — ONE package, THREE Loader entries.
 #
 # Why several entries, and why they use DIFFERENT module specifiers:
 #
-#   entry A  name: dsh-wotr-console        -> lib/index.js  (WorkBuddy pool half)
-#   entry B  name: dsh-wotr-console/trae   -> lib/trae.js   (Trae half)
-#   entry C  name: dsh-wotr-console/qoder  -> lib/qoder.js  (Qoder half)
+#   entry A  name: dsh-kdczyz-mode        -> lib/index.js  (WorkBuddy pool half)
+#   entry B  name: dsh-kdczyz-mode/trae   -> lib/trae.js   (Trae half)
+#   entry C  name: dsh-kdczyz-mode/qoder  -> lib/qoder.js  (Qoder half)
 #
 # The two halves each declare `enabledModelIds` / `imageModelIds` /
 # `contextBudgets` / `authFile` with DIFFERENT semantics. Cordis keys a plugin's
@@ -35,8 +35,8 @@
 # comment in YAML and breaks parsing.
 - insert:
     - id: llm-workbuddy-xdpool
-      name: dsh-wotr-console
+      name: dsh-kdczyz-mode
     - id: dsh-connect-trae
-      name: dsh-wotr-console/trae
+      name: dsh-kdczyz-mode/trae
     - id: dsh-connect-qoder
-      name: dsh-wotr-console/qoder
+      name: dsh-kdczyz-mode/qoder

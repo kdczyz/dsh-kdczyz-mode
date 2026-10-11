@@ -1,16 +1,16 @@
 # WorkBuddy 平台文件清单
 
-> 本文件是 [`dsh-wotr-console`](../../dsh-wotr-console/) 插件中 **WorkBuddy 侧**
+> 本文件是 [`dsh-kdczyz-mode`](../../dsh-kdczyz-mode/) 插件中 **WorkBuddy 侧**
 > 的文件归档。三个平台的总览见 [`README.md`](README.md)。
 
 | 项 | 值 |
 |---|---|
 | Loader entry id | `llm-workbuddy-xdpool` |
-| 入口模块 | [`lib/index.js`](../../dsh-wotr-console/lib/index.js) |
+| 入口模块 | [`lib/index.js`](../../dsh-kdczyz-mode/lib/index.js) |
 | 注册的 provider | `workbuddy-xdpool`（国内版）、`workbuddy-xdpool-global`（国际版） |
 | 路由前缀 | `/plugins/dsh-workbuddy-xdpool/*` |
 | 设置命名空间 | `workbuddy-xdpool` |
-| 上游实现 | vendored [`vendor/xdpool/`](../../dsh-wotr-console/vendor/xdpool/)（MIT，上游 XDTrees/dsh-workbuddy-xdpool 1.7.1） |
+| 上游实现 | vendored [`vendor/xdpool/`](../../dsh-kdczyz-mode/vendor/xdpool/)（MIT，上游 XDTrees/dsh-workbuddy-xdpool 1.7.1） |
 | 补丁 | [`patches/03-vendor-pool.patch`](../../patches/03-vendor-pool.patch)、[`patches/04-dsml-bridge.mjs`](../../patches/04-dsml-bridge.mjs) |
 
 ---
@@ -20,7 +20,7 @@
 ### `lib/index.js` —— ⚠️ 名实不符
 
 文件名看着像 WorkBuddy 专属，**实际它同时是三平台共用的管理页后端**。
-详见 [`lib/README.md`](../../dsh-wotr-console/lib/README.md) 第一节。
+详见 [`lib/README.md`](../../dsh-kdczyz-mode/lib/README.md) 第一节。
 
 它承担的 WorkBuddy 侧职责：
 
@@ -50,18 +50,18 @@
 | 项 | 值 |
 |---|---|
 | 凭据落盘 | 由 vendored xdpool 管理，本模块供浏览器登录添加账号用 |
-| 测试 | [`test/wb-auth.test.mjs`](../../dsh-wotr-console/test/wb-auth.test.mjs)（64 项） |
+| 测试 | [`test/wb-auth.test.mjs`](../../dsh-kdczyz-mode/test/wb-auth.test.mjs)（64 项） |
 | 界面入口 | 管理页「账号」标签页左列「**添加账号**」 |
 
 > 插件全程不接触密码：登录在官方页面里完成，插件只接收登录后的令牌。
 > 凭据是**明文落盘**的，风险说明与「已验证 / 未验证」清单见
-> [插件 README](../../dsh-wotr-console/README.md) 的「浏览器登录添加账号」一节。
+> [插件 README](../../dsh-kdczyz-mode/README.md) 的「浏览器登录添加账号」一节。
 > **国际版与 Trae 侧目前未做实测**。
 
 ### `lib/wb-fingerprint` 相关
 
 WorkBuddy 侧还有一处指纹对齐逻辑，测试在
-[`test/wb-fingerprint.test.mjs`](../../dsh-wotr-console/test/wb-fingerprint.test.mjs)。
+[`test/wb-fingerprint.test.mjs`](../../dsh-kdczyz-mode/test/wb-fingerprint.test.mjs)。
 上游头的装配细节（`X-User-Id` / `X-Enterprise-Id` / `X-Userinfo` 等 11 个
 `runIdentityHeaders()` 常量）取证见
 [`docs/upstream-fingerprint.md`](../upstream-fingerprint.md) 第一节。
@@ -70,7 +70,7 @@ WorkBuddy 侧还有一处指纹对齐逻辑，测试在
 
 ## 二、vendored 模型池
 
-[`vendor/xdpool/`](../../dsh-wotr-console/vendor/xdpool/) 是**整个 WorkBuddy 池
+[`vendor/xdpool/`](../../dsh-kdczyz-mode/vendor/xdpool/) 是**整个 WorkBuddy 池
 实现**，自上游 `XDTrees/dsh-workbuddy-xdpool` 1.7.1 并入，**代码未做修改**
 （便于随时与上游对照升级），仅 `lib/index.js` 打过下列补丁。
 
@@ -151,9 +151,9 @@ xdpool 管理，它用 `currentApi().pool` 拿的是**已解密**的凭证，问
 
 | 文件 | 项数 | 守什么 |
 |---|---|---|
-| [`test/wb-auth.test.mjs`](../../dsh-wotr-console/test/wb-auth.test.mjs) | 64 | 登录 state 轮询、凭据落盘 |
-| [`test/wb-fingerprint.test.mjs`](../../dsh-wotr-console/test/wb-fingerprint.test.mjs) | — | 出站指纹头装配 |
-| [`test/wb-pool-selected.test.mjs`](../../dsh-wotr-console/test/wb-pool-selected.test.mjs) | — | 「切换到此账号 / 取消固定」的池选中语义 |
+| [`test/wb-auth.test.mjs`](../../dsh-kdczyz-mode/test/wb-auth.test.mjs) | 64 | 登录 state 轮询、凭据落盘 |
+| [`test/wb-fingerprint.test.mjs`](../../dsh-kdczyz-mode/test/wb-fingerprint.test.mjs) | — | 出站指纹头装配 |
+| [`test/wb-pool-selected.test.mjs`](../../dsh-kdczyz-mode/test/wb-pool-selected.test.mjs) | — | 「切换到此账号 / 取消固定」的池选中语义 |
 
 WorkBuddy 侧的**数据层与桥接层**另有测试在仓库 `tools/` 下：
 [`tools/dsml-test.mjs`](../../tools/dsml-test.mjs)（44 项，含文本重复 bug 的回归）。
@@ -168,7 +168,7 @@ WorkBuddy 侧的**数据层与桥接层**另有测试在仓库 `tools/` 下：
 | 凭据管理 | vendored xdpool 自管，`lib/index.js` **不读不写任何凭据文件** |
 | 使用记录 | `~/.dsh/plugin-data/dsh-workbuddy-console/`（目录名**有意保留旧插件名**，改名会让历史记录凭空消失） |
 
-数据结构（由 [`lib/credit-store.mjs`](../../dsh-wotr-console/lib/credit-store.mjs)
+数据结构（由 [`lib/credit-store.mjs`](../../dsh-kdczyz-mode/lib/credit-store.mjs)
 写入，格式沿用控制台时代，旧数据直接续上）：
 
 ```
@@ -200,5 +200,5 @@ WorkBuddy 侧的**数据层与桥接层**另有测试在仓库 `tools/` 下：
 - 三平台总览：[`docs/platforms/README.md`](README.md)
 - Trae 侧：[`docs/platforms/trae.md`](trae.md)
 - Qoder 侧：[`docs/platforms/qoder.md`](qoder.md)
-- 入口分工与共用模块：[`dsh-wotr-console/lib/README.md`](../../dsh-wotr-console/lib/README.md)
+- 入口分工与共用模块：[`dsh-kdczyz-mode/lib/README.md`](../../dsh-kdczyz-mode/lib/README.md)
 - 三链路模型能力审计：[`docs/upstream-model-audit-2026-10-11.md`](../upstream-model-audit-2026-10-11.md)

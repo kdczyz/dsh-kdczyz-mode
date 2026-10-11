@@ -1,7 +1,7 @@
 {
-  "name": "dsh-wotr-console",
+  "name": "dsh-kdczyz-mode",
   "version": "1.1.0",
-  "description": "Installable wrapper for the DSH plugin in dsh-wotr-console/: WorkBuddy model pool + Trae connector + Qoder account pool as three independent providers, plus one settings page with six tabs (XD Pool / Trae config [provider switch, account binding, model selection, account pool] / accounts [WorkBuddy + Trae + Qoder, three columns] / Qoder pool [device-flow login, per-account credits, cooldown] / credits / usage history). This root manifest exists so `pnpm add github:kdczyz/dsh-kdczyz-mode` (DSH 插件管理页) installs a package that declares dsh.bundle.patch at its root.",
+  "description": "Installable wrapper for the DSH plugin in dsh-kdczyz-mode/: WorkBuddy model pool + Trae connector + Qoder account pool as three independent providers, plus one settings page with six tabs (XD Pool / Trae config [provider switch, account binding, model selection, account pool] / accounts [WorkBuddy + Trae + Qoder, three columns] / Qoder pool [device-flow login, per-account credits, cooldown] / credits / usage history). This root manifest exists so `pnpm add github:kdczyz/dsh-kdczyz-mode` (DSH 插件管理页) installs a package that declares dsh.bundle.patch at its root.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kdczyz/dsh-kdczyz-mode.git"
@@ -10,16 +10,16 @@
   "license": "MIT",
   "author": "dhdbvcg",
   "contributors": [
-    "XDTrees (dsh-workbuddy-xdpool, vendored under dsh-wotr-console/vendor/xdpool — MIT)",
-    "dingminhua (dsh-connect-trae, merged in as dsh-wotr-console/lib/trae.js)"
+    "XDTrees (dsh-workbuddy-xdpool, vendored under dsh-kdczyz-mode/vendor/xdpool — MIT)",
+    "dingminhua (dsh-connect-trae, merged in as dsh-kdczyz-mode/lib/trae.js)"
   ],
   "type": "module",
-  "main": "./dsh-wotr-console/lib/index.js",
+  "main": "./dsh-kdczyz-mode/lib/index.js",
   "exports": {
-    ".": "./dsh-wotr-console/lib/index.js",
-    "./trae": "./dsh-wotr-console/lib/trae.js",
-    "./qoder": "./dsh-wotr-console/lib/qoder.js",
-    "./client": "./dsh-wotr-console/lib/client.js",
+    ".": "./dsh-kdczyz-mode/lib/index.js",
+    "./trae": "./dsh-kdczyz-mode/lib/trae.js",
+    "./qoder": "./dsh-kdczyz-mode/lib/qoder.js",
+    "./client": "./dsh-kdczyz-mode/lib/client.js",
     "./package.json": "./package.json"
   },
   "keywords": [
@@ -57,13 +57,13 @@
     }
   },
   "scripts": {
-    "build:console": "npm --prefix dsh-wotr-console run build:console",
-    "check:console": "npm --prefix dsh-wotr-console run check:console",
-    "test": "npm --prefix dsh-wotr-console run test"
+    "build:console": "npm --prefix dsh-kdczyz-mode run build:console",
+    "check:console": "npm --prefix dsh-kdczyz-mode run check:console",
+    "test": "npm --prefix dsh-kdczyz-mode run test"
   },
   "dsh": {
     "bundle": {
-      "patch": "./dsh-wotr-console/cordis.patch.yml"
+      "patch": "./dsh-kdczyz-mode/cordis.patch.yml"
     },
     "client": {
       "inject": [

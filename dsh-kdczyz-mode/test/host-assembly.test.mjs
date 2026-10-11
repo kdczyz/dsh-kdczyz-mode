@@ -52,7 +52,7 @@ const PROFILE = process.env.DSH_PROFILE_DIR
   ?? process.env.DSH_PROFILE
   ?? path.join(os.homedir(), '.dsh', 'profiles', 'desktop');
 const PROFILE_NM = path.join(PROFILE, 'node_modules');
-const PLUGIN = path.join(PROFILE_NM, 'dsh-wotr-console');
+const PLUGIN = path.join(PROFILE_NM, 'dsh-kdczyz-mode');
 
 /** 三个入口在模块顶层直接 import 的宿主内包。 */
 const REQUIRED = [
@@ -65,7 +65,7 @@ const REQUIRED = [
 /* —— 1) profile 里到底装没装 —— */
 console.log('profile:', PROFILE);
 if (!fs.existsSync(PLUGIN)) {
-  skipped('profile 里没有 dsh-wotr-console', '尚未部署到该 profile');
+  skipped('profile 里没有 dsh-kdczyz-mode', '尚未部署到该 profile');
 } else {
   for (const spec of REQUIRED) {
     const pkgName = spec.split('/').slice(0, 2).join('/');

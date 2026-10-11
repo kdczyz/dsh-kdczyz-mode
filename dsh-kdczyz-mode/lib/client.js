@@ -1,5 +1,5 @@
 /**
- * dsh-wotr-console —— 浏览器端（合并后的单一 client bundle）。
+ * dsh-kdczyz-mode —— 浏览器端（合并后的单一 client bundle）。
  *
  * 一个包只能有一个 `./client`：client-modules 是**按包名**建表的
  * （reconcilePackage(packageName) → 一个 graph row），所以两个宿主入口
@@ -32,7 +32,7 @@
  *      后经 `embedded.wbSettings` / `embedded.traeSettings` 传给管理页。
  *   5. vendored 客户端内部注册的 id 仍是各半原本的插件 id（它们自己的
  *      settings 作用域解析依赖这个 id）；本 bundle 用合并后的包名
- *      dsh-wotr-console 注册。
+ *      dsh-kdczyz-mode 注册。
  */
 
 //#region BEGIN GENERATED: xdpool client source
@@ -58,7 +58,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
    * 数据全部通过 fetch 向两个半边**已有的**路由取：
    *
    *   WorkBuddy 侧  /plugins/dsh-workbuddy-xdpool/*   （vendored 池路由）
-   *   本插件侧      /plugins/dsh-wotr-console/*       （lib/index.js 挂的只读接口）
+   *   本插件侧      /plugins/dsh-kdczyz-mode/*       （lib/index.js 挂的只读接口）
    *   Trae 侧       /plugins/dsh-connect-trae/*       （lib/trae.js 挂的路由）
    *
    * 三个区域（都是**配置**页；原先还有一个只读的「账号」页，已删除）：
@@ -140,7 +140,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     /** vendored 账号池的路由前缀（同 vendor/xdpool/lib/index.js 的常量，刻意不改名） */
     const POOL_API = '/plugins/dsh-workbuddy-xdpool';
     /** 本插件自己的路由前缀（由 lib/index.js 注册，提供历史记录） */
-    const SELF_API = '/plugins/dsh-wotr-console';
+    const SELF_API = '/plugins/dsh-kdczyz-mode';
     /** Trae 半边的路由前缀（同 lib/trae.js 的常量，刻意不改名） */
     const TRAE_API = '/plugins/dsh-connect-trae';
     /** Trae 的两个区域，卡片 tab 顺序 */
@@ -215,7 +215,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     /** 单次自动刷新的请求上限：账号再多也不并发，避免被当成异常流量。 */
     const QODER_CREDITS_MAX_ACCOUNTS = 50;
 
-    const CSS_ID = 'dsh-wotr-console/settings-page';
+    const CSS_ID = 'dsh-kdczyz-mode/settings-page';
     const CSS = `
   .wbc-page{align-self:stretch;display:flex;flex-direction:column;gap:20px;padding:4px 0 24px}
   .wbc-head{display:flex;flex-direction:column;gap:4px}
@@ -358,7 +358,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       if (typeof document === 'undefined') return;
       if (document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) !== null) return;
       const tag = document.createElement('style');
-      tag.dataset.plugin = 'dsh-wotr-console';
+      tag.dataset.plugin = 'dsh-kdczyz-mode';
       tag.dataset.pluginCss = CSS_ID;
       tag.textContent = CSS;
       document.head.appendChild(tag);
@@ -6034,17 +6034,17 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
 // 内联执行可以只注册一次、顺序可控，且 vendored 代码一行都不用改
 // （便于日后对照上游升级）。
 //
-// 注意注册 id：本 bundle 用**合并后的包名** dsh-wotr-console 注册，
+// 注意注册 id：本 bundle 用**合并后的包名** dsh-kdczyz-mode 注册，
 // 因为 client-modules 是按包名建表、按包名 require 的；两个 vendored 脚本
 // 各自声明的 id 由下面的替身加载器捕获，不会真的注册进模块表。
 window.__ModuleLoader__.load({
-  id: 'dsh-wotr-console',
+  id: 'dsh-kdczyz-mode',
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
 
     /** 与 package.json 的 name 一致；cordis 用它定位模块 */
-    const pkgName = 'dsh-wotr-console';
+    const pkgName = 'dsh-kdczyz-mode';
 
     // React 运行时：管理页组件要用。
     //
@@ -6060,7 +6060,7 @@ window.__ModuleLoader__.load({
       react = require('react');
       jsxRuntime = require('react/jsx-runtime');
     } catch (e) {
-      console.error('[dsh-wotr-console] react runtime unavailable; management page disabled:', e);
+      console.error('[dsh-kdczyz-mode] react runtime unavailable; management page disabled:', e);
     }
 
     /**
@@ -6079,7 +6079,7 @@ window.__ModuleLoader__.load({
       const reactDom = require('react-dom');
       if (typeof reactDom?.createPortal === 'function') createPortal = reactDom.createPortal;
     } catch (e) {
-      console.error('[dsh-wotr-console] react-dom unavailable; credit card renders inline:', e);
+      console.error('[dsh-kdczyz-mode] react-dom unavailable; credit card renders inline:', e);
     }
 
     /**
@@ -6107,7 +6107,7 @@ window.__ModuleLoader__.load({
                 const mod = def.factory(require);
                 if (mod) captured = mod;
               } catch (e) {
-                console.error('[dsh-wotr-console] ' + label + ' factory threw:', e);
+                console.error('[dsh-kdczyz-mode] ' + label + ' factory threw:', e);
               }
               return captured;
             }
@@ -6119,7 +6119,7 @@ window.__ModuleLoader__.load({
         el.textContent = src;
         document.head.appendChild(el);
       } catch (e) {
-        console.error('[dsh-wotr-console] ' + label + ' inline failed:', e);
+        console.error('[dsh-kdczyz-mode] ' + label + ' inline failed:', e);
       } finally {
         window.__ModuleLoader__ = prev;
       }
@@ -6220,7 +6220,7 @@ window.__ModuleLoader__.load({
       try {
         vendoredClient.apply?.(proxyCtx);
       } catch (e) {
-        console.error('[dsh-wotr-console] ' + label + ' apply 失败（provider 不受影响）:', e);
+        console.error('[dsh-kdczyz-mode] ' + label + ' apply 失败（provider 不受影响）:', e);
       }
     }
 
@@ -6252,7 +6252,7 @@ window.__ModuleLoader__.load({
           try {
             fn();
           } catch (e) {
-            console.error('[dsh-wotr-console] WorkBuddy settings 订阅者抛错:', e);
+            console.error('[dsh-kdczyz-mode] WorkBuddy settings 订阅者抛错:', e);
           }
         }
       };
@@ -6295,7 +6295,7 @@ window.__ModuleLoader__.load({
         currentScope = readOnly;
         return handle;
       } catch (e) {
-        console.error('[dsh-wotr-console] WorkBuddy settings 作用域解析失败（配置页将只读）:', e);
+        console.error('[dsh-kdczyz-mode] WorkBuddy settings 作用域解析失败（配置页将只读）:', e);
         currentScope = readOnly;
         return handle;
       }
@@ -6343,7 +6343,7 @@ window.__ModuleLoader__.load({
           try {
             fn();
           } catch (e) {
-            console.error(`[dsh-wotr-console] ${label} settings 订阅者抛错:`, e);
+            console.error(`[dsh-kdczyz-mode] ${label} settings 订阅者抛错:`, e);
           }
         }
       };
@@ -6420,7 +6420,7 @@ window.__ModuleLoader__.load({
         currentScope = readOnly;
         return handle;
       } catch (e) {
-        console.error(`[dsh-wotr-console] ${label} settings 作用域解析失败（配置页将只读）:`, e);
+        console.error(`[dsh-kdczyz-mode] ${label} settings 作用域解析失败（配置页将只读）:`, e);
         currentScope = {
           getSnapshot: () => ({ status: 'unavailable', value: undefined, writable: false }),
           subscribe: () => () => {},
@@ -6492,7 +6492,7 @@ window.__ModuleLoader__.load({
         const directory = models.directoryFor(sessionId);
         return directory?.store ?? undefined;
       } catch (e) {
-        console.error('[dsh-wotr-console] 模型目录解析失败（额度胶囊将不显示）:', e);
+        console.error('[dsh-kdczyz-mode] 模型目录解析失败（额度胶囊将不显示）:', e);
         return undefined;
       }
     }
@@ -6520,7 +6520,7 @@ window.__ModuleLoader__.load({
         const NS = 'wotr-console-page';
         ctx.effect(
           () => ctx.locale.register(NS, { zh: { 'nav.label': 'WOTR' }, en: { 'nav.label': 'WOTR' } }),
-          'dsh-wotr-console: page copy',
+          'dsh-kdczyz-mode: page copy',
         );
         const t = ctx.locale.bind(NS);
 
@@ -6566,11 +6566,11 @@ window.__ModuleLoader__.load({
               ),
             );
           } catch (e) {
-            console.error('[dsh-wotr-console] 额度胶囊注册失败（不影响输入框）:', e);
+            console.error('[dsh-kdczyz-mode] 额度胶囊注册失败（不影响输入框）:', e);
           }
         }
       } catch (e) {
-        console.error('[dsh-wotr-console] console page failed to register:', e);
+        console.error('[dsh-kdczyz-mode] console page failed to register:', e);
       }
     }
 
@@ -6609,7 +6609,7 @@ window.__ModuleLoader__.load({
           createPortal,
         });
       } catch (e) {
-        console.error('[dsh-wotr-console] apply failed (UI only; provider unaffected):', e);
+        console.error('[dsh-kdczyz-mode] apply failed (UI only; provider unaffected):', e);
       }
     }
 

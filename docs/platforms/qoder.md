@@ -1,14 +1,14 @@
 # Qoder 平台文件清单
 
-> 本文件是 [`dsh-wotr-console`](../../dsh-wotr-console/) 插件中 **Qoder 侧**的
+> 本文件是 [`dsh-kdczyz-mode`](../../dsh-kdczyz-mode/) 插件中 **Qoder 侧**的
 > 文件归档。三个平台的总览见 [`README.md`](README.md)。
 
 | 项 | 值 |
 |---|---|
 | Loader entry id | `dsh-connect-qoder` |
-| 入口模块 | [`lib/qoder.js`](../../dsh-wotr-console/lib/qoder.js) |
+| 入口模块 | [`lib/qoder.js`](../../dsh-kdczyz-mode/lib/qoder.js) |
 | 注册的 provider | `qoder` |
-| 路由前缀 | `/plugins/dsh-wotr-console/qoder/*` |
+| 路由前缀 | `/plugins/dsh-kdczyz-mode/qoder/*` |
 | 设置命名空间 | `qoder` |
 | 官方客户端版本 | CLI/worker `1.1.64`、桌面宿主 `0.4.3` |
 | 状态 | **已接通推理**（2026-10-11 真机端到端验证通过） |
@@ -34,16 +34,16 @@ DSH → pi-ai 的 OpenAI 客户端 → http://127.0.0.1:<port>/v1/chat/completio
 
 | 文件 | 职责 | 测试 |
 |---|---|---|
-| [`qoder.js`](../../dsh-wotr-console/lib/qoder.js) | cordis Loader 入口：注册 provider、Config schema、目录刷新 | `qoder-provider`、`qoder-chat`、`qoder-streaming` |
-| [`qoder-auth.mjs`](../../dsh-wotr-console/lib/qoder-auth.mjs) | **设备流**登录（PKCE + 轮询） | `qoder-auth` |
-| [`qoder-pool.mjs`](../../dsh-wotr-console/lib/qoder-pool.mjs) | 多账号号池：`scan`/`acquire`/`penalize`/`prefer` | `qoder-pool`、`qoder-pool-route`、`qoder-dedup` |
-| [`qoder-relay.mjs`](../../dsh-wotr-console/lib/qoder-relay.mjs) | **反代请求**：签名、发请求、解信封、分类失败 | `qoder-relay`、`qoder-payload` |
-| [`qoder-fingerprint.mjs`](../../dsh-wotr-console/lib/qoder-fingerprint.mjs) | **出站指纹对齐**：运行时提取并驱动官方 wasm | `qoder-fingerprint` |
-| [`qoder-shim.mjs`](../../dsh-wotr-console/lib/qoder-shim.mjs) | 本地 loopback shim（OpenAI 协议 ↔ Qoder 私有协议） | `qoder-shim` |
-| [`qoder-catalog.mjs`](../../dsh-wotr-console/lib/qoder-catalog.mjs) | 模型目录 + 静态兜底 | `qoder-catalog` |
-| [`qoder-credits.mjs`](../../dsh-wotr-console/lib/qoder-credits.mjs) | 积分额度查询（上游 `quota/usage`） | `qoder-credits` |
-| [`qoder-campaign.mjs`](../../dsh-wotr-console/lib/qoder-campaign.mjs) | **每日签到**（活动线 `me/campaigns → claim`） | `qoder-campaign`、`qoder-checkin-route` |
-| （共用）[`volatile.mjs`](../../dsh-wotr-console/lib/volatile.mjs) | 宿主 volatile 契约助手，被 `qoder.js` 使用 | — |
+| [`qoder.js`](../../dsh-kdczyz-mode/lib/qoder.js) | cordis Loader 入口：注册 provider、Config schema、目录刷新 | `qoder-provider`、`qoder-chat`、`qoder-streaming` |
+| [`qoder-auth.mjs`](../../dsh-kdczyz-mode/lib/qoder-auth.mjs) | **设备流**登录（PKCE + 轮询） | `qoder-auth` |
+| [`qoder-pool.mjs`](../../dsh-kdczyz-mode/lib/qoder-pool.mjs) | 多账号号池：`scan`/`acquire`/`penalize`/`prefer` | `qoder-pool`、`qoder-pool-route`、`qoder-dedup` |
+| [`qoder-relay.mjs`](../../dsh-kdczyz-mode/lib/qoder-relay.mjs) | **反代请求**：签名、发请求、解信封、分类失败 | `qoder-relay`、`qoder-payload` |
+| [`qoder-fingerprint.mjs`](../../dsh-kdczyz-mode/lib/qoder-fingerprint.mjs) | **出站指纹对齐**：运行时提取并驱动官方 wasm | `qoder-fingerprint` |
+| [`qoder-shim.mjs`](../../dsh-kdczyz-mode/lib/qoder-shim.mjs) | 本地 loopback shim（OpenAI 协议 ↔ Qoder 私有协议） | `qoder-shim` |
+| [`qoder-catalog.mjs`](../../dsh-kdczyz-mode/lib/qoder-catalog.mjs) | 模型目录 + 静态兜底 | `qoder-catalog` |
+| [`qoder-credits.mjs`](../../dsh-kdczyz-mode/lib/qoder-credits.mjs) | 积分额度查询（上游 `quota/usage`） | `qoder-credits` |
+| [`qoder-campaign.mjs`](../../dsh-kdczyz-mode/lib/qoder-campaign.mjs) | **每日签到**（活动线 `me/campaigns → claim`） | `qoder-campaign`、`qoder-checkin-route` |
+| （共用）[`volatile.mjs`](../../dsh-kdczyz-mode/lib/volatile.mjs) | 宿主 volatile 契约助手，被 `qoder.js` 使用 | — |
 
 > **入口 id 与模块说明符都不能改**：`qoder.js` 必须是**独立模块**，理由与另两半
 > 相同（cordis 按 `apply` 引用同一性登记 runtime，共用模块会共享一个 `Config`）。
@@ -56,7 +56,7 @@ Qoder 桌面端**每个安装只保存一份登录**：再登一个账号会覆�
 「扫描本机已登录账号构成池」这条路在 Qoder 上**根本不成立** —— 无论怎么扫，
 永远只能扫出一个账号。要凑出多账号池，只能**逐个显式登录**。
 
-这是 [`qoder-auth.mjs`](../../dsh-wotr-console/lib/qoder-auth.mjs) 存在的唯一理由。
+这是 [`qoder-auth.mjs`](../../dsh-kdczyz-mode/lib/qoder-auth.mjs) 存在的唯一理由。
 
 ---
 
@@ -232,7 +232,7 @@ ctx.prepareInferRequest(base, body, modelKey, modelSource);
 
 ## 八、管理页接口
 
-前缀 `/plugins/dsh-wotr-console/qoder/*`：
+前缀 `/plugins/dsh-kdczyz-mode/qoder/*`：
 
 | 路由 | 作用 |
 |---|---|
@@ -309,21 +309,21 @@ adapter 校验里），所以 `qoder-catalog.mjs` 必须提供静态兜底表 �
 
 | 文件 | 守什么 |
 |---|---|
-| [`qoder-auth.test.mjs`](../../dsh-wotr-console/test/qoder-auth.test.mjs) | 设备流登录五坑 + 两边算法一致 |
-| [`qoder-pool.test.mjs`](../../dsh-wotr-console/test/qoder-pool.test.mjs) | 「磁盘是唯一真相」+ 出池状态清理 |
-| [`qoder-pool-route.test.mjs`](../../dsh-wotr-console/test/qoder-pool-route.test.mjs) | `/qoder/pool` 路由与快照字段 |
-| [`qoder-dedup.test.mjs`](../../dsh-wotr-console/test/qoder-dedup.test.mjs) | 请求去重 |
-| [`qoder-relay.test.mjs`](../../dsh-wotr-console/test/qoder-relay.test.mjs) | 签名、发请求、解信封、失败分类 |
-| [`qoder-payload.test.mjs`](../../dsh-wotr-console/test/qoder-payload.test.mjs) | 请求体构造 |
-| [`qoder-fingerprint.test.mjs`](../../dsh-wotr-console/test/qoder-fingerprint.test.mjs) | 指纹头装配（含 `Cosy-MachineToken` 删除） |
-| [`qoder-shim.test.mjs`](../../dsh-wotr-console/test/qoder-shim.test.mjs) | loopback shim 协议转换 |
-| [`qoder-catalog.test.mjs`](../../dsh-wotr-console/test/qoder-catalog.test.mjs) | 目录与静态兜底 |
-| [`qoder-credits.test.mjs`](../../dsh-wotr-console/test/qoder-credits.test.mjs) | 额度查询与 serving 判定 |
-| [`qoder-campaign.test.mjs`](../../dsh-wotr-console/test/qoder-campaign.test.mjs) | 活动线签到（含 `Cosy-ClientType=10`） |
-| [`qoder-checkin-route.test.mjs`](../../dsh-wotr-console/test/qoder-checkin-route.test.mjs) | 签到路由 |
-| [`qoder-provider.test.mjs`](../../dsh-wotr-console/test/qoder-provider.test.mjs) | provider 注册与模型表（**不打真网**） |
-| [`qoder-chat.test.mjs`](../../dsh-wotr-console/test/qoder-chat.test.mjs) | 对话链路 |
-| [`qoder-streaming.test.mjs`](../../dsh-wotr-console/test/qoder-streaming.test.mjs) | 流式输出 |
+| [`qoder-auth.test.mjs`](../../dsh-kdczyz-mode/test/qoder-auth.test.mjs) | 设备流登录五坑 + 两边算法一致 |
+| [`qoder-pool.test.mjs`](../../dsh-kdczyz-mode/test/qoder-pool.test.mjs) | 「磁盘是唯一真相」+ 出池状态清理 |
+| [`qoder-pool-route.test.mjs`](../../dsh-kdczyz-mode/test/qoder-pool-route.test.mjs) | `/qoder/pool` 路由与快照字段 |
+| [`qoder-dedup.test.mjs`](../../dsh-kdczyz-mode/test/qoder-dedup.test.mjs) | 请求去重 |
+| [`qoder-relay.test.mjs`](../../dsh-kdczyz-mode/test/qoder-relay.test.mjs) | 签名、发请求、解信封、失败分类 |
+| [`qoder-payload.test.mjs`](../../dsh-kdczyz-mode/test/qoder-payload.test.mjs) | 请求体构造 |
+| [`qoder-fingerprint.test.mjs`](../../dsh-kdczyz-mode/test/qoder-fingerprint.test.mjs) | 指纹头装配（含 `Cosy-MachineToken` 删除） |
+| [`qoder-shim.test.mjs`](../../dsh-kdczyz-mode/test/qoder-shim.test.mjs) | loopback shim 协议转换 |
+| [`qoder-catalog.test.mjs`](../../dsh-kdczyz-mode/test/qoder-catalog.test.mjs) | 目录与静态兜底 |
+| [`qoder-credits.test.mjs`](../../dsh-kdczyz-mode/test/qoder-credits.test.mjs) | 额度查询与 serving 判定 |
+| [`qoder-campaign.test.mjs`](../../dsh-kdczyz-mode/test/qoder-campaign.test.mjs) | 活动线签到（含 `Cosy-ClientType=10`） |
+| [`qoder-checkin-route.test.mjs`](../../dsh-kdczyz-mode/test/qoder-checkin-route.test.mjs) | 签到路由 |
+| [`qoder-provider.test.mjs`](../../dsh-kdczyz-mode/test/qoder-provider.test.mjs) | provider 注册与模型表（**不打真网**） |
+| [`qoder-chat.test.mjs`](../../dsh-kdczyz-mode/test/qoder-chat.test.mjs) | 对话链路 |
+| [`qoder-streaming.test.mjs`](../../dsh-kdczyz-mode/test/qoder-streaming.test.mjs) | 流式输出 |
 
 ---
 
@@ -341,7 +341,7 @@ adapter 校验里），所以 `qoder-catalog.mjs` 必须提供静态兜底表 �
 
 ## 十四、已知局限
 
-见 [插件 README](../../dsh-wotr-console/README.md) 的「已知局限」一节与
+见 [插件 README](../../dsh-kdczyz-mode/README.md) 的「已知局限」一节与
 [`docs/qoder-502-rate-diagnosis.md`](../qoder-502-rate-diagnosis.md) 的收尾部分。
 
 要点：
@@ -356,4 +356,4 @@ adapter 校验里），所以 `qoder-catalog.mjs` 必须提供静态兜底表 �
 - 三平台总览：[`docs/platforms/README.md`](README.md)
 - WorkBuddy 侧：[`docs/platforms/workbuddy.md`](workbuddy.md)
 - Trae 侧：[`docs/platforms/trae.md`](trae.md)
-- 入口分工与共用模块：[`dsh-wotr-console/lib/README.md`](../../dsh-wotr-console/lib/README.md)
+- 入口分工与共用模块：[`dsh-kdczyz-mode/lib/README.md`](../../dsh-kdczyz-mode/lib/README.md)

@@ -1,10 +1,10 @@
 /**
- * dsh-wotr-console —— **WorkBuddy 半边**的宿主入口（合并后的包根）。
+ * dsh-kdczyz-mode —— **WorkBuddy 半边**的宿主入口（合并后的包根）。
  *
  * 本包把两个原本独立的插件合并成「一个包、两个 Loader 入口」：
  *
- *   entry A  name: dsh-wotr-console        -> 本文件        WorkBuddy 池半边
- *   entry B  name: dsh-wotr-console/trae   -> lib/trae.js   Trae 半边
+ *   entry A  name: dsh-kdczyz-mode        -> 本文件        WorkBuddy 池半边
+ *   entry B  name: dsh-kdczyz-mode/trae   -> lib/trae.js   Trae 半边
  *
  * 为什么必须是两个入口、而且两个**不同的模块说明符**：
  *   cordis 按 `apply` 函数的**引用同一性**登记 runtime
@@ -285,9 +285,9 @@ function resolveDshHome(ctx) {
 /**
  * 管理页的两条接口（挂在本插件自己的命名空间下）。
  *
- *   GET  /plugins/dsh-wotr-console/history-summary
+ *   GET  /plugins/dsh-kdczyz-mode/history-summary
  *        账号维度汇总 + 按天净变化，供「积分」「使用记录」两个 tab 渲染
- *   POST /plugins/dsh-wotr-console/sample
+ *   POST /plugins/dsh-kdczyz-mode/sample
  *        让服务端去读一次最新额度并落盘采样（管理页打开时调用）
  *
  * 为什么采样要服务端做：额度数据在 vendored 的账号池里，浏览器只能通过
@@ -475,7 +475,7 @@ export function mountConsoleRoutes(ctx, config) {
       if (mounted) return;
       mounted = true;
 
-      const BASE = '/plugins/dsh-wotr-console';
+      const BASE = '/plugins/dsh-kdczyz-mode';
 
       /** 只接受本机来源：路由读的是账号额度，不该被远程页面拉到 */
       const loopbackOrigin = (req) => {
@@ -1365,7 +1365,7 @@ export function apply(ctx, config = {}) {
   //
   // $DSH_HOME/plugin-data/dsh-workbuddy-console/{credit-samples,history,daily}.jsonl
   //
-  // 目录名与包名不一致是**有意的**：合并改名时若跟着改成 dsh-wotr-console，
+  // 目录名与包名不一致是**有意的**：合并改名时若跟着改成 dsh-kdczyz-mode，
   // 已经落盘的积分与使用记录就全部读不到了。这里只认数据，不认包名。
   // 取不到 DSH_HOME 时退化为「不采集」而不是报错：管理页会显示暂无记录，
   // provider 功能不受影响。

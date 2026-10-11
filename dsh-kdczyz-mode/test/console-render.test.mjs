@@ -949,7 +949,7 @@ for (const [tabId, label, mustHave] of [
 
   ok(
     '打开面板只打 GET（qoder 目录端点没有被 POST）',
-    fetchCalls.some((c) => c === 'GET /plugins/dsh-wotr-console/qoder/models/refresh') &&
+    fetchCalls.some((c) => c === 'GET /plugins/dsh-kdczyz-mode/qoder/models/refresh') &&
       !fetchCalls.some((c) => c.startsWith('POST ') && c.includes('/qoder/models/refresh')),
     fetchCalls.join(' , '),
   );
@@ -3048,16 +3048,16 @@ await (async () => {
   let checkinReply = {};
   globalThis.fetch = (url, init) => {
     const u = String(url);
-    if (u.includes('/plugins/dsh-wotr-console/qoder/pool')) {
+    if (u.includes('/plugins/dsh-kdczyz-mode/qoder/pool')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(qoderFixture) });
     }
-    if (u.includes('/plugins/dsh-wotr-console/qoder/credits/refresh')) {
+    if (u.includes('/plugins/dsh-kdczyz-mode/qoder/credits/refresh')) {
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve({ ok: true, refreshed: 0, failed: 0, accounts: [] }),
       });
     }
-    if (u.includes('/plugins/dsh-wotr-console/qoder/checkin')) {
+    if (u.includes('/plugins/dsh-kdczyz-mode/qoder/checkin')) {
       posts.push({ url: u, method: init?.method, body: init?.body });
       return Promise.resolve({ ok: true, json: () => Promise.resolve(checkinReply) });
     }
@@ -3153,8 +3153,8 @@ await (async () => {
     };
     let text = await afterClick(rerender, checkinIn(spareCard));
     ok(
-      '点「签到」POST 到 /plugins/dsh-wotr-console/qoder/checkin',
-      posts.length === 1 && posts[0].url.includes('/plugins/dsh-wotr-console/qoder/checkin'),
+      '点「签到」POST 到 /plugins/dsh-kdczyz-mode/qoder/checkin',
+      posts.length === 1 && posts[0].url.includes('/plugins/dsh-kdczyz-mode/qoder/checkin'),
       JSON.stringify(posts.map((p) => p.url)),
     );
     ok('签到请求是 POST', posts[0]?.method === 'POST', String(posts[0]?.method));
@@ -3669,7 +3669,7 @@ await (async () => {
   const refreshCalls = [];
   const prevFetch = globalThis.fetch;
   globalThis.fetch = (url) => {
-    if (typeof url === 'string' && url.includes('/plugins/dsh-wotr-console/wb/models/refresh')) {
+    if (typeof url === 'string' && url.includes('/plugins/dsh-kdczyz-mode/wb/models/refresh')) {
       refreshCalls.push(url);
       return Promise.resolve({
         ok: true,
