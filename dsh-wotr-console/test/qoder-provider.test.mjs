@@ -438,7 +438,13 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
     effect: () => {},
   };
   apply(ctx, {});
-  await new Promise((r) => setTimeout(r, 300));
+  // 这里**不能**睡固定值：`apply` 是异步注册的，本机有真实凭据时它还会真发一次
+  // 目录网络请求，满载的机器上 300ms 不够 —— 于是断言红的是「等待时间」而不是
+  // 被验的兜底逻辑（实测在门禁里偶发过一次）。改成轮询「注册真的发生了」。
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && seen.length === 0) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
   ok('没有 loader entry 时回落到 qoder（而不是 undefined）', seen[0] === 'qoder', String(seen[0]));
 }
 

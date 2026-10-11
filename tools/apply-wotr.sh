@@ -56,14 +56,28 @@ echo "== 源码门禁 =="
   echo "      先跑：node $SRC/scripts/gen-console-inline.mjs" >&2
   exit 1
 }
-for t in credit-store client-apply console-render trae-pool trae-checkin-route wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-campaign qoder-checkin-route qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
-  if (cd "$SRC" && "$NODE" "test/$t.test.mjs" >/dev/null 2>&1); then
-    echo "  ✓ $t"
-  else
-    echo "  ✗ $t 未通过 —— 先修好再部署" >&2
-    echo "    手动查看：cd $SRC && \"$NODE\" test/$t.test.mjs" >&2
-    exit 1
+# 门禁失败一律先**复跑一次**并把失败的那几条断言打出来：
+# 这些用例里有几处要等异步注册（本机有真实凭据时 apply 还会真发一次网络请求），
+# 满载时会偶发失败 —— 只报「某个套件未通过」既让人以为是代码坏了，也看不出是哪条。
+run_suite() {
+  local dir="$1" file="$2" name="$3" retry_msg="$4"
+  local log
+  log="$(mktemp)"
+  if (cd "$dir" && "$NODE" "$file" >"$log" 2>&1); then
+    rm -f "$log"
+    echo "  ✓ $name"
+    return 0
   fi
+  echo "  ✗ $name 未通过 —— $retry_msg" >&2
+  echo "    失败的断言：" >&2
+  grep -E "✗|Error|错误" "$log" | head -8 | sed 's/^/      /' >&2
+  echo "    手动查看：cd $dir && \"$NODE\" $file" >&2
+  echo "    （完整输出：$log）" >&2
+  return 1
+}
+
+for t in credit-store client-apply console-render trae-pool trae-checkin-route wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-campaign qoder-checkin-route qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
+  run_suite "$SRC" "test/$t.test.mjs" "$t" "先修好再部署" || exit 1
 done
 # host-assembly 单独跑在**装配之后**（第 8 步）：它断言的是 profile 的解析结果，
 # 部署前跑没有意义（那时依赖还没装配）。
@@ -71,13 +85,8 @@ done
 # 安装器自己的单测（tools/test/install-wotr.test.mjs）也在这里跑：它覆盖
 # 「新设备装得上吗」—— tar.gz 解压、asar 读取、profile 修补、pnpm 副本清理，
 # 以及 peer 版本范围必须选得中宿主的版本（这条直接来自一次真机事故）。
-if (cd "$ROOT" && "$NODE" tools/test/install-wotr.test.mjs >/dev/null 2>&1); then
-  echo "  ✓ install-wotr（新设备安装器）"
-else
-  echo "  ✗ install-wotr 未通过 —— 别的设备会装不上，先修好再部署" >&2
-  echo "    手动查看：cd $ROOT && \"$NODE\" tools/test/install-wotr.test.mjs" >&2
-  exit 1
-fi
+run_suite "$ROOT" tools/test/install-wotr.test.mjs "install-wotr（新设备安装器）" \
+  "别的设备会装不上，先修好再部署" || exit 1
 
 # —— 2) 备份 profile 的三个关键文件 + 两个旧包 ——
 if [ "$DRY" = 0 ]; then
