@@ -4823,6 +4823,26 @@ async function traeWebUsage(deps, region) {
 			...model.input === void 0 ? {} : { input: [...model.input] }
 		})),
 		enabledModelIds: [...deps.enabledModelIds(region)],
+		/**
+		 * 每个登录都带上自己的额度明细（`generalAvailable` / `workAvailable`…），
+		 * 这样卡片上**每张账号卡**都能直接显示余额，不必等切到该账号才算。
+		 *
+		 * 这是「即使当前不是使用的账号也能看见额度」的源头：先前额度只在
+		 * `credits` 顶层（即当前选中账号）出现，备用账号的卡上一片空白。
+		 *
+		 * 复用既有的 `creditsOfAccount`：它为每个账号单独起一个一次性
+		 * `TraeUsageClient` 读额度，**不会**改写 store 的选中账号。读失败的账号
+		 * 安静地不挂额度（保留 `undefined`），卡片据此回退到「不显示余额」而非
+		 * 整页报错。国际版没有这套 credits 接口，读出来的就是 `undefined`，同样
+		 * 优雅降级。
+		 */
+		accounts: await (async () => {
+			if (deps.creditsOfAccount === void 0) return accounts;
+			return Promise.all(accounts.map(async (item) => {
+				const credits = await deps.creditsOfAccount(region, item.id).catch(() => void 0);
+				return credits === void 0 ? item : { ...item, credits };
+			}));
+		})(),
 		...await poolDoc(deps, region),
 		...deps.rawDiagnostic === void 0 ? {} : { rawChat: deps.rawDiagnostic(region) }
 	};

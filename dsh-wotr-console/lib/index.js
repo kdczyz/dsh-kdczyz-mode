@@ -40,6 +40,9 @@ import * as xdpoolModule from '../vendor/xdpool/lib/index.js';
 import * as creditStore from './credit-store.mjs';
 import * as wbAuth from './wb-auth.mjs';
 import * as traeAuth from './trae-auth.mjs';
+import * as qoderAuth from './qoder-auth.mjs';
+import { QoderAccountPool, QoderCredentialStore } from './qoder-pool.mjs';
+import { refreshQoderPoolCredits } from './qoder-credits.mjs';
 
 export const name = 'wotr-console';
 
@@ -333,6 +336,49 @@ function dshHomeDir() {
   const env = process.env.DSH_HOME;
   if (typeof env === 'string' && env !== '') return env;
   return join(homedir(), '.dsh');
+}
+
+/**
+ * Qoder CN 号池的**进程级单例**。
+ *
+ * 为什么要单例：池的状态（冷却、停用、保留额度、使用时刻）必须跨请求存活 ——
+ * 一次 429 冷却的账号，下一次请求就得跳过它。每次请求新建池等于每次重扫磁盘、
+ * 冷却全部丢失，「自动换号」也就无从谈起。
+ *
+ * 凭据目录跟着 DSH 主目录走（与 Trae 侧同一口径）；取不到主目录时池仍可用，
+ * 只是扫不出账号（登录会明确报「没有 DSH 主目录」）。
+ */
+let qoderPoolSingleton = null;
+
+/**
+ * 积分刷新的**在途去重**（进程级）。
+ *
+ * 前端是每 30 秒自动刷一次，于是同一个 DSH 上开着两个窗口就会变成两条独立的
+ * 30 秒定时器 —— 上游调用量直接翻倍，而它们查的是同一个池、结果完全一样。
+ * 手动按钮时代没有这个问题（人只会点一次），改成自动之后必须有这一层。
+ *
+ * 并发请求共享同一个在途 promise，因此 N 个窗口仍是每 30 秒一次上游调用。
+ * 用 promise 而不是「上次刷新时间」做节流：后者会让第二个窗口拿到**上一次**的
+ * 旧结果却以为是自己刚刷的，页面上就会出现两个窗口数字不一致。
+ */
+let qoderCreditsInFlight = null;
+
+export function resetQoderCreditsInFlight() {
+  qoderCreditsInFlight = null;
+}
+
+export function qoderPool() {
+  if (qoderPoolSingleton === null) {
+    qoderPoolSingleton = new QoderAccountPool({
+      store: new QoderCredentialStore({ dshHome: dshHomeDir() }),
+    });
+  }
+  return qoderPoolSingleton;
+}
+
+/** 测试/诊断用：丢掉单例，让下次调用重建。 */
+export function resetQoderPool() {
+  qoderPoolSingleton = null;
 }
 
 function mountConsoleRoutes(ctx, config) {
@@ -696,8 +742,449 @@ function mountConsoleRoutes(ctx, config) {
         }),
       );
 
+      // ================================================================
+      // Qoder CN —— 设备流登录 + 号池
+      // ================================================================
+      //
+      // 与 Trae 侧的关键差别：Qoder 用**设备流**（PKCE + 轮询），不开回环
+      // 端口、没有回调页。所以 start 返回 loginUrl 后，前端只需轮询 status，
+      // 后台轮询拿到 token 时 status 就变成 done。
+      //
+      // 这条路是号池唯一的入池通道：Qoder 桌面端每个安装只保存一份登录，
+      // 扫本机登录态永远只能扫出一个账号。
+
+      // —— 号池快照：账号列表 + 冷却 + 停用 + 保留额度 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/pool`,
+          handler: async (req, res) => {
+            if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              const now = Date.now();
+              json(res, 200, {
+                ok: true,
+                distribution: pool.currentDistribution(),
+                disabledIds: pool.disabledIdsInOrder(),
+                creditReserves: pool.creditReservesInOrder(),
+                // 「当前账号」：请求固定用它（不可用才回退到轮换）。
+                selectedAccountId: pool.selectedAccountId() ?? null,
+                lastServedId: pool.lastServedId() ?? null,
+                status: pool.status(),
+                accounts: pool.list().map((account) => ({
+                  id: account.id,
+                  label: account.label,
+                  userId: account.credential.userId ?? '',
+                  expiresAtMs: account.credential.expiresAtMs ?? 0,
+                  expired: (account.credential.expiresAtMs ?? 0) > 0 && (account.credential.expiresAtMs ?? 0) <= now,
+                  disabled: pool.isDisabled(account.id),
+                  selected: pool.selectedAccountId() === account.id,
+                  creditReserve: pool.creditReserveOf(account.id),
+                  credits: pool.creditsOf(account.id) ?? null,
+                  cooldownUntilMs: account.cooldownUntilMs,
+                  cooling: account.cooldownUntilMs > now,
+                  modelCooldowns: account.modelCooldowns,
+                  rateLimitHits: account.rateLimitHits,
+                })),
+              });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 池配置：分配策略 / 冷却时长 / 停用 / 保留额度 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/pool/config`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            let body;
+            try {
+              const chunks = [];
+              for await (const c of req) chunks.push(c);
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              body = raw === '' ? {} : JSON.parse(raw);
+            } catch {
+              return json(res, 400, { error: 'invalid JSON body' });
+            }
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+
+              const patch = {};
+              if (body?.distribution !== undefined) {
+                if (!['priority', 'round-robin', 'balanced'].includes(body.distribution)) {
+                  return json(res, 400, { error: 'distribution 必须是 priority / round-robin / balanced' });
+                }
+                patch.distribution = body.distribution;
+              }
+              if (body?.cooldownMs !== undefined) patch.cooldownMs = Number(body.cooldownMs);
+              if (body?.exhaustCooldownMs !== undefined) patch.exhaustCooldownMs = Number(body.exhaustCooldownMs);
+              if (body?.disabledAccountIds !== undefined) {
+                if (!Array.isArray(body.disabledAccountIds)) {
+                  return json(res, 400, { error: 'disabledAccountIds 必须是数组' });
+                }
+                patch.disabledAccountIds = body.disabledAccountIds.filter((v) => typeof v === 'string');
+              }
+              if (body?.creditReserves !== undefined) {
+                if (typeof body.creditReserves !== 'object' || body.creditReserves === null) {
+                  return json(res, 400, { error: 'creditReserves 必须是对象' });
+                }
+                patch.creditReserves = body.creditReserves;
+              }
+              // 「当前账号」：null / 空字符串 = 清除选择，回到号池轮换。
+              if (body?.selectedAccountId !== undefined) {
+                const value = body.selectedAccountId;
+                if (value !== null && typeof value !== 'string') {
+                  return json(res, 400, { error: 'selectedAccountId 必须是字符串或 null' });
+                }
+                patch.selectedAccountId = value ?? '';
+              }
+              pool.applyConfig(patch);
+              json(res, 200, {
+                ok: true,
+                distribution: pool.currentDistribution(),
+                disabledIds: pool.disabledIdsInOrder(),
+                creditReserves: pool.creditReservesInOrder(),
+                selectedAccountId: pool.selectedAccountId() ?? null,
+              });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 启停单个账号 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/pool/account`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            let body;
+            try {
+              const chunks = [];
+              for await (const c of req) chunks.push(c);
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              body = raw === '' ? {} : JSON.parse(raw);
+            } catch {
+              return json(res, 400, { error: 'invalid JSON body' });
+            }
+            const accountId = typeof body?.accountId === 'string' ? body.accountId : '';
+            if (accountId === '') return json(res, 400, { error: '缺少 accountId' });
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              if (!pool.list().some((account) => account.id === accountId)) {
+                return json(res, 404, { error: 'account not found' });
+              }
+              const next = new Set(pool.disabledIdsInOrder());
+              if (body?.disabled === true) next.add(accountId);
+              else next.delete(accountId);
+              pool.applyConfig({ disabledAccountIds: [...next] });
+              json(res, 200, { ok: true, disabledIds: [...next] });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 切换「当前账号」——
+      //
+      // 与启停不同：这是**选谁服务请求**，不是「谁参与池子」。请求固定走
+      // selectedId 指向的账号（它不可用时才回退到轮换，见 qoder-pool.mjs）。
+      // `accountId: null` 或空字符串 = 清除选择，回到号池轮换。
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/pool/select`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            let body;
+            try {
+              const chunks = [];
+              for await (const c of req) chunks.push(c);
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              body = raw === '' ? {} : JSON.parse(raw);
+            } catch {
+              return json(res, 400, { error: 'invalid JSON body' });
+            }
+            // null / '' = 清除选择；其余必须是非空字符串。
+            const raw = body?.accountId;
+            if (raw !== null && raw !== undefined && typeof raw !== 'string') {
+              return json(res, 400, { error: 'accountId 必须是字符串或 null' });
+            }
+            const accountId = typeof raw === 'string' ? raw : '';
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              // 只允许切到池里真实存在的账号：否则一个拼错的 id 会让所有请求
+              // 静默回退到轮换，而 UI 显示「已选中」。
+              if (accountId !== '' && !pool.list().some((account) => account.id === accountId)) {
+                return json(res, 404, { error: 'account not found' });
+              }
+              pool.selectAccount(accountId);
+              json(res, 200, { ok: true, selectedAccountId: pool.selectedAccountId() ?? null });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 设置单个账号的保留额度 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/pool/credit-reserve`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            let body;
+            try {
+              const chunks = [];
+              for await (const c of req) chunks.push(c);
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              body = raw === '' ? {} : JSON.parse(raw);
+            } catch {
+              return json(res, 400, { error: 'invalid JSON body' });
+            }
+            const accountId = typeof body?.accountId === 'string' ? body.accountId : '';
+            if (accountId === '') return json(res, 400, { error: '缺少 accountId' });
+            const value = Number(body?.credits);
+            if (!Number.isFinite(value) || value < 0) {
+              return json(res, 400, { error: 'credits 必须是非负数字' });
+            }
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              if (!pool.list().some((account) => account.id === accountId)) {
+                return json(res, 404, { error: 'account not found' });
+              }
+              const reserves = { ...pool.creditReservesInOrder() };
+              if (value <= 0) delete reserves[accountId];
+              else reserves[accountId] = Math.floor(value);
+              pool.applyConfig({ creditReserves: reserves });
+              json(res, 200, { ok: true, creditReserves: reserves });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 刷新上游积分额度 ——
+      //
+      // 逐账号打 `GET {openapi}/api/v2/quota/usage`，把三池合计记回号池，
+      // 于是「保留额度」判据立刻有值可用。失败的账号**不写余额**（保持
+      // 未知），卡片显示「—」而不是「0」—— 把查不到显示成 0 会让用户
+      // 误删好账号。单个账号失败不影响其它账号，故整体仍返回 200。
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/credits/refresh`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              // 多窗口共享同一发在途请求：第二个窗口拿到的是同一份结果，
+              // 而不是再打一轮上游。见 qoderCreditsInFlight 的说明。
+              if (qoderCreditsInFlight === null) {
+                qoderCreditsInFlight = refreshQoderPoolCredits(pool, { fetch }).finally(() => {
+                  qoderCreditsInFlight = null;
+                });
+              }
+              const result = await qoderCreditsInFlight;
+              const now = Date.now();
+              json(res, 200, {
+                ok: true,
+                refreshed: result.refreshed,
+                failed: result.failed,
+                // 逐账号结果里带上池的 id 与失败原因，前端据此在每张卡上
+                // 就地显示「读失败」而不是让整页报错。
+                accounts: result.accounts.map((entry) => ({
+                  id: entry.id,
+                  ok: entry.ok,
+                  total: entry.ok ? entry.total : null,
+                  ...(entry.ok ? { usage: entry.usage } : { message: entry.message }),
+                })),
+                status: pool.status(),
+                pool: pool.list().map((account) => ({
+                  id: account.id,
+                  credits: pool.creditsOf(account.id) ?? null,
+                  creditReserve: pool.creditReserveOf(account.id),
+                  cooldownUntilMs: account.cooldownUntilMs,
+                  cooling: account.cooldownUntilMs > now,
+                })),
+              });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 重置全部冷却 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/cooldowns/reset`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              pool.resetCooldowns();
+              json(res, 200, { ok: true, status: pool.status() });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 移出池子：删除该账号的插件凭据（不碰桌面端登录态）——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/pool/remove`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            let body;
+            try {
+              const chunks = [];
+              for await (const c of req) chunks.push(c);
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              body = raw === '' ? {} : JSON.parse(raw);
+            } catch {
+              return json(res, 400, { error: 'invalid JSON body' });
+            }
+            const accountId = typeof body?.accountId === 'string' ? body.accountId : '';
+            if (accountId === '') return json(res, 400, { error: '缺少 accountId' });
+            try {
+              const removed = await qoderAuth.deleteQoderCredential({ dshHome: dshHomeDir(), accountId });
+              if (removed.error !== undefined) return json(res, 500, { ok: false, error: removed.error });
+              const pool = qoderPool();
+              await pool.scan();
+              json(res, 200, { ok: true, accounts: pool.list().length });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 登录：发起（返回 loginUrl，后台开始轮询）——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/login/start`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const r = await qoderAuth.beginLogin({ fetch });
+              if (r.ok !== true) return json(res, 502, { error: r.message ?? '登录启动失败' });
+              // 设备流不开监听端口：浏览器由服务端直接打开（打不开也不致命，
+              // authUrl 已回给前端，用户可手动点）。
+              let opened = false;
+              try {
+                await openInSystemBrowser(r.url);
+                opened = true;
+              } catch {
+                /* 交给前端展示链接 */
+              }
+              json(res, 200, { sessionId: r.sessionId, authUrl: r.url, opened });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 登录：轮询状态；done 时落盘并让池重扫 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/login/status`,
+          handler: async (req, res) => {
+            if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+              if (typeof sessionId !== 'string' || sessionId === '') {
+                return json(res, 400, { error: '缺少 session' });
+              }
+              const r = qoderAuth.stepLogin({ sessionId });
+              if (r.error !== undefined) return json(res, 400, { error: r.error });
+              if (r.status === 'pending') return json(res, 200, { status: 'pending' });
+              if (r.status === 'failed') return json(res, 200, { status: 'failed', error: r.error });
+
+              // ⚠ 必须 await：写盘是 async 的。漏掉 await 会在写盘完成前回 200，
+              //   表现为「登录显示成功，但号池里没有这个账号」。
+              const saved = await qoderAuth.saveQoderCredential({
+                dshHome: dshHomeDir(),
+                accessToken: r.accessToken,
+                refreshToken: r.refreshToken,
+                userId: r.userId,
+                userName: r.userName,
+                expiresAtMs: r.expiresAtMs,
+              });
+              if (saved.error !== undefined) {
+                return json(res, 500, { status: 'failed', error: saved.error });
+              }
+              // 立刻让池重扫，不必等下次打开面板
+              let accounts = 0;
+              try {
+                const pool = qoderPool();
+                await pool.scan();
+                accounts = pool.list().length;
+              } catch {
+                /* 扫描失败不影响本次登录结果 */
+              }
+              json(res, 200, { status: 'done', accountId: saved.accountId, accounts });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 登录：取消 ——
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/login/cancel`,
+          handler: (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            try {
+              const sessionId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session');
+              json(res, 200, { cancelled: qoderAuth.cancelLogin(sessionId ?? '') });
+            } catch (e) {
+              json(res, 500, { error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
       ctx.logger?.info?.(
-        '[wotr-console] 管理页接口已挂载（history-summary / sample / wb+trae login / wb models refresh）',
+        '[wotr-console] 管理页接口已挂载（history-summary / sample / wb+trae+qoder login / wb models refresh）',
       );
     });
   } catch (e) {

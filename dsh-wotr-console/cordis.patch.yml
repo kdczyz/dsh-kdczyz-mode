@@ -1,9 +1,10 @@
-# Register dsh-wotr-console — ONE package, TWO Loader entries.
+# Register dsh-wotr-console — ONE package, THREE Loader entries.
 #
-# Why two entries, and why they use DIFFERENT module specifiers:
+# Why several entries, and why they use DIFFERENT module specifiers:
 #
 #   entry A  name: dsh-wotr-console        -> lib/index.js  (WorkBuddy pool half)
 #   entry B  name: dsh-wotr-console/trae   -> lib/trae.js   (Trae half)
+#   entry C  name: dsh-wotr-console/qoder  -> lib/qoder.js  (Qoder half)
 #
 # The two halves each declare `enabledModelIds` / `imageModelIds` /
 # `contextBudgets` / `authFile` with DIFFERENT semantics. Cordis keys a plugin's
@@ -25,7 +26,10 @@
 #     by that exact id (vendor/xdpool/lib/client.js, WORKBUDDY_POOL_ENTRY_ID).
 #   - dsh-connect-trae: matches the /trae/i probe lib/trae.js and its client
 #     use, and keeps the already-saved Trae settings in this profile.
-# Renaming either makes that half's settings card read-only.
+#   - dsh-connect-qoder: Qoder half. It must be its OWN module for the same
+#     reason as entry B (independent Config schema / runtime), not merged into
+#     lib/index.js or lib/trae.js.
+# Renaming any of them makes that half's settings card read-only.
 #
 # NOTE: YAML comments are '#' only. JavaScript block-comment syntax is NOT a
 # comment in YAML and breaks parsing.
@@ -34,3 +38,5 @@
       name: dsh-wotr-console
     - id: dsh-connect-trae
       name: dsh-wotr-console/trae
+    - id: dsh-connect-qoder
+      name: dsh-wotr-console/qoder
