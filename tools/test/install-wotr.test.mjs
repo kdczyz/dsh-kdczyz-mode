@@ -41,7 +41,7 @@ import {
   patchCordisYaml,
   patchProfilePackageJson,
 } from '../lib/install.mjs';
-import { PLUGIN_TOP_LEVEL, discoverHost, isPlatformNoise } from '../lib/host-deps.mjs';
+import { PLUGIN_TOP_LEVEL, discoverHost, isPlatformNoise, linkTopLevel } from '../lib/host-deps.mjs';
 
 // 引导段（单独跑时那一段）也直接测：它是新设备上**第一个**跑起来的代码，
 // 网络抖一下就得能自己缓过来，且失败时要说清楚为什么。
@@ -642,6 +642,94 @@ console.log('\n—— 6) 辅助函数 ——');
   const sha = '0123456789abcdef0123456789abcdef01234567';
   ok('sha 直接拼', tarballUrl('a/b', sha).endsWith(`/${sha}`) && !tarballUrl('a/b', sha).includes('refs/'),
     tarballUrl('a/b', sha));
+}
+
+/* ------------------------------------------------------------------ *
+ * 7.5) 宿主发现：Windows / Linux 的候选路径也要算出来
+ *
+ * 这一段没法在 macOS 上装出真的 Windows DSH，但候选路径算不算得出来是能验的：
+ * 这些机子上路径只有一个，猜错了安装器就找不到宿主内包，而且报错必须告诉
+ * 用户「我去哪儿找过了」，否则无从下手（`DSH_HOST_ASAR` 是逃生门）。
+ * ------------------------------------------------------------------ */
+{
+  const winEnv = {
+    LOCALAPPDATA: 'C:\\Users\\someone\\AppData\\Local',
+    ProgramFiles: 'C:\\Program Files',
+    'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+    APPDATA: 'C:\\Users\\someone\\AppData\\Roaming',
+  };
+  const winHome = 'C:\\Users\\someone';
+  const found = discoverHost({ platform: 'win32', env: winEnv, home: winHome });
+  ok('win32：本机没有 DSH 时返回 undefined（不是抛错）', found === undefined, String(found));
+
+  const { candidatePaths } = await import('../lib/host-deps.mjs');
+  // 注意：path.join 用的是**宿主**的分隔符，所以在 macOS 上算 Windows 候选
+  // 会得到混合分隔符（真机上全是反斜杠）。断言统一归一化后再比。
+  const flat = (cands) => cands.map((c) => (c.file ?? c.root ?? '').replace(/\\/g, '/')).join('|');
+  const wins = flat(candidatePaths({ platform: 'win32', env: winEnv, home: winHome }));
+  ok('win32：翻 %LOCALAPPDATA%/Programs', wins.includes('AppData/Local/Programs'), wins.slice(0, 200));
+  ok('win32：也翻 %ProgramFiles%', wins.includes('Program Files'), wins.slice(0, 200));
+  ok('win32：候选里带 app.asar 与 resources', wins.includes('app.asar') && wins.includes('resources'), wins.slice(0, 200));
+  ok('win32：每个候选都带 dsh/node_modules 与 node_modules 两个根',
+    wins.includes('resources/dsh/node_modules'), wins.slice(0, 200));
+
+  const nix = flat(candidatePaths({ platform: 'linux', env: {}, home: '/home/someone' }));
+  ok('linux：翻 /opt 与 /usr/lib', nix.includes('/opt') && nix.includes('/usr/lib'), nix);
+  ok('linux：也翻用户目录', nix.includes('/home/someone'), nix);
+
+  // 逃生门：显式指定优先，且能被真正打开
+  const viaEnv = discoverHost({ platform: 'linux', env: { DSH_HOST_ASAR: host.file }, home: '/nonexistent' });
+  ok('DSH_HOST_ASAR 优先且可用', viaEnv !== undefined && viaEnv.kind === 'asar', String(viaEnv?.kind));
+}
+
+/* ------------------------------------------------------------------ *
+ * 8) 软链那一层：Windows 走目录联接（junction），且要能反复跑
+ *
+ * 这是安装器里**最平台相关**的一段：Windows 的 junction 用 unlink 删、
+ * 过期重链是常态（同一个 profile 反复装）。macOS 上也能验：Node 在 POSIX
+ * 接受 'junction' 这个 type（忽略它），所以这一段能真的走通 win32 分支。
+ * ------------------------------------------------------------------ */
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-link-test-'));
+  const vendorNm = path.join(root, 'vendor', 'node_modules');
+  const profileNm = path.join(root, 'profile', 'node_modules');
+  const writePkg = (dir, name, version) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version }));
+  };
+  writePkg(path.join(vendorNm, '@deepseek-ai', 'dsh-llm'), '@deepseek-ai/dsh-llm', '0.2.0-rc.2');
+  fs.mkdirSync(profileNm, { recursive: true });
+
+  const linkPath = path.join(profileNm, '@deepseek-ai', 'dsh-llm');
+  for (const platform of ['win32', 'linux', 'darwin']) {
+    const r = linkTopLevel({ profileNm, names: ['@deepseek-ai/dsh-llm'], vendorNm, platform, log: () => {} });
+    eq(`${platform}: 建了 1 条`, r.linked, 1);
+    eq(`${platform}: 没有跳过`, r.skipped.length, 0);
+    ok(`${platform}: 是软链`, fs.lstatSync(linkPath).isSymbolicLink());
+    const seen = JSON.parse(fs.readFileSync(path.join(linkPath, 'package.json'), 'utf8'));
+    eq(`${platform}: 透过链读到实体`, seen.version, '0.2.0-rc.2');
+    ok(`${platform}: 作用域目录也建了`, fs.existsSync(path.join(profileNm, '@deepseek-ai')));
+  }
+
+  // 反复装（链已存在）：要先删再建，不许抛 —— Windows 上 junction 不能用 rmSync 递归删
+  const again = linkTopLevel({ profileNm, names: ['@deepseek-ai/dsh-llm'], vendorNm, platform: 'win32', log: () => {} });
+  eq('重复装仍是 1 条（先删后建）', again.linked, 1);
+  ok('重复装后链还在', fs.lstatSync(linkPath).isSymbolicLink());
+
+  // 指向 asar 内部 / 临时目录的失效链要被清掉
+  fs.unlinkSync(linkPath);
+  fs.symlinkSync('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-llm',
+    linkPath, 'dir');
+  const cleaned = linkTopLevel({ profileNm, names: ['@deepseek-ai/dsh-llm'], vendorNm, platform: 'win32', log: () => {} });
+  eq('清掉指向 asar 的失效链', cleaned.cleaned, 1);
+  eq('清完照样重链', cleaned.linked, 1);
+
+  // 实体不存在 → 跳过（不建一条指向空气的链）
+  const gone = linkTopLevel({ profileNm, names: ['@deepseek-ai/does-not-exist'], vendorNm, platform: 'win32', log: () => {} });
+  eq('实体缺失时跳过', gone.skipped.join(','), '@deepseek-ai/does-not-exist');
+  ok('没给缺失的包建链', !fs.existsSync(path.join(profileNm, '@deepseek-ai', 'does-not-exist')));
+
+  fs.rmSync(root, { recursive: true, force: true });
 }
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });

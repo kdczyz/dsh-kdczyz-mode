@@ -94,7 +94,7 @@ function installParents({ platform, env, home }) {
 }
 
 /** 从安装根目录出发，列出所有可能的 asar / 已解包 node_modules 位置。 */
-function candidatePaths({ platform, env, home }) {
+export function candidatePaths({ platform, env, home }) {
   const out = [];
   for (const parent of installParents({ platform, env, home })) {
     const apps = platform === 'darwin'
