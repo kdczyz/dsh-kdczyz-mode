@@ -108,7 +108,7 @@ done
 # 部署前跑没有意义（那时依赖还没装配）。
 #
 # 新设备安装不再有本仓库的安装器（2026-10-11 删除）：那条路是 DSH 插件管理页
-# 装 `github:kdczyz/dsh-workbuddy-mode`，前置只有 git，见 README「零、安装」。
+# 装 `github:kdczyz/dsh-kdczyz-mode`，前置只有 git，见 README「零、安装」。
 
 # —— 2) 备份 profile 的三个关键文件 + 两个旧包 ——
 if [ "$DRY" = 0 ]; then

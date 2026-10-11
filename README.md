@@ -1,4 +1,4 @@
-# dsh-workbuddy-mode
+# dsh-kdczyz-mode
 
 把 **WorkBuddy** 与 **Trae** 两个桌面 App 的模型接进 DeepSeek Harness。
 **两边已合并为一个插件**：`dsh-wotr-console`。
@@ -35,7 +35,7 @@
 （依赖已经写进去了、但没装成），于是每次启动 DSH 都再报一次：
 
 ```text
-pnpm: Command failed with ENOENT: git ls-remote 'https://github.com/kdczyz/dsh-workbuddy-mode.git' HEAD 'HEAD^{}'
+pnpm: Command failed with ENOENT: git ls-remote 'https://github.com/kdczyz/dsh-kdczyz-mode.git' HEAD 'HEAD^{}'
 spawn git ENOENT
 ```
 
@@ -50,8 +50,8 @@ winget install --id Git.Git -e --source winget
 
 ### 方式一：DSH 插件管理页（推荐）
 
-设置 → 插件 → 安装，填 `github:kdczyz/dsh-workbuddy-mode`（或
-`https://github.com/kdczyz/dsh-workbuddy-mode`），装完**重启 DSH**。
+设置 → 插件 → 安装，填 `github:kdczyz/dsh-kdczyz-mode`（或
+`https://github.com/kdczyz/dsh-kdczyz-mode`），装完**重启 DSH**。
 
 装之前先看一眼旧包：合并前的 `dsh-workbuddy-console`、`dsh-connect-trae`
 （以及单独的 Qoder 插件）如果还在，先在管理页卸掉 —— 同一批 Loader entry id
@@ -127,7 +127,7 @@ raw 直链可直接下载，见 [backup/README.md](backup/README.md)。
 ## 一、目录结构
 
 ```
-dsh-workbuddy-mode/
+dsh-kdczyz-mode/
 ├── README.md                      ← 本文件
 ├── dsh-wotr-console/              ← **合并版插件（当前部署的就是它）**
 │   ├── lib/index.js                 WorkBuddy 半边：provider 注册 + 管理页接口 + 热重载兜底
@@ -223,7 +223,7 @@ dsh-workbuddy-mode/
 ## 三、部署
 
 ```sh
-cd dsh-workbuddy-mode            # 改成你实际克隆下来的目录
+cd dsh-kdczyz-mode            # 改成你实际克隆下来的目录
 ./tools/apply-wotr.sh --dry-run    # 先看计划（不改 profile）
 ./tools/apply-wotr.sh              # 真正部署
 ```
@@ -501,7 +501,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 ### 测试（都是 `apply-wotr.sh` 的硬性门禁）
 
 ```sh
-cd dsh-workbuddy-mode/dsh-wotr-console
+cd dsh-kdczyz-mode/dsh-wotr-console
 node test/credit-store.test.mjs     # 14 项：积分/历史记录的读写、去重、坏行容错
 node test/client-apply.test.mjs     # 仿浏览器执行 client.js，真正调用 apply
 node test/console-render.test.mjs   # 444 项：真正渲染三个 tab 与 composer 胶囊卡片，空数据/坏数据/边界值

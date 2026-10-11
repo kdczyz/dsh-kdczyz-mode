@@ -11,7 +11,7 @@
 走 DSH 插件管理页，从 GitHub 直接装（前置只有 `git`）：
 
 ```text
-设置 → 插件 → 安装 → 填 github:kdczyz/dsh-workbuddy-mode
+设置 → 插件 → 安装 → 填 github:kdczyz/dsh-kdczyz-mode
 ```
 
 Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`，

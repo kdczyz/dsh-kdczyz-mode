@@ -1,4 +1,4 @@
-# 文件作用总览 —— dsh-workbuddy-mode 全仓库
+# 文件作用总览 —— dsh-kdczyz-mode 全仓库
 
 > 全仓库 **284 个文件**（不含 `.git` 与 `node_modules`）。本文件逐个说明作用。
 >
@@ -30,7 +30,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| [`package.json`](package.json) | **安装壳**。DSH 判定「组合包」只看 `dsh.bundle.patch` 字段；此壳声明它指向 `./dsh-wotr-console/cordis.patch.yml`，让插件管理页能 `pnpm add github:kdczyz/dsh-workbuddy-mode` 直装。同时转发 4 个 `exports` 子路径（`.` / `./trae` / `./qoder` / `./client`）。 |
+| [`package.json`](package.json) | **安装壳**。DSH 判定「组合包」只看 `dsh.bundle.patch` 字段；此壳声明它指向 `./dsh-wotr-console/cordis.patch.yml`，让插件管理页能 `pnpm add github:kdczyz/dsh-kdczyz-mode` 直装。同时转发 4 个 `exports` 子路径（`.` / `./trae` / `./qoder` / `./client`）。 |
 | [`README.md`](README.md) | 主说明（38KB）：安装（含两个踩过的坑）、修了什么、部署、验证方法、管理页、形态对比、已知局限。 |
 | [`.gitignore`](.gitignore) | 忽略 `node_modules`、`backup/` 展开目录等。 |
 
