@@ -3,6 +3,28 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 移除：模型行上的「图片输入」勾选与「上下文窗口」两档单选
+
+两个控件看着能勾，实际都改不动结果：
+
+| 控件 | 为什么是个假开关 |
+|---|---|
+| 图片输入 | 上游判定是 `supportsImages \|\| imageSet.has(id)`（**或**），目录说不支持的模型，这里勾上也不生效 |
+| 上下文窗口 | 服务端每次拉目录都会重写 selection，手工写入的 `contextBudgets` 会被下一次刷新覆盖 |
+
+现在两项一律**跟随上游**：
+
+- `imageModelIds` 按目录的 `supportsImages` 生成；
+- `contextBudgets` 整段清空 —— 上游判定是「有值且小于原生窗口才压低」，
+  空字典即每个模型都用满原生窗口。
+
+配套改动：草稿不再保存 `images` / `budget` 两个字段（`draftFromStatus`），
+脏判定也不再比较它们（`draftIsDirty`）—— 否则「保存 / 放弃修改」会因为一个
+用户永远碰不到的差异一直亮着。`DEFAULT_CONTEXT_BUDGET` 常量与两条已无对应
+元素的 CSS 规则一并删除。
+
 ## [2.0.42] - 2026-10-07
 
 ### 探针：记录宿主算出的 request-image target

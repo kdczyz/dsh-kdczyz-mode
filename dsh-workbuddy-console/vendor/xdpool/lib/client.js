@@ -264,16 +264,10 @@ window.__ModuleLoader__.load({
 .dsm-workbuddy-xdpool-model-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}
 .dsm-workbuddy-xdpool-model-meta-tag{padding:1px 8px;border-radius:999px;font-size:11px;line-height:16px;background:rgba(174,179,187,.11);color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-workbuddy-xdpool-model-cap{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}
-/* Model row: checkbox + image toggle + context-budget radios. */
+/* Model row: enabled checkbox only — 图片输入 / 上下文上限两档控件已移除。 */
 .dsm-workbuddy-xdpool-model-off{opacity:.55}
 .dsm-workbuddy-xdpool-model-check{display:flex;align-items:center;gap:8px;min-width:0;flex:1;cursor:pointer}
 .dsm-workbuddy-xdpool-model-check input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe);flex:none}
-.dsm-workbuddy-xdpool-model-controls{display:flex;align-items:center;gap:10px;flex:none;flex-wrap:wrap;justify-content:flex-end}
-.dsm-workbuddy-xdpool-model-image{display:inline-flex;align-items:center;gap:5px;flex:none;cursor:pointer;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
-.dsm-workbuddy-xdpool-model-image input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-workbuddy-xdpool-model-budget{display:flex;align-items:center;gap:9px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
-.dsm-workbuddy-xdpool-model-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
-.dsm-workbuddy-xdpool-model-budget input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 /* The region-wide Max 模式 switch, shown once above the model list. */
 .dsm-workbuddy-xdpool-maxmode{display:flex;align-items:center;gap:9px;flex:none;padding:7px 11px;border-radius:9px;border:1px solid var(--dsw-alias-border-secondary,rgba(174,179,187,.16));background:var(--dsw-alias-fill-quinary,rgba(174,179,187,.05))}
 .dsm-workbuddy-xdpool-maxmode input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
@@ -377,11 +371,12 @@ window.__ModuleLoader__.load({
 		* @module dsh-workbuddy-xdpool/client/PoolCard
 		*/
 		/**
-		* Default context window the card offers as the "capped" choice, in tokens.
-		* Mirrors the host-side DEFAULT_CONTEXT_BUDGET; declared here rather than
-		* imported, because the browser bundle must not pull in the host entry.
+		* DEFAULT_CONTEXT_BUDGET（宿主侧 2e5）这里**刻意不定义**。
+		*
+		* 它原本只服务于卡片上那两档「上下文窗口」单选（200K / 原生上限）；该控件
+		* 已移除（理由见 ModelRow 的注释），卡片不再压低任何模型的上下文窗口 ——
+		* 一律用上游原生窗口。留着常量只会让人以为这里还有一条可选路径。
 		*/
-		const DEFAULT_CONTEXT_BUDGET = 2e5;
 		const POLL_INTERVAL_MS = 3e4;
 		/** Inject or refresh the shared card CSS for the current client bundle. */
 		if (typeof document !== "undefined") {
@@ -483,17 +478,14 @@ window.__ModuleLoader__.load({
 		function draftFromStatus(status) {
 			const selection = status.selection;
 			const enabled = selection.enabledModelIds;
-			const images = selection.imageModelIds;
-			const budgets = selection.contextBudgets;
 			const efforts = selection.reasoningEfforts;
 			const out = {};
+			// `images` 一律跟随上游目录的 supportsImages：卡片上不再有这个开关
+			// （勾了也改变不了上游判定），保存时同样按目录原样回写 imageModelIds。
 			for (const model of status.models) {
 				const entry = {
-					enabled: enabled === void 0 || enabled.includes(model.id),
-					images: images === void 0 ? model.supportsImages : images.includes(model.id)
+					enabled: enabled === void 0 || enabled.includes(model.id)
 				};
-				const budget = budgets?.[model.id];
-				if (budget !== void 0) entry.budget = budget;
 				const effort = efforts?.[model.id];
 				if (effort !== void 0) entry.effort = effort;
 				out[model.id] = entry;
@@ -504,15 +496,13 @@ window.__ModuleLoader__.load({
 		function draftIsDirty(status, draft) {
 			const selection = status.selection;
 			const enabled = new Set(selection.enabledModelIds ?? status.models.filter((m) => m.enabled).map((m) => m.id));
-			const images = new Set(selection.imageModelIds ?? status.models.filter((m) => m.supportsImages).map((m) => m.id));
-			const budgets = selection.contextBudgets ?? {};
 			const efforts = selection.reasoningEfforts ?? {};
+			// `images` / `budget` 都不再是卡片上的开关，所以**不参与脏判定**：
+			// 前者随上游目录走，后者恒为「用满原生窗口」。
 			for (const model of status.models) {
 				const entry = draft[model.id];
 				if (entry === void 0) continue;
 				if (entry.enabled !== enabled.has(model.id)) return true;
-				if (entry.images !== images.has(model.id)) return true;
-				if ((budgets[model.id] ?? model.nativeContextWindow) !== (entry.budget ?? model.nativeContextWindow)) return true;
 				if ((efforts[model.id] ?? "") !== (entry.effort ?? "")) return true;
 			}
 			return false;
@@ -836,33 +826,9 @@ window.__ModuleLoader__.load({
 					}
 				});
 			};
-			const toggleModelImage = (id) => {
-				if (status === void 0) return;
-				const base = draft ?? draftFromStatus(status);
-				const entry = base[id];
-				if (entry === void 0) return;
-				setDraft({
-					...base,
-					[id]: {
-						...entry,
-						images: !entry.images
-					}
-				});
-			};
-const setModelBudget = (id, budget) => {
-			if (status === void 0) return;
-			const base = draft ?? draftFromStatus(status);
-			const entry = base[id];
-			if (entry === void 0) return;
-			setDraft({
-				...base,
-				[id]: {
-					...entry,
-					budget
-				}
-			});
-		};
-		/*
+			// 图片输入与上下文上限都**没有对应的 toggle**：两者都不再由这张卡片
+			// 编辑（理由见 ModelRow 的注释），保存时按上游目录原样回写。
+			/*
 		* 注意：`reasoningEfforts` 仍然会被 draftFromStatus 读、并在保存时原样写回，
 		* 只是**不再由这张卡片编辑**。档位选择搬去了 DSH 自带的推理等级列表
 		* （它按 thinkingLevelMap 给出每个模型精确的档位，比这里更准）。
@@ -1063,9 +1029,13 @@ const setModelBudget = (id, budget) => {
 				setFlash(void 0);
 				try {
 					const enabledModelIds = Object.entries(modelDraft).filter(([, e]) => e.enabled).map(([id]) => id);
-					const imageModelIds = Object.entries(modelDraft).filter(([, e]) => e.images).map(([id]) => id);
+					// 图片能力**没有手动开关**：随上游目录的 supportsImages 走，卡片上
+					// 不再渲染勾选框，这里按目录原样回写 imageModelIds。
+					const imageModelIds = status.models.filter((m) => m.supportsImages === true).map((m) => m.id);
+					// 上下文上限同样**没有手动开关**：整段清空 = 每个模型都用满上游
+					// 原生窗口。之前卡片上那两档单选只是把 contextBudgets[id] 写成一个
+					// 具体数值，而上游判定是「有值且小于原生窗口才压低」，空字典即不压低。
 					const contextBudgets = {};
-					for (const [id, entry] of Object.entries(modelDraft)) if (entry.budget !== void 0) contextBudgets[id] = entry.budget;
 					// 原样带回早期版本存下的每模型默认档位。这张卡片不再编辑它
 					// （档位选择搬去了 DSH 自带的推理等级列表），但**不能因为不编辑
 					// 就丢掉**：整段 selection 是整体覆盖的，不写回来等于抹成空。
@@ -1566,14 +1536,11 @@ const setModelBudget = (id, budget) => {
 								model,
 								t,
 								draft: modelDraft[model.id] ?? {
-									enabled: model.enabled,
-									images: model.supportsImages
+									enabled: model.enabled
 								},
 								editable: modelsEditable,
 								maxMode,
-								onToggle: toggleModel,
-								onToggleImage: toggleModelImage,
-								onBudget: setModelBudget
+								onToggle: toggleModel
 							}, model.id))
 						})]
 					}) : null
@@ -1921,16 +1888,23 @@ const setModelBudget = (id, budget) => {
 		* 这里再放一个下拉就是重复实现，而且两套容易各说各话。
 		* 模型行只展示该模型支持哪些档位，供对照。
 		*
-		* Read-only when the card has no writable settings scope: the checkbox and the
-		* context radios stay disabled rather than pretending an edit took hold. The
-		* draft lives in the parent, so this component only ever reports intent.
+		* 图片输入与上下文上限**都不再给开关**：
+		*
+		*   图片输入 —— 上游判定是 `supportsImages || imageSet.has(id)`（**或**），
+		*     目录说不支持的模型，这里勾上也不生效，是个假开关；
+		*   上下文上限 —— 服务端每次拉目录都会重写 selection，手工写入的
+		*     contextBudgets 会被下一次刷新覆盖。
+		*
+		* 两者一律跟随上游：保存时 imageModelIds 按目录的 supportsImages 生成，
+		* contextBudgets 整段清空（每个模型都用满原生窗口）。
+		*
+		* Read-only when the card has no writable settings scope: the checkbox stays
+		* disabled rather than pretending an edit took hold. The draft lives in the
+		* parent, so this component only ever reports intent.
 		*/
-		function ModelRow({ model, t, draft, editable, maxMode, onToggle, onToggleImage, onBudget }) {
+		function ModelRow({ model, t, draft, editable, maxMode, onToggle }) {
 			const tag = tagFor(model);
 			const tagText = tag === "free" ? t?.("row.free") ?? "free" : tag === "limited" ? t?.("row.limitedFree") ?? "limited free" : tag === "night" ? t?.("row.nightDiscount") ?? "night" : null;
-			const native = model.nativeContextWindow;
-			const capped = native > DEFAULT_CONTEXT_BUDGET;
-			const currentBudget = draft.budget ?? native;
 			return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 				className: `dsm-workbuddy-xdpool-model${draft.enabled ? "" : " dsm-workbuddy-xdpool-model-off"}`,
 				children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
@@ -1957,40 +1931,6 @@ const setModelBudget = (id, budget) => {
 								children: model.id
 							})]
 						})]
-					}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-						className: "dsm-workbuddy-xdpool-model-controls",
-						children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", {
-							className: "dsm-workbuddy-xdpool-model-image",
-							title: t?.("row.modelImage") ?? "Image input",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-								type: "checkbox",
-								checked: draft.images,
-								disabled: !editable,
-								onChange: () => {
-									onToggleImage(model.id);
-								}
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: t?.("row.modelImage") ?? "Image" })]
-						}), capped ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("fieldset", {
-							className: "dsm-workbuddy-xdpool-model-budget",
-							"aria-label": t?.("row.modelContextBudget") ?? "Context",
-							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-								type: "radio",
-								name: `budget-${model.id}`,
-								checked: currentBudget === DEFAULT_CONTEXT_BUDGET,
-								disabled: !editable,
-								onChange: () => {
-									onBudget(model.id, DEFAULT_CONTEXT_BUDGET);
-								}
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: formatCapacity(DEFAULT_CONTEXT_BUDGET) })] }), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("label", { children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("input", {
-								type: "radio",
-								name: `budget-${model.id}`,
-								checked: currentBudget === native,
-								disabled: !editable,
-								onChange: () => {
-									onBudget(model.id, native);
-								}
-							}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", { children: formatCapacity(native) })] })]
-						}) : null]
 					})]
 				}), /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 					className: "dsm-workbuddy-xdpool-model-meta",
