@@ -3535,6 +3535,244 @@ await (async () => {
 })();
 
 /**
+ * —— 2g-3e) Qoder 配置页的「签到」：每张卡签**自己**那个账号，且不切换当前 ——
+ *
+ * 与 Trae 侧（2g-3d）同一条约束，但脏法不同，所以值得单独钉一遍：
+ *
+ *   1. **顺手切号**：Qoder 页每张备用卡上都有「切换到此账号」，最省事的实现是
+ *      「先切过去、再签、再切回来」—— 那会在一段时间里把用户正在用的账号换掉。
+ *      判据因此是：点签到**只**POST 到 `/qoder/checkin`，`selectedAccountId`
+ *      一个字节都不许写。
+ *   2. **谎报 +100**：上游的领取是幂等的，对已领活动再 POST 回 `replayed:true`
+ *      且余额不变。界面必须把「这一下真领到」与「今天早已领过」说成两句话。
+ *   3. 签到是**按账号**的，所以当前使用的那张卡也要有按钮（这与「切换到此账号」
+ *      相反 —— 后者在当前卡上必须消失）。
+ *
+ * 断言只在 `wbc-card` 子树里找按钮，理由与 Trae 那块相同（整页重渲染会撞上
+ * 自动刷新的加载态）。
+ */
+await (async () => {
+  const prevFetch = globalThis.fetch;
+  const posts = [];
+  const writes = [];
+  let checkinReply = {};
+  globalThis.fetch = (url, init) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-wotr-console/qoder/pool')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(qoderFixture) });
+    }
+    if (u.includes('/plugins/dsh-wotr-console/qoder/credits/refresh')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, refreshed: 0, failed: 0, accounts: [] }),
+      });
+    }
+    if (u.includes('/plugins/dsh-wotr-console/qoder/checkin')) {
+      posts.push({ url: u, method: init?.method, body: init?.body });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(checkinReply) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    const scope = makeScope({ selectedAccountId: 'q1' });
+    scope.set = (field, value) => {
+      writes.push([field, value]);
+      return Promise.resolve(true);
+    };
+    const mount = async () => {
+      const react = makeReact({ ...withData, 15: qoderFixture, 0: 'qoder' }, true);
+      const Page = createConsoleSection({
+        react,
+        jsxRuntime: makeJsxRuntime(),
+        embedded: makeEmbedded({ qoderSettings: makeHandle(scope) }),
+      });
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      const rerender = () => {
+        react.reset();
+        return Page({});
+      };
+      return { tree: rerender(), rerender };
+    };
+    const cardsOf = (tree) => collectByClass(tree, 'wbc-card');
+    /**
+     * 卡片里那颗签到按钮。
+     *
+     * ⚠️ 不能只按 `'签到'` 找：签到中那张的文案已经变成 `'签到中…'`，
+     * 按精确文案找会在最需要断言的那一刻**找不到按钮**（表现为"按钮消失"，
+     * 而它其实好好地在那儿、只是写着别的字）。
+     */
+    const checkinIn = (card) =>
+      collectButtons(card).find((b) => b.label === '签到' || b.label === '签到中…');
+    const switchIn = (card) => collectButtons(card, '切换到此账号')[0];
+    const cardWith = (tree, nameSub) => cardsOf(tree).find((c) => textOfNode(c).includes(nameSub));
+    const bodyOf = (post) => {
+      try {
+        return JSON.parse(String(post?.body ?? ''));
+      } catch {
+        return {};
+      }
+    };
+    const afterClick = async (rerender, button) => {
+      await button.onClick();
+      await new Promise((r) => setTimeout(r, 0));
+      return textOfNode(rerender());
+    };
+
+    const { tree, rerender } = await mount();
+    ok('Qoder 配置页渲染出 4 张账号卡', cardsOf(tree).length === 4, `n=${cardsOf(tree).length}`);
+    ok(
+      '每张卡都有「签到」（含当前使用那张 —— 签到是按账号的）',
+      cardsOf(tree).every((c) => checkinIn(c) !== undefined),
+      JSON.stringify(cardsOf(tree).map((c) => collectButtons(c, '签到').length)),
+    );
+    const currentCard = cardWith(tree, 'qoder-user@example.com');
+    const spareCard = cardWith(tree, 'qoder-spare@example.com');
+    ok(
+      '当前使用那张有「签到」但没有「切换到此账号」',
+      checkinIn(currentCard) !== undefined && switchIn(currentCard) === undefined,
+      JSON.stringify(collectButtons(currentCard).map((b) => b.label)),
+    );
+    ok(
+      '备用那张两个按钮都有（切换 + 签到）',
+      checkinIn(spareCard) !== undefined && switchIn(spareCard) !== undefined,
+      JSON.stringify(collectButtons(spareCard).map((b) => b.label)),
+    );
+    ok(
+      '没签过时说明写的是「点一下给这个账号签到（不会切换 Qoder 正在使用的账号）」',
+      checkinIn(spareCard)?.title === '点一下给这个账号签到（不会切换 Qoder 正在使用的账号）',
+      String(checkinIn(spareCard)?.title),
+    );
+    ok(
+      '两张卡的「签到」都可点',
+      checkinIn(currentCard)?.disabled === false && checkinIn(spareCard)?.disabled === false,
+    );
+
+    // ① 点备用卡的「签到」：带它自己的 id，且**不写任何设置**
+    writes.length = 0;
+    posts.length = 0;
+    checkinReply = {
+      ok: true,
+      claimed: true,
+      alreadyCheckedIn: false,
+      amount: 100,
+      validDays: 30,
+      title: '每天领 100 Credits',
+      description: '每日 10:00（UTC+8）刷新，领取后 30 天有效',
+      credits: { total: 1300 },
+    };
+    let text = await afterClick(rerender, checkinIn(spareCard));
+    ok(
+      '点「签到」POST 到 /plugins/dsh-wotr-console/qoder/checkin',
+      posts.length === 1 && posts[0].url.includes('/plugins/dsh-wotr-console/qoder/checkin'),
+      JSON.stringify(posts.map((p) => p.url)),
+    );
+    ok('签到请求是 POST', posts[0]?.method === 'POST', String(posts[0]?.method));
+    ok(
+      '请求体带的是这张卡自己的 accountId（q3）',
+      bodyOf(posts[0]).accountId === 'q3',
+      String(posts[0]?.body),
+    );
+    ok(
+      '签到**不写** selectedAccountId（不切号 = 这条断言）',
+      !writes.some(([f]) => f === 'selectedAccountId'),
+      JSON.stringify(writes),
+    );
+    ok(
+      '真领到时提示写「签到完成 · 已领 +100 Credits」',
+      text.includes('签到完成 · 已领 +100 Credits'),
+      text.replace(/\s+/g, ' ').slice(0, 240),
+    );
+    ok(
+      '签过的那张卡说明换成「签到成功 · +100 Credits（30 天有效）」',
+      checkinIn(cardWith(rerender(), 'qoder-spare@example.com'))?.title ===
+        '签到成功 · +100 Credits（30 天有效）',
+      String(checkinIn(cardWith(rerender(), 'qoder-spare@example.com'))?.title),
+    );
+    ok(
+      '另一张卡不受影响（状态是按账号记的）',
+      checkinIn(cardWith(rerender(), 'qoder-user@example.com'))?.title ===
+        '点一下给这个账号签到（不会切换 Qoder 正在使用的账号）',
+      String(checkinIn(cardWith(rerender(), 'qoder-user@example.com'))?.title),
+    );
+
+    // ② 上游回重放（今天早已领过）：**不**许说成"签到成功 +100"
+    checkinReply = {
+      ok: true,
+      claimed: false,
+      alreadyCheckedIn: true,
+      amount: 100,
+      validDays: 30,
+      claimStatus: 'CLAIMED',
+    };
+    text = await afterClick(rerender, checkinIn(cardWith(rerender(), 'qoder-unread@example.com')));
+    ok(
+      '重放时提示写「这个账号今天已经签过了（每天 10:00（UTC+8）刷新）」',
+      text.includes('这个账号今天已经签过了（每天 10:00（UTC+8）刷新）'),
+      text.replace(/\s+/g, ' ').slice(0, 240),
+    );
+    ok(
+      '重放时**不**说「签到完成 · 已领」',
+      text.includes('签到完成 · 已领') === false,
+      text.replace(/\s+/g, ' ').slice(0, 240),
+    );
+
+    // ③ 上游今天没下发活动：按钮仍在、说明写清原因、提示条也说得明白
+    checkinReply = {
+      ok: false,
+      code: 'no-campaign',
+      message: '上游此刻没有下发签到活动（可能还没到 10:00 刷新，或活动已下线）',
+    };
+    text = await afterClick(rerender, checkinIn(cardWith(rerender(), 'qoder-user@example.com')));
+    ok(
+      '没有活动时提示条写「签到未完成：上游此刻没有下发签到活动…」',
+      text.includes('签到未完成：上游此刻没有下发签到活动'),
+      text.replace(/\s+/g, ' ').slice(0, 240),
+    );
+    ok(
+      '没有活动时按钮仍在（而不是凭空消失）',
+      checkinIn(cardWith(rerender(), 'qoder-user@example.com')) !== undefined,
+    );
+
+    // ④ 正在签另一个账号时，所有签到按钮都锁住（防重复点）
+    let release = null;
+    globalThis.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/qoder/checkin')) {
+        return new Promise((resolve) => {
+          release = () =>
+            resolve({ ok: true, json: () => Promise.resolve({ ok: true, alreadyCheckedIn: true }) });
+        });
+      }
+      if (u.includes('/qoder/pool')) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(qoderFixture) });
+      }
+      return new Promise(() => {});
+    };
+    const pending = await mount();
+    // ⚠️ 不 await onClick：它要等一个永不 resolve 的 promise，await 会把用例挂死。
+    checkinIn(cardWith(pending.tree, 'qoder-spare@example.com')).onClick();
+    await new Promise((r) => setTimeout(r, 0));
+    const busyTree = pending.rerender();
+    const labels = cardsOf(busyTree).map((c) => checkinIn(c)?.label);
+    ok('签到中那张按钮文案变「签到中…」', labels.includes('签到中…') === true, JSON.stringify(labels));
+    ok(
+      '同时其它账号的签到按钮全锁住（不叠请求）',
+      cardsOf(busyTree).every((c) => checkinIn(c)?.disabled === true),
+      JSON.stringify(cardsOf(busyTree).map((c) => checkinIn(c)?.disabled)),
+    );
+    ok(
+      '「切换到此账号」不受签到影响（切换与签到是两条互不相干的路）',
+      switchIn(cardWith(busyTree, 'qoder-spare@example.com'))?.disabled === false,
+      String(switchIn(cardWith(busyTree, 'qoder-spare@example.com'))?.disabled),
+    );
+    release?.();
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+})();
+
+/**
  * —— 2g-4) XD Pool 模型保存：整段覆盖 + 拒绝空启用列表 ——
  *
  * 这是最容易写坏、坏了最难发现的一条路径：

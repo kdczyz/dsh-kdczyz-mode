@@ -75,19 +75,21 @@
 > | 页头 | `ColumnHead`：标题 + 区域切换（Qoder 无区域）+ 右侧按钮（都是「刷新」，Qoder 另有「添加账号」）。**按钮文案固定**，状态变化用禁用态与下面的说明行表达 |
 > | 状态行 | 固定顺序：只读提示（`READONLY_NOTE`）→ `读取失败：` → `保存失败：` → 已保存 → 正在读取 → 空态 `EmptyBox` |
 > | 统计 | `StatsRow`：**四格** —— 账号 / 可用 / 冷却中 / 当前使用（每页第三、四格的事实各按本页数据措辞） |
-> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子）。**卡上的标签词汇、压暗规则、余额读法三页逐字同款**：首标签只有「当前使用 / 备用」（当前那张亮着，其余压暗；宿主没给「当前是谁」时一张都不压暗）；状态标签是「冷却中 / 已停用 / 已保留·暂停 / 限流 N 次」——**限流次数是标签，不是常驻的「触发限流 0 次」行**；余额统一走 `accountCreditsOf`（WorkBuddy 的 `credits` 是 `{total, packages…}` **对象**，曾经直接 `fmtNum` 渲染成「通用余额 –」，而数字就在响应体里）。三页的**卡片底部都是「切换账号」**，且**当前使用的那张都不给「切换到此账号」**（它已经是当前了）：Trae / Qoder 是单个「切换到此账号」；Trae 与 WorkBuddy 因为还要放签到，底部是并排的按钮 —— 位置相同、措辞相同，另外 WorkBuddy 多一个「取消固定」（`accountId: null`）把路由交回分配策略 |
+> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子）。**卡上的标签词汇、压暗规则、余额读法三页逐字同款**：首标签只有「当前使用 / 备用」（当前那张亮着，其余压暗；宿主没给「当前是谁」时一张都不压暗）；状态标签是「冷却中 / 已停用 / 已保留·暂停 / 限流 N 次」——**限流次数是标签，不是常驻的「触发限流 0 次」行**；余额统一走 `accountCreditsOf`（WorkBuddy 的 `credits` 是 `{total, packages…}` **对象**，曾经直接 `fmtNum` 渲染成「通用余额 –」，而数字就在响应体里）。三页的**卡片底部都是「切换账号」**，且**当前使用的那张都不给「切换到此账号」**（它已经是当前了）：Trae / Qoder 的那一行里并排两颗按钮 ——「切换到此账号」+「签到」（**签到是每张卡都有**，含当前使用那张），WorkBuddy 因为还要放「取消固定」，同样是并排按钮 —— 位置相同、措辞相同，另外 WorkBuddy 的「取消固定」（`accountId: null`）把路由交回分配策略 |
 > | 「模型」区 | `Section` 收尾 + `wbc-cols` 网格的 `ModelCard`（勾选 / 元信息 / 附加控件 / 测试徽章）+ 底部 sticky 保存条 `wbc-model-actions` |
 >
 > 三页**功能集**不同（Trae 页头有供应商开关；XD Pool 多「已移出账号池」「积分自动化」两个分区；Qoder 页头有「添加账号」、账号卡多「令牌到期 / 余额」行），
-> 签到也是这一层差异：**XD Pool 与 Trae 的签到都按账号**（`POST /checkin {accountId}`，所以每张登录着的卡都能签自己那个账号，冷却中的不给），
-> 区别在上游：XD Pool 自己认 `accountId`，Trae 的 `checkin_credits/claim` **没有这个参数** —— 那一边靠「换一份凭证」实现（路由收 `accountId`，用 `clientOfAccount` 造一次性 client 走同一条流程，
+> 签到也是这一层差异：**三家的签到都按账号**（每张登录着的卡都能签自己那个账号），
+> 区别在上游：XD Pool 自己认 `accountId`；Trae 的 `checkin_credits/claim` **没有这个参数** —— 那一边靠「换一份凭证」实现（路由收 `accountId`，用 `clientOfAccount` 造一次性 client 走同一条流程，
 > `creditsOfAccount` 那条不重绑 store 的老路子），所以按下备用卡的「签到」签的是那个账号，Trae 正在服务的账号一动不动；Trae 另有一道**设备**门禁（`did_checked_in` / `code: 9095`：一台机器一天只签一次），
 > 界面因此把「这个账号今天已经签过了」与「本机今天已经签过了」分开说 —— 混成一句会让用户以为新账号拿到了钱，而它一分没拿；
-> **Qoder 没有签到接口**（上游只有 `GET /api/v2/quota/usage` 这条只读额度线，桌面端 bundle 里连「签到」这个词都没有），
-> 所以 Qoder 的当前卡底部是空的 —— 不是漏做，是上游没有这个动作，
+> **Qoder 的签到在活动线上**（`GET /sash/api/v1/me/campaigns` → `POST …/{campaignId}/claim`，见下文「每日签到（活动线）」一节）：
+> 凭据按 `accountId` 取那一份，整个流程**不碰 `selectedAccountId`**（不切号），
+> 而且上游的领取是**幂等**的 —— 对已领活动再 POST 回 200 + `replayed: true` 而余额一分不变，
+> 所以界面按 `replayed` 把「这一下真领到」与「今天早已领过」分成两句话（拿 `grantId` 非空判成败，会每天谎报一次 +100），
 > 这些差异保留 —— 统一的是骨架、控件与措辞，不是内容。`test/console-render.test.mjs`
 > 里有「三页样式一致性」「账号卡标签词汇/压暗规则/余额读法逐字同款」「账号卡能切换账号
-> 并取消固定（连 region 参数一起断言）」「Trae 的签到每张卡都在、带的是自己那张卡的 accountId、签到与取数同一个 region、设备拒签(9095)说成「本机已签」」「页头按钮文案不随状态变」「号池快照为空时主要按钮仍在」几组断言守着它，因为这类退化不会让任何功能测试失败，
+> 并取消固定（连 region 参数一起断言）」「Trae 与 Qoder 的签到每张卡都在、带的是自己那张卡的 accountId、且一个字节都不写 selectedAccountId」「Trae 签到与取数同一个 region、设备拒签(9095)说成「本机已签」」「Qoder 的重放不许说成「签到完成 · 已领」」「页头按钮文案不随状态变」「号池快照为空时主要按钮仍在」几组断言守着它，因为这类退化不会让任何功能测试失败，
 > 只能显式断言（而且整页文本断言不够 —— 卡上贴错的标签，整页搜词照样通过，得按卡片取文本）。
 >
 > 补充两点实现细节：`Section`（分区）与 `CardActions`（卡片操作）也是共用模块里的
@@ -242,7 +244,7 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 407 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）
+node test/console-render.test.mjs   # 427 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）
 node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
 node test/trae-checkin-route.test.mjs # 36 项：Trae 签到路由（指定账号走 clientOfAccount 且绝不碰绑定账号、设备门禁 9095 与「账号已签」分开、未知账号 404、方法/区域/来源/坏 JSON 边界）
@@ -252,7 +254,10 @@ node test/wb-pool-selected.test.mjs # 35 项：WorkBuddy「选中的账号」语
 node test/wb-fingerprint.test.mjs   # 38 项：WorkBuddy 指纹头（Message-ID / X-Request-ID 同值）
 node test/qoder-auth.test.mjs       # 70 项：Qoder 设备流登录（PKCE、404 继续轮询、machine_id、逐账号落盘）
 node test/qoder-pool.test.mjs       # 156 项：Qoder 号池（磁盘为唯一真相、分配策略、逐模型冷却、停用、保留额度）
+node test/qoder-pool-route.test.mjs # 35 项：Qoder 号池路由（快照形状、旧的四条写路由不许回来、点「切换到此账号」写 settings 后请求路径真的换人、冷却自动让位但「当前使用」标记不动）
 node test/qoder-credits.test.mjs    # 100 项：Qoder 积分额度（三池解析、查不到≠余额0、负数 clamp、逐账号刷新、保留额度联动）
+node test/qoder-campaign.test.mjs   # 112 项：Qoder 每日签到（活动线头必须是 Cosy-ClientType 10 且与额度链的 5 互不污染、活动/领取响应解析、`replayed` 才是判据、按 actionType 挑签到活动、已领不发领取、失败码）
+node test/qoder-checkin-route.test.mjs # 51 项：Qoder 签到路由（按 accountId 取那一份凭据且**绝不改 selectedAccountId**、已领只读列表、成功顺带读额度记回池、未知账号 404、GET 405、外域 403、坏 JSON 400）
 node test/qoder-relay.test.mjs      # 112 项：Qoder 反代请求（COSY 签名公式、路径归一、dt- 原样可用、SSE 信封判据、失败回灌号池）
 node test/qoder-catalog.test.mjs    # 86 项：Qoder 模型目录（**失败时目录永不为空**、每条必带 contextWindow、解析不出不倒退、`is_vl` → 图片能力、并发刷新只打一次上游）
 node test/qoder-provider.test.mjs   # 52 项：Qoder provider 注册、白名单/图片（与上游取并集）/上下文预算真的生效、discovery 与 toPiModel 判据一致、含图 stream() 必过附件服务（含负向对照）
@@ -264,7 +269,7 @@ node test/qoder-fingerprint.test.mjs # 50 项：Qoder 官方 wasm 指纹器提�
 node test/qoder-shim.test.mjs       # 52 项：loopback shim（loopback/bearer/Content-Type 防护、timingSafeEqual 长度坑、SSE 头）
 ```
 
-一次跑完（21 个文件）：`for f in test/*.test.mjs; do node "$f" || break; done`。
+一次跑完（25 个文件）：`for f in test/*.test.mjs; do node "$f" || break; done`。
 
 > **跑测试前先解决宿主包的解析**。三个 Loader 入口在模块顶层 import 只存在于 DSH
 > 宿主里的包（`@earendil-works/pi-ai`、`@deepseek-ai/dsh-llm-pi-ai`、
@@ -537,6 +542,7 @@ Qoder 面板（`QoderPoolPanel`）同时渲染在**两个 tab** 下：「账号�
 | `POST …/qoder/pool/credit-reserve` | 设置单个账号的保留额度 |
 | `POST …/qoder/pool/remove` | 移出池子（删除插件凭据，**不碰桌面端登录态**） |
 | `POST …/qoder/credits/refresh` | **刷新上游积分额度**（逐账号查 `quota/usage` 并记回池）；前端每 30 秒自动调用，多窗口共享同一发在途请求 |
+| `POST …/qoder/checkin` | **按账号签到**（body `{accountId}`，省略则签「当前使用」那个）。走活动线 `me/campaigns` → `…/claim`，签的是**那个账号自己的凭据**，**绝不改 `selectedAccountId`**；成功时顺带读一次 `quota/usage` 并把余额记回池 |
 | `POST …/qoder/cooldowns/reset` | 重置全部冷却 |
 | `GET  …/qoder/models/refresh` | **只读模型目录快照**（模型 id/名称/上下文窗口/是否支持图片 + 是否在用兜底表 + 上次拉取时间 + `capabilities` 接线自述）。**不触上游、不花额度** —— 面板打开时走这条 |
 | `POST …/qoder/models/refresh` | **拉一次上游目录**（`model/list`）后返回同一份快照。卡片的「从 Qoder 刷新」按钮走这条（拉取即落盘，见下节） |
@@ -702,6 +708,59 @@ CN 的 `openapiBase` 是 `https://openapi.qoder.com.cn`，与设备流轮询同�
 
 刷新后余额经 `pool.noteCredits()` 记回号池，于是**「保留额度」判据立刻有值可用**
 （`available()` 会把余额 ≤ 保留值的账号挡在轮转外）。
+
+### 每日签到（活动线 `sash/api/v1/me/campaigns`）
+
+签到**不在** `quota/usage` 那条线上，而在「活动（campaign）」线上 —— 服务端每天下发
+一条 `CLAIM_BENEFIT` 活动，客户端去 `claim` 它。两条线的**请求头不一样**，这是本节
+最重要的一个坑：
+
+```
+GET  {openapiBase}/sash/api/v1/me/campaigns                    # 列出今天的活动
+POST {openapiBase}/sash/api/v1/me/campaigns/{campaignId}/claim # 领取（空 body，Content-Length: 0）
+
+Accept: application/json
+Authorization: Bearer <令牌>
+Cosy-ClientType: 10        # ⚠️ 活动线是 10；额度线是 5
+User-Agent: Qoder
+```
+
+| 事实 | 取证 |
+|---|---|
+| 活动线必须是 `Cosy-ClientType: 10` | 桌面端 bundle 里的常量与头构造器逐字是 `{clientType:10,…}` / `Authorization: Bearer …` + `Cosy-ClientType: String(10)` + `User-Agent: "Qoder"`（**裸头**，不发 `Cosy-Version` / `Cosy-MachineOS`） |
+| **用 5 打活动线不会报错，只会"没有活动"** | 真机实测：同一账号同一时刻，`Cosy-ClientType: 5` → HTTP 200 `{"showCampaign":false,"claimable":false,"campaignUrl":"","campaigns":[]}`；换成 `10` → `showCampaign:true` 且活动列表非空。**静默失效、日志里一行错都没有** —— 本插件曾据此得出「Qoder 没有签到」的错误结论 |
+| 领取是**幂等**的 | 对已领活动再 POST：HTTP 200 `{"grantId":"…","status":"CLAIMED","replayed":true,…}`，而余额**一分不变**（实测 577 → 577），再列一次仍是 `CLAIMED` |
+| 判据只能是 `replayed` | 重放响应里 `grantId` / `benefit.amount` 一应俱全，用「`grantId` 非空」判成败就会在已签的那天**谎报 +100** |
+| 每天 10:00（UTC+8）刷新 | 活动窗口实测 `startAt 1791684000` / `endAt 1791770340`（**秒**，当毫秒会算到 1970 年），间隔 86340 秒；文案「每日 10:00（UTC+8）刷新，领取后 30 天有效」，详情页 `https://docs.qoder.cn/events/100credits` |
+| 领到的是**活动积分** | `benefit {kind: CREDITS, amount: 100, modelScope {modelSeries {key: ALL_MODELS}}, validity {mode: RELATIVE_DAYS, days: 30}}`，落进 `addOnQuota`（见上一节的三池口径） |
+| 列表里不止签到活动 | 还有 `actionType: VIEW_DETAILS` 的营销活动（如 Pro 首月翻倍）。只有 `CLAIM_BENEFIT` 才是签到，挑错就等于"签了营销活动"，所以挑选逻辑按 `actionType` 过滤、同状态取窗口更近的那条 |
+
+`lib/qoder-campaign.mjs` 是这条线的全部实现（解析 / 挑选 / 领取 / 单账号编排），
+`lib/index.js` 的 `POST …/qoder/checkin` 只做三件事：按 `accountId` 取**那一份**凭据 →
+`checkinQoderAccount(credential)` → 成功时顺带读一次 `quota/usage` 并把余额记回池
+（签完余额立刻是新的，卡片不用等下一拍 30 秒刷新）。
+
+四条刻意保留的形态，每条都对应一种「做错了也不报错」：
+
+| 形态 | 做反了会怎样 |
+|---|---|
+| 收 `accountId`，**不调** `pool.selectAccount()` | 「先切过去签名、再切回来」会在一段时间里把用户正在用的账号换掉 —— 而这只为领 100 Credits。用例断言：点完签到，`selectedAccountId` 一个字节都没写、`pool.acquire()` 仍返回原来那个账号 |
+| 「今天已领」**只读列表、不发领取** | 白打一次上游领取，还会在日志里留下一次「重放」，让人以为有人手工签过 |
+| 「今天已领」是 **`ok: true`** | 用户点一次看到红字「失败」，会去反复重试。界面把它说成「这个账号今天已经签过了（每天 10:00（UTC+8）刷新）」 |
+| 没有活动是 `ok: false, code: 'no-campaign'` | 反过来把「活动已下线」说成「签到成功」，用户以为钱到了 |
+
+**冷却中 / 已停用的账号也能签**：领的是活动 Credit，与这个账号当前能不能接请求无关，
+上游也没有设备级门禁（一台机器可以给池里每个账号各签一次）。所以这颗按钮只受
+「池正忙 / 只读」与「正在签另一个账号」限制。
+
+**令牌不会自动续**（`qoder-pool.mjs` 的 `resolveFor()` 本期未接线 `deviceToken/refresh`），
+所以令牌过期时签到如实返回 `code: 'unauthorized'` 并提示重新登录该账号 —— 不假装成功，
+也不重试。
+
+`test/qoder-campaign.test.mjs`（112 项：头与路径、两条链不许互相污染、活动/领取响应解析、
+`replayed` 语义、`actionType` 挑选、网络层与失败码）与 `test/qoder-checkin-route.test.mjs`
+（51 项：真凭据 + 真号池 + 真挂路由，断言答复正确**且当前账号没动**、两条链各自的 clientType、
+已领不发领取、未知账号 404 / GET 405 / 外域 403 / 坏 JSON 400）守着它。
 
 ### 自动刷新（每 30 秒，无手动按钮）
 

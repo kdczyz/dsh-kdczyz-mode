@@ -56,7 +56,7 @@ echo "== 源码门禁 =="
   echo "      先跑：node $SRC/scripts/gen-console-inline.mjs" >&2
   exit 1
 }
-for t in credit-store client-apply console-render trae-pool trae-checkin-route wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
+for t in credit-store client-apply console-render trae-pool trae-checkin-route wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-campaign qoder-checkin-route qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
   if (cd "$SRC" && "$NODE" "test/$t.test.mjs" >/dev/null 2>&1); then
     echo "  ✓ $t"
   else

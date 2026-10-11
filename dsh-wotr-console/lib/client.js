@@ -3950,6 +3950,17 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       onRemove,
       onSelect,
       onResetCooldowns,
+      /**
+       * 每日签到（按账号）。
+       *
+       * `onCheckin(id)` 只签这一张卡上的账号；`checkining` 是正在签的 id；
+       * `checkinResults` 是这一页已签过的答复（做卡片 title）；`checkinNote` 是
+       * 顶部那一行结论。
+       */
+      onCheckin,
+      checkining,
+      checkinResults,
+      checkinNote,
     }) {
       const accounts = asArray(status?.accounts);
       const cooling = accounts.filter((a) => a.cooling === true).length;
@@ -3984,6 +3995,20 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         shortAccountName(serving?.label ?? '') ||
         shortAccountName(accounts.find((a) => a.id === servingId)?.label ?? '') ||
         (servingId === '' ? '' : `${servingId.slice(0, 8)}…`);
+
+      /**
+       * 签到按钮的说明（原生 title）。
+       *
+       * 优先用**这一页刚签过的答复**；没有答复就说清这颗按钮与「切换到此账号」的
+       * 区别 —— 它不换 Qoder 正在使用的账号。**刻意不为每张卡预读一次活动状态**：
+       * 那要给每个账号各打一次上游（与签一次的代价一样），而"今天签没签"点一下就
+       * 知道了。
+       */
+      const checkinTitleOf = (id) =>
+        qoderCheckinStateNote(
+          checkinResults?.[id],
+          '点一下给这个账号签到（不会切换 Qoder 正在使用的账号）',
+        );
 
       /**
        * 「当前使用」那一格的副标题：把三件事按重要性拼起来 —— 让位（如果有）、
@@ -4102,6 +4127,12 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                 : null
             : null,
 
+          // 签到结论：人点的动作，**成功也要说**（它是这一刻唯一发生变化的事）。
+          // 「已领 +100」与「今天已签过」的区分由 qoderCheckinResultNote 负责。
+          checkinNote !== null && checkinNote !== undefined
+            ? jsx('div', { className: 'wbc-note', children: checkinNote })
+            : null,
+
           status === null && loading
             ? jsx('div', { className: 'wbc-note', children: '正在读取 Qoder 号池…' })
             : null,
@@ -4214,8 +4245,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                           { k: '保留额度', v: a.creditReserve > 0 ? fmtNum(a.creditReserve) : '不限' },
                         ],
                         // 参与轮换 / 保留额度 / 移出池子：走共用的 CardActions，
-                        // 与另两个配置页逐字同款。「切换到此账号」不在这条 bar 里
-                        // —— 它是每张卡的**主操作**，放在卡片最底部独占一行。
+                        // 与另两个配置页逐字同款。
                         extra: [
                           jsx(
                             CardActions,
@@ -4234,18 +4264,48 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             },
                             'actions',
                           ),
+                          /* 卡片最后一行：与 XD Pool / Trae 两页同款的两按钮排 ——
+                           * 左边「切换到此账号」（**当前那张不给**：它已经是当前了，
+                           * 再摆一个等于让用户点一下没反应），右边「签到」。
+                           *
+                           * 签到**每张卡都有**：路由按 accountId 取那一份凭据单独
+                           * 走活动链，不碰 selectedAccountId，所以按下去不会把 Qoder
+                           * 正在使用的账号换掉 —— 这正是它与「先切换再签」的区别。
+                           *
+                           * 冷却中/已停用的账号也能签：领的是活动 Credits，与请求
+                           * 额度是否可用无关（上游也没有设备级门禁：一台机器可以给
+                           * 池里每个账号各签一次）。所以这颗按钮只受 `locked`（池忙 /
+                           * 只读）与"正在签另一个"限制。 */
+                          jsxs(
+                            'div',
+                            {
+                              className: 'wbc-card-foot',
+                              children: [
+                                isSelected === true
+                                  ? null
+                                  : jsx('button', {
+                                      type: 'button',
+                                      className: 'wbc-btn',
+                                      disabled: locked,
+                                      onClick: () => onSelect(a.id),
+                                      children: '切换到此账号',
+                                    }),
+                                jsx('button', {
+                                  type: 'button',
+                                  className: 'wbc-btn',
+                                  title: checkinTitleOf(a.id),
+                                  disabled: checkining !== null || locked,
+                                  onClick: () => onCheckin(a.id),
+                                  children: checkining === a.id ? '签到中…' : '签到',
+                                }),
+                              ],
+                            },
+                            'foot',
+                          ),
                         ],
-                        // 主操作只有一条：把请求切到这张卡上。当前使用的那张没有按钮
-                        // ——「取消固定」不存在，因为池里必须永远有一个当前账号（清空
-                        // 选择只会回到池里第一个账号，那对用户是个隐形动作，不如不给）。
-                        action:
-                          isSelected === true
-                            ? null
-                            : {
-                                label: '切换到此账号',
-                                disabled: locked,
-                                onClick: () => onSelect(a.id),
-                              },
+                        // 两个按钮都在上面那一排里（与另两页同款），`action` 空着
+                        // —— 一页里不要有两种「卡片主按钮」。
+                        action: null,
                       },
                       String(a.id),
                     );
@@ -4422,6 +4482,55 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       if (result.alreadyCheckedIn === true) return '这个账号今天已经签过了';
       if (result.deviceCheckedIn === true || result.code === 9095) {
         return '本机今天已经签过了（一台机器一天只签一次）';
+      }
+      const message = typeof result.message === 'string' ? result.message.trim() : '';
+      return message === '' ? '签到未完成' : `签到未完成：${message}`;
+    }
+
+    /**
+     * Qoder 签到路由的答复 → 卡片按钮的原生 title。
+     *
+     * 与 Trae 那份（`checkinStateNote`）分开写，因为**答复形状不同**：Trae 把状态
+     * 嵌在 `checkin` 里、还有「本机今天已签」（`code: 9095`）那一档；Qoder 的答复
+     * 是平的（`claimed` / `alreadyCheckedIn` / `code` / `amount`），上游也没有设备
+     * 级门禁 —— 一台机器可以给池里每个账号各签一次。
+     *
+     * 文案里带上真实节奏：服务端窗口**每天 10:00（UTC+8）刷新**、领到的 Credits
+     * **30 天有效**（`placements[].content.zh.description` 逐字）。不写这两句，
+     * 用户就会拿「昨天领的今天怎么不见了」来问。
+     */
+    function qoderCheckinStateNote(doc, fallback) {
+      if (doc === undefined || doc === null) return fallback;
+      const amount =
+        typeof doc.amount === 'number' && Number.isFinite(doc.amount) ? doc.amount : undefined;
+      const validDays =
+        typeof doc.validDays === 'number' && Number.isFinite(doc.validDays) ? doc.validDays : undefined;
+      const gain = amount === undefined ? '' : ` · +${fmtNum(amount)} Credits`;
+      const valid = validDays === undefined ? '' : `（${fmtNum(validDays)} 天有效）`;
+      if (doc.claimed === true) return `签到成功${gain}${valid}`;
+      if (doc.alreadyCheckedIn === true) return `今日已签到${gain}${valid} · 每天 10:00（UTC+8）刷新`;
+      const message = typeof doc.message === 'string' ? doc.message.trim() : '';
+      return message === '' ? '签到未完成' : `签到未完成：${message}`;
+    }
+
+    /**
+     * Qoder 签到路由的答复 → 面板顶部那一行提示。
+     *
+     * `claimed`（这一下真领到了）与 `alreadyCheckedIn`（今天早就领过）**必须分开
+     * 说**：上游的领取是幂等的 —— 对已领活动再 POST 一次回 `replayed: true`、余额
+     * 一分不变（实测 577 → 577）。混成一句「签到成功」，就会每天谎报一次 +100。
+     */
+    function qoderCheckinResultNote(result) {
+      if (result === undefined || result === null) return '签到未完成';
+      if (result.claimed === true) {
+        const amount =
+          typeof result.amount === 'number' && Number.isFinite(result.amount)
+            ? result.amount
+            : undefined;
+        return amount === undefined ? '签到完成' : `签到完成 · 已领 +${fmtNum(amount)} Credits`;
+      }
+      if (result.alreadyCheckedIn === true) {
+        return '这个账号今天已经签过了（每天 10:00（UTC+8）刷新）';
       }
       const message = typeof result.message === 'string' ? result.message.trim() : '';
       return message === '' ? '签到未完成' : `签到未完成：${message}`;
@@ -5520,6 +5629,55 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       );
 
       /**
+       * 每日签到：**签自己那张卡上的账号**，不切换 Qoder 正在使用的账号。
+       *
+       * 与 Trae 侧同一条约束，实现路子也一样：把 `accountId` 交给路由，路由按这个
+       * id 取那份凭据、单独走一次活动链接与领取，**全程不碰 `selectedAccountId`**。
+       * 所以「给备用账号签到」不等于「先切过去再签再切回来」——后者会在一段时间里
+       * 把用户正在用的账号换掉（请求打到别的号上），而这本来只是领 100 Credits。
+       *
+       * 刻意**不复用** `qoderAction`：那条路会把整页置 `qoderBusy`，于是签到一次就
+       * 把「停用 / 移出 / 保留额度」全锁住；而且它按 `error` 判失败，而签到的失败
+       * 是**业务性**的（今天没有下发活动 / 令牌过期 / 今天已签），应该在卡片上就地
+       * 说清，不该把整页标红。
+       *
+       * 三个状态分开：
+       *   `checkining` 正在签哪个 id（按钮文案 + 防重复点）
+       *   `checkinResults` 每个账号**这一页**签过的答复（卡片 title 用）
+       *   `checkinNote` 顶部那一行结论（`claimed` / `alreadyCheckedIn` 分开说）
+       */
+      const [qoderCheckining, setQoderCheckining] = useState(null);
+      const [qoderCheckinResults, setQoderCheckinResults] = useState({});
+      const [qoderCheckinNote, setQoderCheckinNote] = useState(null);
+      const onQoderCheckin = useCallback(
+        async (accountId) => {
+          if (typeof accountId !== 'string' || accountId === '') return null;
+          setQoderCheckining(accountId);
+          setQoderCheckinNote(null);
+          try {
+            const r = await fetchJson(`${SELF_API}/qoder/checkin`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accountId }),
+            });
+            // 答复里 `ok:false` 是**结果**不是异常：照样记下来并在卡片上说明原因。
+            setQoderCheckinResults((prev) => ({ ...prev, [accountId]: r ?? {} }));
+            setQoderCheckinNote(qoderCheckinResultNote(r));
+            // 签到成功的答复里带了刚读到的余额，但号池快照（卡片上的余额行 / 合计）
+            // 还是上一拍的，重读一次让数字立刻对齐。
+            await loadQoder();
+            return r ?? null;
+          } catch (e) {
+            setQoderCheckinNote(`签到未完成：${e?.message ?? String(e)}`);
+            return null;
+          } finally {
+            setQoderCheckining(null);
+          }
+        },
+        [loadQoder],
+      );
+
+      /**
        * 刷新上游积分额度 —— **自动、静默**。
        *
        * 三条刻意的设计：
@@ -5712,6 +5870,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         onRemove: onQoderRemove,
         onSelect: onQoderSelect,
         onResetCooldowns: onQoderResetCooldowns,
+        // 每日签到（按账号，不切号）：正在签的 id / 本页各账号的答复 / 顶部结论。
+        onCheckin: onQoderCheckin,
+        checkining: qoderCheckining,
+        checkinResults: qoderCheckinResults,
+        checkinNote: qoderCheckinNote,
       };
 
       const tabs = [

@@ -42,7 +42,12 @@ import * as wbAuth from './wb-auth.mjs';
 import * as traeAuth from './trae-auth.mjs';
 import * as qoderAuth from './qoder-auth.mjs';
 import { QoderAccountPool, QoderCredentialStore } from './qoder-pool.mjs';
-import { refreshQoderPoolCredits, resolveQoderServingCredits } from './qoder-credits.mjs';
+import {
+  fetchQoderQuotaUsage,
+  refreshQoderPoolCredits,
+  resolveQoderServingCredits,
+} from './qoder-credits.mjs';
+import { checkinQoderAccount } from './qoder-campaign.mjs';
 // 跨 Loader 入口取 Qoder provider 的句柄（目录刷新）。这里只是**读**那个模块的
 // 模块级状态，不改 `lib/qoder.js` 的 `apply` 引用同一性 —— 它作为独立入口注册
 // 的约束不受影响。
@@ -970,6 +975,113 @@ export function mountConsoleRoutes(ctx, config) {
                 // 打上游（新鲜窗口内直接复用），只是把口径统一到同一个字段上，
                 // 免得前端一半读 `pool[].credits`、一半读 `serving.credits`。
                 serving: await resolveQoderServing(pool, { now }),
+              });
+            } catch (e) {
+              json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 每日签到（活动线）——
+      //
+      // 与 Trae 侧同一条设计约束：**签的是"某一个账号"，不切换当前服务的账号**。
+      // 请求体给 `accountId` 就签那一个；不给就签"当前使用"那一个（界面上就是
+      // 卡片标着「当前使用」的那张）。整条链只取一次凭据、只发两次上游请求，
+      // 全程不碰 `pool.selectAccount()` —— 签到是"顺手领 100 Credits"，
+      // 没有任何理由把用户正在用的账号换掉。
+      //
+      // 端点与头见 `lib/qoder-campaign.mjs` 顶部：签到链要 `Cosy-ClientType: 10`
+      // （额度链是 5），用错了服务端会回一个「今天没有活动」的空列表而不是报错。
+      //
+      // 冷却中/已停用的账号**照样可以签到**：领的是活动 Credits，不与请求额度
+      // 的可用性挂钩，也没有任何选号参与。所以这里刻意不查 `isUsable`。
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/checkin`,
+          handler: async (req, res) => {
+            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+
+            let body;
+            try {
+              const chunks = [];
+              for await (const c of req) chunks.push(c);
+              const raw = Buffer.concat(chunks).toString('utf8').trim();
+              body = raw === '' ? {} : JSON.parse(raw);
+            } catch {
+              return json(res, 400, { error: 'invalid JSON body' });
+            }
+            const wantedId = typeof body?.accountId === 'string' ? body.accountId : '';
+
+            try {
+              const pool = qoderPool();
+              await pool.scan();
+              const accounts = pool.list();
+              if (accounts.length === 0) {
+                return json(res, 200, {
+                  ok: false,
+                  code: 'no-account',
+                  message: '号池里还没有账号，先在下方登录一个 Qoder 账号',
+                });
+              }
+              // 不给 accountId = 签「当前使用」那一个；池里显式选中的没了就退回第一个，
+              // 与界面「当前使用」的算法（effectiveSelectedAccountId）同一个口径。
+              const target =
+                wantedId === ''
+                  ? (accounts.find((a) => a.id === pool.effectiveSelectedAccountId()) ?? accounts[0])
+                  : accounts.find((a) => a.id === wantedId);
+              if (target === undefined) {
+                return json(res, 404, { ok: false, code: 'not-found', error: 'account not found' });
+              }
+
+              const result = await checkinQoderAccount(target.credential, { fetch });
+
+              /**
+               * 顺带把该账号的余额读回来。
+               *
+               * 只在签到链**成功**（真领到 或 今天已领过）时读：失败时余额没有
+               * 变化，多打一次上游只是噪声。读不到就 `credits: null` ——
+               * 绝不退化成 0（见 `fetchQoderQuotaUsage` 的注释）。
+               * 用 `rememberCredits` 而不是 `noteCredits`：顺带更新「读到的时刻」，
+               * 于是界面上的余额立刻是新的，不必再点一次「刷新积分」。
+               */
+              let credits = null;
+              if (result.ok === true) {
+                const usage = await fetchQoderQuotaUsage(target.credential, { fetch });
+                if (usage.ok) {
+                  const total = pool.rememberCredits(target.id, usage.total);
+                  credits = { total, usage: usage.usage };
+                }
+              }
+
+              const campaign = result.campaign;
+              json(res, 200, {
+                ok: result.ok === true,
+                accountId: target.id,
+                label: target.label ?? '',
+                // 两个语义**分开**：`claimed` = 这一下真领到了；`alreadyCheckedIn` =
+                // 今天早就领过了。混成一个，界面每天都会喊一次「签到成功 +100」。
+                claimed: result.claimed === true,
+                alreadyCheckedIn: result.alreadyCheckedIn === true,
+                code: result.code ?? '',
+                message: result.message ?? '',
+                claimStatus: result.claimStatus ?? campaign?.claimStatus ?? '',
+                campaignId: campaign?.campaignId ?? '',
+                campaignKey: campaign?.campaignKey ?? '',
+                amount: result.claim?.amount ?? campaign?.benefit?.amount ?? null,
+                kind: result.claim?.kind || campaign?.benefit?.kind || '',
+                validDays: result.claim?.validDays ?? campaign?.benefit?.validDays ?? null,
+                title: campaign?.content?.title ?? '',
+                description: campaign?.content?.description ?? '',
+                detailUrl: campaign?.content?.detailUrl ?? '',
+                panelUrl: campaign?.campaignUrl ?? '',
+                windowEndsAtMs: campaign?.endAtMs ?? null,
+                // 只有营销活动时把它们的 key 带出来：「为什么没有签到活动」要答得出来。
+                otherCampaignKeys: result.otherCampaignKeys ?? [],
+                credits,
+                checkedAtMs: Date.now(),
               });
             } catch (e) {
               json(res, 500, { ok: false, error: e?.message ?? String(e) });
