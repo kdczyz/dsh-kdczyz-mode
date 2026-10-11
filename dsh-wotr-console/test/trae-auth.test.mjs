@@ -14,9 +14,12 @@
 
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+
+import { readTraeIdentity, TraeCredentialStore, TraeUsageClient } from '../lib/trae.js';
 
 import {
   saveTraeCredential,
@@ -400,6 +403,205 @@ console.log('Trae 登录单测\n');
     }
   }
   ok('exchange 坏响应不抛异常', threw2 === null, threw2 ?? '');
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 设备身份：x-device-id 必须取官方客户端实际发送的那个 id
+ *
+ * 上游的签到领取（`/trae/api/v2/ug/checkin_credits/claim`）是**按设备**结算的，
+ * 而这个 id 直接决定「这台机器今天还能不能领」：
+ *
+ *   - 正确值（新版 SOLO 安装里的纯数字 `icube-dc` 键）→ `code: 0`，签到到账；
+ *   - 错值（`telemetry.devDeviceId` 这个 UUID）→ `code: 9074`，界面显示
+ *     「当前参与用户太多，请稍后再试」—— 一句把人引向「等会儿再试」的假话。
+ *
+ * 缺陷的形状是「多候选时静默取不到」：旧代码 `ids.length === 1 ? ids[0] : undefined`，
+ * 而新版 SOLO 的 storage.json 同时留有 `aha-…` 迁移名与纯数字 id（本机实测两个），
+ * 于是 `deviceId` 落到 UUID 回落分支，**status 依然 200**，只有领取才失败。
+ * 这条测试把「多候选必须选出纯数字那个」钉死，避免它再退回去。
+ * ──────────────────────────────────────────────────────────────────────────── */
+{
+  const AHA = 'aha-e4b8d545e2fb07ee4cd01c966d4264ab';
+  const NUMERIC = '2833884447254011';
+  const UUID = 'cf6208e9-7857-4094-b43d-a21df09a9715';
+  const MACHINE = 'c022fc182bbe94670147fd55fd8b1a1f4bae7b6472044d81fdd4ff08f4bdc686';
+
+  const dir = await mkdtemp(join(tmpdir(), 'trae-identity-'));
+  /** 造一份真实形状的桌面 storage.json（键名逐字取自本机实测文件）。 */
+  const writeStorage = async (name, dcKeys) => {
+    const path = join(dir, name);
+    const storage = {
+      'telemetry.machineId': MACHINE,
+      'telemetry.devDeviceId': UUID,
+      'iCubeLastVersion': '2.3.87413',
+      'has_device_id_updated_to_aha': true,
+    };
+    for (const key of dcKeys) storage[`iCubeAuthInfo://icube-dc:${key}`] = 'dGMFEAAAfpObqQ91iuyI60kwoC5bnuWYLZ9fpvWAr3us1tD';
+    await writeFile(path, JSON.stringify(storage));
+    return path;
+  };
+
+  /* 1) 本机真实形状：两个候选 → 必须选纯数字的那个 */
+  const twoKeys = await writeStorage('two.json', [AHA, NUMERIC]);
+  const resolved = await readTraeIdentity({ edition: 'solo', path: twoKeys, source: 'desktop' });
+  ok('多候选 icube-dc：deviceId 取纯数字键', resolved.deviceId === NUMERIC, resolved.deviceId);
+  ok('多候选 icube-dc：不再回落成 telemetry UUID', resolved.deviceId !== UUID, resolved.deviceId);
+
+  /* 2) 只有 aha 候选 → 仍然取它，绝不落到 UUID（宁可发迁移名，也不发无关的 UUID） */
+  const onlyAha = await writeStorage('aha.json', [AHA]);
+  const ahaResolved = await readTraeIdentity({ edition: 'solo', path: onlyAha, source: 'desktop' });
+  ok('仅 aha 候选：deviceId 取该候选', ahaResolved.deviceId === AHA, ahaResolved.deviceId);
+
+  /* 3) 单键（旧安装）→ 行为与修复前一致 */
+  const single = await writeStorage('single.json', [NUMERIC]);
+  const singleResolved = await readTraeIdentity({ edition: 'solo', path: single, source: 'desktop' });
+  ok('单键 icube-dc：保持原行为', singleResolved.deviceId === NUMERIC, singleResolved.deviceId);
+
+  /* 4) 完全没有 icube-dc 键 → 才允许走 UUID 回落 */
+  const none = await writeStorage('none.json', []);
+  const noneResolved = await readTraeIdentity({ edition: 'solo', path: none, source: 'desktop' });
+  ok('无 icube-dc 键：回落到 devDeviceId', noneResolved.deviceId === UUID, noneResolved.deviceId);
+
+  /* 5) machineId 不受本次修复影响 */
+  ok('machineId 仍取 telemetry.machineId', resolved.machineId === MACHINE, resolved.machineId);
+
+  await rm(dir, { recursive: true, force: true });
+}
+
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 单机多账号签到：每个账号一个设备身份
+ *
+ * 上游把签到结算到 `x-device-id` 指向的**设备**上，而不是账号上：同一个 id 上换
+ * 第二个账号，答复是 `code: 9095`（这台设备今天已经签过）。2026-10-12 本机实测
+ * —— 未签到的那个账号用真机 id 拿 9095、换一个 id 立刻 `code: 0`，而
+ * `x-machine-id` 完全不影响结果。
+ *
+ * 所以设备身份**不能全池共用**，否则整台机器一天只可能有一次入账。这条测试钉住
+ * 三件事：每账号一个 id、id 在重启后不变、凭据文件与注册表互为兜底。
+ * ──────────────────────────────────────────────────────────────────────────── */
+{
+  const dir = await mkdtemp(join(tmpdir(), 'trae-devices-'));
+  const previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = dir;
+
+  /* 两个账号的凭据，形状与 lib/trae-auth.mjs 的落盘一致 */
+  const issue = async (userId, accountName, home = dir) => {
+    const accountId = createHash('sha256')
+      .update(`solo\0${userId}`)
+      .digest('hex')
+      .slice(0, 24);
+    await writeFile(
+      join(home, `.trae-auth.cn.${accountId}.json`),
+      JSON.stringify({
+        version: 1,
+        credential: {
+          accessToken: `AT-${userId}`,
+          refreshToken: `RT-${userId}`,
+          userId,
+          accountName,
+          host: '',
+          userRegion: 'CN',
+          expiresAtMs: Date.now() + 3600_000,
+          refreshExpiresAtMs: Date.now() + 7200_000,
+          edition: 'solo',
+        },
+      }),
+    );
+    return accountId;
+  };
+
+  const first = await issue('UID-MULTI-1', '账号一');
+  const second = await issue('UID-MULTI-2', '账号二');
+
+  const store = new TraeCredentialStore({ region: 'cn' });
+  /**
+   * 数「我写进去的那两个」而不是账本总数：`$DSH_HOME` 是进程级环境变量，测试
+   * 进程里读到的目录由本块设定，但断言一个绝对数量会把与本次用例无关的凭据
+   * （旧格式迁移源等）也算进来。
+   */
+  const listed = (await store.accounts()).filter((a) => a.id === first || a.id === second);
+  ok('多账号：两个凭据都被读到', listed.length === 2, `读到 ${listed.length} 个`);
+
+  const deviceA = await store.deviceIdOf(first);
+  const deviceB = await store.deviceIdOf(second);
+
+  ok('多账号：账号一拿到设备身份', typeof deviceA === 'string' && deviceA !== '', String(deviceA));
+  ok('多账号：账号二拿到设备身份', typeof deviceB === 'string' && deviceB !== '', String(deviceB));
+  ok('设备身份是 15 位纯数字', /^\d{15}$/.test(deviceA ?? ''), String(deviceA));
+  /**
+   * 首位非零：官方 `icube-dc` 键与参考方案 `gen_device_id()` 都是这个形状
+   * （`randbelow(9e14) + 1e14`）。派生的 id 若带前导零，是一串一眼就不像
+   * 官方发的数字，没有任何理由去冒这个险。
+   */
+  ok('设备身份首位非零', /^[1-9]\d{14}$/.test(deviceA ?? ''), String(deviceA));
+  ok('设备身份也不含前导零（第二个账号）', /^[1-9]\d{14}$/.test(deviceB ?? ''), String(deviceB));
+  ok('两个账号的设备身份不同', deviceA !== deviceB, `${deviceA} vs ${deviceB}`);
+
+  /* 稳定性：同一个账号反复问，必须是同一个 id —— 否则上游每天看到一台新机器 */
+  ok('同账号重复解析不变', (await store.deviceIdOf(first)) === deviceA, '重复解析换了 id');
+
+  /* 注册表落盘：桌面登录态的账号没有自己的凭据文件，全靠这份映射 */
+  const registry = JSON.parse(await readFile(join(dir, 'trae-devices.json'), 'utf8'));
+  ok('注册表记录了账号一的身份', registry.accounts?.[first] === deviceA, JSON.stringify(registry.accounts));
+  ok('注册表记录了账号二的身份', registry.accounts?.[second] === deviceB, JSON.stringify(registry.accounts));
+
+  /* 重启等价：全新的 store 实例必须解析出同样的 id */
+  const reopened = new TraeCredentialStore({ region: 'cn' });
+  ok('重启后账号一的身份不变', (await reopened.deviceIdOf(first)) === deviceA, '重启后换了 id');
+  ok('重启后账号二的身份不变', (await reopened.deviceIdOf(second)) === deviceB, '重启后换了 id');
+
+  /* 凭据文件优先：里面已经写了 deviceId 时，注册表不得覆盖它 */
+  const pinned = '123456789012345';
+  await writeFile(
+    join(dir, `.trae-auth.cn.${first}.json`),
+    JSON.stringify({
+      version: 1,
+      credential: {
+        accessToken: 'AT-UID-MULTI-1',
+        refreshToken: 'RT-UID-MULTI-1',
+        userId: 'UID-MULTI-1',
+        accountName: '账号一',
+        host: '',
+        userRegion: 'CN',
+        expiresAtMs: Date.now() + 3600_000,
+        refreshExpiresAtMs: Date.now() + 7200_000,
+        edition: 'solo',
+        deviceId: pinned,
+      },
+    }),
+  );
+  const pinnedStore = new TraeCredentialStore({ region: 'cn' });
+  ok('凭据文件里的 deviceId 优先', (await pinnedStore.deviceIdOf(first)) === pinned, await pinnedStore.deviceIdOf(first));
+
+  /* 未知账号不许凭空捏造一个身份 */
+  ok('未知账号返回 undefined', (await pinnedStore.deviceIdOf('nope')) === undefined, '未知账号拿到了 id');
+
+  /**
+   * 为什么是「派生」而不是「随机」——这条断言守的就是那个理由。
+   *
+   * 随机方案（参考脚本的 `gen_device_id()`）只有在**记住**它之后才可用：它把
+   * id 写进账号状态文件，之后每次读回。于是「写盘与读盘都成功」变成了正确性的
+   * 前提；这个前提一旦破了，账号会每天换一台设备，而上游看到的是陌生机器 ——
+   * 风险落在账号上，却什么都不报。
+   *
+   * 派生没有这个前提：同一个 accountId 在不同注册表、不同 `$DSH_HOME`、不同
+   * 机器上算出来都是同一串。这条测试把它钉死。
+   */
+  const elsewhere = await mkdtemp(join(tmpdir(), 'trae-devices-other-'));
+  process.env.DSH_HOME = elsewhere;
+  const otherStore = new TraeCredentialStore({ region: 'cn' });
+  await issue('UID-MULTI-1', '账号一', elsewhere);
+  ok(
+    '派生不依赖注册表：换一个 $DSH_HOME 仍得到同一 id',
+    (await otherStore.deviceIdOf(first)) === deviceA,
+    `${deviceA} vs ${await otherStore.deviceIdOf(first)}`,
+  );
+  await rm(elsewhere, { recursive: true, force: true });
+
+  process.env.DSH_HOME = previousHome;
+  await rm(dir, { recursive: true, force: true });
 }
 
 console.log(`\n${pass} 通过 / ${fail} 失败`);

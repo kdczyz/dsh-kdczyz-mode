@@ -92,7 +92,7 @@ function buildBlock(rawSource) {
   return [
     BEGIN,
     '// 本块由 scripts/gen-console-inline.mjs 生成，请勿手改。',
-    '// 内容：lib/console.mjs —— 管理页组件（XD Pool / Trae 配置 / 账号 / 积分 / 使用记录）。',
+    '// 内容：lib/console.mjs —— 管理页组件（workbuddy / trae / 账号 / qoder）。',
     '// 它是 ES 模块，但此处以**真函数**内联（不是字符串 + eval）：',
     '// client.js 是 classic script 不能顶层 import，而 eval 可能被 CSP 拒绝。',
     '// 改界面请改 lib/console.mjs 后重跑生成脚本；apply.sh 会校验是否同步。',

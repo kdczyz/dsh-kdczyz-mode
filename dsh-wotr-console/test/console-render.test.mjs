@@ -8,8 +8,8 @@
  *
  * 这里用真实的 jsx 调用（不是 mock 组件）把组件跑一遍：
  *   - 调用 WorkBuddyPage() 拿到元素树
- *   - 递归展开树里的函数组件（AccountsTab / CreditsTab / HistoryTab）
- *   - 断言三种 tab 在「有数据」「无数据」「坏数据」下都不抛，且产出预期文本
+ *   - 递归展开树里的函数组件（三个配置页各自的 Tab 组件）
+ *   - 断言三个 tab 在「有数据」「无数据」「坏数据」下都不抛，且产出预期文本
  *
  * 运行：node test/console-render.test.mjs
  */
@@ -39,16 +39,37 @@ const ok = (name, cond, extra) => {
  * 迷你 react：只实现组件用到的 hook。
  *
  * `preset` 用来预置 useState 的初值 —— 主组件把当前 tab 存在 state 里，
- * 从外部改不了，靠预置才能覆盖到「积分」「使用记录」等非默认标签页，
- * 以及账号页右列（Trae）的数据。
- * 组件里 useState 的调用顺序是固定的（前 21 个 useState，preset 下标即此顺序）：
- *   0 tab · 1 region · 2 status · 3 summary · 4 loading · 5 summaryLoading · 6 error · 7 busyId
- *   8 traeRegion · 9 traeStatus · 10 traeLoading · 11 traeError · 12 traeBusy
- *   13 login · 14 traeLogin
- *   15 qoderStatus · 16 qoderLoading · 17 qoderError · 18 qoderBusy · 19 qoderLogin
- *   20 qoderReserveDraft · 21 qoderCreditsNote
+ * 从外部改不了，靠预置才能覆盖到「qoder」等非默认标签页，
+ * 以及 trae / qoder 两个半边的数据。
+ * 组件里 hook 的调用顺序是固定的（preset 下标即此顺序，**useRef 同样占一个
+ * 槽位**，所以两者要一起数）：
+ *   0 tab · 1 region · 2 status · 3 loading · 4 error
+ *   5 login · 6 traeLogin
+ *   7 qoderStatus · 8 qoderLoading · 9 qoderError · 10 qoderBusy · 11 qoderLogin
+ *   12 qoderReserveDraft · 13 qoderCreditsNote · 14 qoderCreditsAtMs
+ *   15 useRef qoderCreditsInFlight
+ *   16 traeReloadToken · 17 traeRescanError
+ *   18 useRef loginAlive · 19 useRef loginSessionRef
+ *   20 qoderWriteError · 21 qoderSettingsRev
+ *   22 qoderCheckining · 23 qoderCheckinResults · 24 qoderCheckinNote
+ *   25 useRef qoderLoaded
  *
- * `useRef` 是合并进 Trae 半边后新增的用法（console.mjs 的 traeLoaded），
+ * ⚠️ 这份清单是**直接按 console.mjs 的 `WotrPage` 函数体逐个 use* 调用数出来的**
+ * （不数注释、不抄旧值）。改组件里的 hook 顺序时，这份清单与全文件的
+ * `{ ...withData, N: ... }` 预设必须**一起**改 —— 只改注释不改代码会静默错位：
+ * 用例读到的 state 变成别人的，而它照样能“通过”。
+ *
+ * 「积分」「使用记录」「账号」三个标签页连同它们专属的 state 已逐一移除，
+ * 每一次移除都把后面的槽位整体前移（这条注释本身也被前移坑过两次）：
+ *   - 积分 / 使用记录 → 去掉 `summary` / `summaryLoading`
+ *   - 账号（第一轮）→ 去掉两列的 `traeBusy` 与四个 distribution 写入标记
+ *   - 账号（第二轮）→ 去掉页面级 `busyId`（只有那一页用它）
+ *   - 账号（第三轮）→ 去掉 `traeStatus` / `traeLoading` / `traeError`
+ *     （它们的数据通路只服务于已删除的账号页中列；TraeConfigTab 自己拉 usage）
+ *   - 账号（第四轮）→ 去掉 `traeRegion`（setter 已无调用者，且会让「刷新账号」
+ *     在国际版下重扫 CN）；新增 `traeReloadToken` / `traeRescanError`
+ *
+ * `useRef` 是合并进 Trae 半边后新增的用法（console.mjs 里现在有好几个），
  * 早先的桩没有它，于是 `useRef(false)` 抛 "useRef is not a function"、
  * 30 个渲染用例全灭。真 React 一定有 useRef，缺的是桩，不是组件。
  * 这里补上并让它同样占一个 hook 槽位（cursor++），
@@ -356,15 +377,29 @@ function makeEmbedded(overrides) {
   ok('WotrPage 默认渲染不抛异常', err === null, err?.message);
   ok('渲染出页面标题', text.includes('WOTR 管理'), `实际: ${text.slice(0, 120)}`);
   ok(
-    '渲染出全部五个标签页',
-    ['XD Pool', 'Trae 配置', '账号', '积分', '使用记录'].every((t) => text.includes(t)),
+    '渲染出全部三个标签页',
+    ['workbuddy', 'trae', 'qoder'].every((t) => text.includes(t)),
   );
   ok(
-    '不再有独立的「Trae 账号」标签页（已并入「账号」两列）',
-    !text.includes('Trae 账号'),
+    '「积分」「使用记录」两个标签页已移除',
+    !text.includes('使用记录') && !text.includes('每日净变化'),
   );
-  ok('默认标签页是 XD Pool（渲染出池配置页本体）', text.includes('WorkBuddy 池'));
-  ok('XD Pool 页渲染出区域切换', text.includes('国内版') && text.includes('国际版'));
+  /**
+   * tab 行必须**恰好**是这三个，且顺序不变。
+   *
+   * ⚠️ 不能拿整页文本判 `!includes('账号')`：页头说明与页头那颗「添加账号」
+   * 按钮里都有「账号」二字。tab 行是紧跟在页头说明之后的那三个 ` | ` 分隔项，
+   * 所以按位置取出来比。
+   */
+  // 「入池。」是页头说明的最后三个字，tab 行紧跟在它后面。
+  const tabRow = text.slice(text.indexOf('入池。') + 3).split(' | ').slice(1, 4).join(' | ');
+  ok(
+    '「账号」标签页已整页移除（tab 行里只剩 workbuddy / trae / qoder）',
+    tabRow === 'workbuddy | trae | qoder' && !text.includes('Trae 账号'),
+    `tab 行: ${tabRow}`,
+  );
+  ok('默认标签页是 workbuddy（渲染出池配置页本体）', text.includes('WorkBuddy 池'));
+  ok('workbuddy 页渲染出区域切换', text.includes('国内版') && text.includes('国际版'));
 }
 
 /**
@@ -437,18 +472,6 @@ const statusFixture = {
   ],
 };
 
-const summaryFixture = {
-  totalSamples: 24,
-  accounts: [
-    { uid: 'u1', nickname: '测试账号', firstCredit: 3000, credit: 3080, delta: 80, lastTs: Date.now() - 3600000 },
-    { uid: 'u2', nickname: '冷却账号', firstCredit: 100, credit: 0, delta: -100, lastTs: Date.now() - 86400000 },
-  ],
-  dailyTrend: [
-    { day: '2026-10-08', delta: 80 },
-    { day: '2026-10-09', delta: -100 },
-  ],
-};
-
 const traeFixture = {
   status: 'signed-in',
   accountName: 'trae-user@example.com',
@@ -495,7 +518,7 @@ const traeFixture = {
   },
 };
 
-const withData = { 2: statusFixture, 3: summaryFixture, 4: false, 5: false };
+const withData = { 2: statusFixture, 3: false };
 
 /**
  * Qoder 号池页的 fixture。
@@ -697,68 +720,15 @@ const poolStatusFixture = {
   creditReserves: { u2: 100 },
 };
 
+/**
+ * —— 2) Qoder 页在有数据时能渲染出关键内容 ——
+ *
+ * 早先这里是一张 (tabId, label, mustHave) 表，第一行是「账号」页 ——
+ * 那一页连同它的三列组件（AccountsTab / WorkBuddyAccountsPanel /
+ * TraeAccountsPanel）已经整体删除，那一行也随之删掉；表里只剩 Qoder。
+ * 保留表格形状：以后再有整页级的关键内容断言，直接往下加一行即可。
+ */
 for (const [tabId, label, mustHave] of [
-  [
-    'accounts',
-    '账号',
-    [
-      // 左列 WorkBuddy
-      'WorkBuddy',
-      '测试账号',
-      '冷却账号',
-      '冷却中',
-      '今日已签',
-      '连签 9 天',
-      '3,080',
-      '令牌到期',
-      // 左列的单账号切换控件（与右列 Trae / 第三列 Qoder 同款）
-      '当前使用',
-      '备用',
-      '设为当前',
-      '取消固定',
-      // 右列 Trae
-      'Trae',
-      'trae-user@example.com',
-      '当前使用',
-      '备用',
-      '通用余额',
-      '工作余额',
-      // 第三列 Qoder（并入账号页）
-      'Qoder 号池',
-      'qoder-user@example.com',
-      'qoder-backup@example.com',
-      '添加账号',
-      '保留额度',
-    ],
-  ],
-  [
-    'wb-credits',
-    '积分',
-    [
-      // 胶囊/积分页的统一口径：先答「这次扣的是谁、还剩多少」，全池合计只作参考。
-      '本次调用账号的额度',
-      '3,080',
-      '测试账号 · WorkBuddy 本区域',
-      '当前总积分',
-      '采样记录',
-      '历史跨度',
-      // WorkBuddy 的积分包明细仍要保留（挂在账号卡里）。
-      '月包',
-      '80 / 100',
-      '2 个账号（本区域合计）',
-      // 三家都在这张页面上：Trae 与 Qoder 的账号与余额都要能看到。
-      'Trae 账号（当前区域）',
-      'trae-user@example.com',
-      'trae-backup@example.com',
-      'Qoder 账号',
-      'qoder-user@example.com',
-      'qoder-backup@example.com',
-      'qoder-spare@example.com',
-      // 被调用的账号（Qoder 侧的 q2）被标出来，而固定账号（q1）不冒充它。
-      '本次调用',
-    ],
-  ],
-  ['wb-history', '使用记录', ['每日净变化', '账号明细', '2026-10-08', '2026-10-09', '+80', '-100', '测试账号']],
   [
     'qoder',
     'Qoder 号池',
@@ -795,10 +765,9 @@ for (const [tabId, label, mustHave] of [
   let err = null;
   let text = '';
   try {
-    // hook 9 是 traeStatus —— 账号页两列都要有数据才能覆盖到两边；
-    // hook 15 是 qoderStatus —— Qoder 页的账号列表来自它
-    // （0-7 WorkBuddy · 8-12 Trae · 13 login · 14 traeLogin · 15 qoderStatus）。
-    text = renderPage({ ...withData, 9: traeFixture, 15: qoderFixture, 0: tabId });
+    // hook 7 是 traeStatus（Trae 那半边的数据）、hook 13 是 qoderStatus
+    // —— Qoder 页的账号列表来自后者。夹具下标见本文件开头的 useState 清单。
+    text = renderPage({ ...withData, 7: qoderFixture, 0: tabId });
   } catch (e) {
     err = e;
   }
@@ -957,7 +926,7 @@ for (const [tabId, label, mustHave] of [
 
   /** 挂载：第一遍渲染跑 effect（发 GET），等它落地后再渲染一遍 */
   const mount = async (scope) => {
-    const react = makeReact({ ...withData, 15: qoderFixture, 0: 'qoder' }, true);
+    const react = makeReact({ ...withData, 7: qoderFixture, 0: 'qoder' }, true);
     const Page = createConsoleSection({
       react,
       jsxRuntime: makeJsxRuntime(),
@@ -1144,33 +1113,20 @@ for (const [tabId, label, mustHave] of [
  * 「下一次用谁」，与刚刚真扣了谁的钱是两件事（轮换模式下更是完全无关）。
  *
  * 所以这里必须**按卡片分别取文本**：先找到某账号名所在的那张 `wbc-card`，
- * 再看这张卡里有没有「本次调用」。WorkBuddy 侧同理 —— fixture 里被固定的是
- * u1、最近服务的是 u2，于是首页统计格该显示 u2 的 0 而不是 u1 的 3,080。
+ * 再看这张卡里有没有「本次调用」。Qoder 页的 fixture 里被固定的是 q1、
+ * 最近服务的是 q2，于是两张卡上的标签与余额必须各归各。
+ *
+ * （原先这里还顺带验 WorkBuddy 侧「统计格显示 u2 而非 u1」——那条断言属于
+ * 已移除的「积分」标签页，随该页一并删掉。）
  */
 {
-  // WorkBuddy：固定 u1，但最近服务的是 u2 ⇒ 统计格显示 u2 的余额。
-  const divergentWb = {
-    ...statusFixture,
-    selectedAccountId: 'u1',
-    activeAccountId: 'u2',
-  };
-
   let qoderCards = [];
-  let wbText = '';
   let err = null;
   try {
     // Qoder 面板：拿真实元素树（`renderPage` 只回文本，这里要按卡片分）。
-    const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'qoder' });
+    const react = makeReact({ ...withData, 7: qoderFixture, 0: 'qoder' });
     const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
     qoderCards = collectByClass(Page({}), 'wbc-card');
-    // 积分页：只取文本就够。
-    // 注意展开顺序：`...withData` 自己带 hook 2（statusFixture），放在后面会把
-    // `divergentWb` 覆盖掉 —— 那样这条用例就在测旧的 fixture，而且看不出来。
-    wbText = renderPage(
-      { ...withData, 2: divergentWb, 0: 'wb-credits' },
-      {},
-      makeEmbedded(),
-    );
   } catch (e) {
     err = e;
   }
@@ -1188,104 +1144,38 @@ for (const [tabId, label, mustHave] of [
   ok('固定账号仍显示「当前使用」（两个概念都要在）', q1Text.includes('当前使用'), q1Text);
   ok('被调用的账号卡上显示它自己的余额', /420/.test(q2Text), q2Text);
   ok('固定账号的余额不会被别人的数字顶掉', q1Text.includes('300') && !/420/.test(q1Text), q1Text);
-
-  // 积分页：WorkBuddy 的「本次调用账号的额度」读的是 activeAccountId（u2）。
-  ok('积分页先答「本次调用账号的额度」', wbText.includes('本次调用账号的额度'), wbText.slice(0, 200));
-  ok(
-    '积分页显示的是被调用账号（u2）而不是固定账号（u1）的余额',
-    wbText.includes('冷却账号 · WorkBuddy 本区域'),
-    wbText.slice(0, 400),
-  );
-  ok('积分页仍给出全池合计作参考', wbText.includes('当前总积分'), '');
 }
 
 /**
- * —— 2a-quater) 「账号」页也必须驱动 Qoder（懒加载 + 自动刷新）——
+ * —— 2a-quinquies) Qoder 的登录进行中 / 失败提示 ——
  *
- * Qoder 面板同时挂在两个 tab 下：「账号」页第三列与独立「Qoder 号池」页。
- * 懒加载与自动刷新原先只判 `tab === 'qoder'`，并入后**从「账号」页进来会
- * 整列空白、余额永远停在「读取中…」** —— 而渲染断言完全看不出来（面板照样
- * 渲染，只是没数据、没定时器）。所以这一组必须真的跑 effect 并驱动定时器。
+ * Qoder 面板的登录提示与另两页同款三件事：进行中告诉用户去浏览器、
+ * 浏览器没打开时给可手动点的链接、失败时把原因显示出来。
  *
- * 这是「同一个面板挂两处」最典型的坑：**渲染对了不等于活着**。
+ * ⚠️ 必须**限定在 Qoder 面板里**找按钮：WorkBuddy / Trae 两页也各有一颗
+ * 「添加账号」与各自的登录提示（那两页另有用例覆盖），全页按文字取会拿到别人的。
+ *
+ * hook 11 是 qoderLogin（见本文件开头的 useState 清单）。
+ * 早先这一组挤在「账号」页那一大块里，用的是 `0: 'accounts'` ——
+ * 那一页删掉后改为直接用 Qoder 页自己的 tab。
  */
 {
-  const prevFetch = globalThis.fetch;
-  const prevSetInterval = globalThis.setInterval;
-  const prevClearInterval = globalThis.clearInterval;
-  const prevDocument = globalThis.document;
+  const qoderOnly = (extra) =>
+    renderPage({ ...withData, 7: qoderFixture, 0: 'qoder', 11: extra });
 
-  const timers = [];
-  let nextId = 1;
-  globalThis.setInterval = (fn, ms) => {
-    const t = { fn, ms, id: nextId++, cleared: false };
-    timers.push(t);
-    return t.id;
-  };
-  globalThis.clearInterval = (id) => {
-    const t = timers.find((x) => x.id === id);
-    if (t !== undefined) t.cleared = true;
-  };
-  globalThis.document = {
-    visibilityState: 'visible',
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    head: { appendChild: () => {} },
-    createElement: () => ({ dataset: {}, textContent: '' }),
-    querySelector: () => null,
-  };
+  const text = qoderOnly(null);
+  ok('Qoder 页有「添加账号」入口', text.includes('添加账号'), text.slice(0, 160));
+  ok('常态下没有登录进行中的提示', !text.includes('已在浏览器打开 Qoder 授权页'));
 
-  const urls = [];
-  globalThis.fetch = async (url) => {
-    urls.push(String(url));
-    if (String(url).includes('/qoder/credits/refresh')) {
-      return {
-        ok: true,
-        json: async () => ({ ok: true, refreshed: 1, failed: 0, accounts: [{ id: 'q1', ok: true, total: 300 }] }),
-      };
-    }
-    if (String(url).includes('/qoder/pool')) return { ok: true, json: async () => qoderFixture };
-    return { ok: true, json: async () => statusFixture };
-  };
+  const pending = qoderOnly({ pending: true, authUrl: 'https://qoder.com/login?x=1', opened: true });
+  ok('Qoder 登录中提示去浏览器完成', pending.includes('已在浏览器打开 Qoder 授权页'));
+  ok('Qoder 登录中提示自动加入号池', pending.includes('完成授权后会自动加入号池'));
 
-  // hook 0 = tab，设为「账号」页
-  const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' }, true);
-  const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
-  let err = null;
-  try {
-    Page({});
-  } catch (e) {
-    err = e;
-  }
-  await new Promise((r) => setTimeout(r, 0));
+  const notOpened = qoderOnly({ pending: true, authUrl: 'https://qoder.com/login?x=1', opened: false });
+  ok('Qoder 浏览器没打开时给出手动链接', notOpened.includes('https://qoder.com/login?x=1'));
 
-  ok('从「账号」页进入不抛异常', err === null, err?.message);
-  ok(
-    '从「账号」页进入会拉 Qoder 号池',
-    urls.some((u) => u.includes('/qoder/pool')),
-    `打过的 URL: ${urls.join(', ')}`,
-  );
-  ok(
-    '从「账号」页进入会刷 Qoder 积分',
-    urls.some((u) => u.includes('/qoder/credits/refresh')),
-    `打过的 URL: ${urls.join(', ')}`,
-  );
-  const timer = timers.find((t) => t.ms === 30000);
-  ok('从「账号」页进入会注册 30 秒自动刷新定时器', timer !== undefined, `timers=${timers.map((t) => t.ms).join(',')}`);
-
-  let cleanupErr = null;
-  try {
-    react.unmount();
-  } catch (e) {
-    cleanupErr = e;
-  }
-  ok('离开「账号」页时不抛', cleanupErr === null, cleanupErr?.message);
-  ok('离开「账号」页时清掉定时器', timer !== undefined && timer.cleared === true, `cleared=${timer?.cleared}`);
-
-  globalThis.fetch = prevFetch;
-  globalThis.setInterval = prevSetInterval;
-  globalThis.clearInterval = prevClearInterval;
-  globalThis.document = prevDocument;
+  const failed = qoderOnly({ error: '登录服务没有返回验证码' });
+  ok('Qoder 登录失败时显示原因', failed.includes('添加账号失败') && failed.includes('验证码'));
 }
 
 /**
@@ -1301,20 +1191,110 @@ for (const [tabId, label, mustHave] of [
  * 所以既断言节奏文案在，也断言按钮文案**不在**。
  */
 {
-  const text = renderPage({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'qoder' });
+  const text = renderPage({ ...withData, 7: qoderFixture, 0: 'qoder' });
   ok('Qoder 页说明自动刷新节奏', text.includes('每 30 秒自动刷新'), '');
   ok(
     'Qoder 页不再有「刷新积分」手动按钮',
     !text.includes('刷新积分'),
     '手动按钮会把「规则同上游」退回手动',
   );
-  // 「刷新」这个按钮是重读号池快照（本地），不是刷上游积分，必须保留。
+  // Qoder 列头那颗「刷新」是重读号池快照（本地），不是刷上游积分，必须保留。
+  // 它的文案**仍是「刷新」** —— 另两个配置页的页头按钮已改名「刷新账号」
+  // （那两页的断言在 2f-2 与各自的配置页用例里），Qoder 这一页没有改名。
   ok('重读号池快照的「刷新」按钮仍在', text.includes('刷新'), '');
+  // ⚠️ 不能拿整页文本判「没有刷新账号」：页头那句说明里就写着「三页都带
+  // 「刷新账号」与「添加账号」」。必须看**按钮节点**的文案。
+  const qoderHeaderLabels = collectButtons(
+    createConsoleSection({ react: makeReact({ ...withData, 7: qoderFixture, 0: 'qoder' }), jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() })({}),
+  ).map((b) => b.label);
+  ok(
+    'Qoder 页头按钮仍是「刷新」，没有跟着另两页改成「刷新账号」',
+    qoderHeaderLabels.includes('刷新') && !qoderHeaderLabels.includes('刷新账号'),
+    JSON.stringify(qoderHeaderLabels),
+  );
   // 余额未读到时是「读取中…」——自动刷新会自己回来，不该叫用户操作。
   ok(
     '未读到的余额显示为「读取中…」',
     text.includes('读取中…'),
     '叫用户点按钮等于承认不会自动刷新',
+  );
+}
+
+/**
+ * —— 2a-quater-bis) Trae 的「刷新账号」必须落在**当前正在看的那一边** ——
+ *
+ * 这是一次真实缺陷的回归测试。原先区域 state 有两份：TraeConfigTab 自己的
+ * \`region\` 与父级 WotrPage 的 \`traeRegion\`。后者自从「账号」页删除后就再也
+ * 没有调用者，永远停在初始值 \`'cn'\`。
+ *
+ * 于是「刷新账号」发的是 \`POST accounts/refresh?region=cn\` —— 用户切到
+ * **国际版**再点它，重扫的是**国内版**凭据：按钮点了、界面也刷新了，但新账号
+ * 纹丝不动，且没有任何错误提示。
+ *
+ * 修法是让区域从面板传进来（\`onRescan(region)\`）。这里钉住三件事：
+ *   1. 切换区域后重读的是新区域（\`usage?region=ai\`）；
+ *   2. 点「刷新账号」确实发出重扫请求（否则「region 对」可以靠不发请求蒙混）；
+ *   3. 请求里的 region 是 \`ai\` 而不是 \`cn\`。
+ */
+{
+  const prevFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    // 给一份「已登录」的回执，避免空态把账号区整块吞掉。
+    return {
+      ok: true,
+      json: async () => ({
+        status: 'signed-in',
+        accountName: 'trae-user@example.com',
+        accounts: [{ id: 't1', accountName: 'trae-user@example.com', selected: true }],
+        credits: { generalAvailable: 100 },
+        pool: { distribution: 'priority', accounts: [] },
+      }),
+    };
+  };
+
+  let err = null;
+  try {
+    const react = makeReact({ 0: 'trae-config' }, true);
+    const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
+
+    // ① 切到国际版。区域按钮在列头，panel 自己的 region 是内部 state，
+    //    必须真的点出来 —— 父级 hook 1 的 region 是 WorkBuddy 的，与这里无关。
+    const intl = collectButtons(Page({})).find((b) => b.label === 'Trae 国际版');
+    ok('Trae 页有「Trae 国际版」区域按钮', intl !== undefined, '');
+    if (intl !== undefined) {
+      await intl.onClick();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // ② 点「刷新账号」。注意它此刻可能仍是 disabled（/usage 那一拍还没结算完），
+    //    而测试要验的是「点了之后打到哪个 region」，所以直接调 handler ——
+    //    这与本项目其它用例的取舍一致：禁用态另有断言覆盖。
+    react.reset();
+    const refresh = collectButtons(Page({})).find((b) => b.label === '刷新账号');
+    ok('Trae 页有「刷新账号」按钮', refresh !== undefined, '');
+    if (refresh !== undefined && typeof refresh.onClick === 'function') {
+      await refresh.onClick();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } catch (e) {
+    err = e;
+  }
+  globalThis.fetch = prevFetch;
+
+  ok('切区域 + 点刷新账号不抛异常', err === null, err?.message);
+  ok(
+    '切到国际版后重读的是 ai（区域切换真的生效）',
+    urls.some((u) => u.includes('/usage?region=ai')),
+    JSON.stringify(urls),
+  );
+  const rescans = urls.filter((u) => u.includes('/accounts/refresh'));
+  ok('「刷新账号」确实发出了重扫请求', rescans.length === 1, JSON.stringify(urls));
+  ok(
+    '国际版下「刷新账号」扫的是 ai 而不是 cn',
+    rescans.length === 1 && rescans[0].includes('region=ai'),
+    JSON.stringify(rescans),
   );
 }
 
@@ -1327,7 +1307,7 @@ for (const [tabId, label, mustHave] of [
  * 「全池 4 个都算进来了」。
  */
 {
-  const text = renderPage({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'qoder' });
+  const text = renderPage({ ...withData, 7: qoderFixture, 0: 'qoder' });
   ok('合计只累加已知账号（300 + 1,200 = 1,500，非 0）', text.includes('1,500'), '');
   ok('合计标明已知比例（2/4）', text.includes('2/4 个已知'), '');
   // 比例必须就挂在合计数旁边（「全池 1,500（2/4 个已知）」），不能只在别处
@@ -1355,7 +1335,7 @@ for (const [tabId, label, mustHave] of [
     ...qoderFixture,
     accounts: qoderFixture.accounts.map((a) => (a.id === 'q2' ? { ...a, credits: null } : a)),
   };
-  const react = makeReact({ ...withData, 9: traeFixture, 15: bareQoder, 0: 'qoder' });
+  const react = makeReact({ ...withData, 7: bareQoder, 0: 'qoder' });
   const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
   /**
    * **只渲染一次**，文本与卡片都从同一棵树上取。
@@ -1383,264 +1363,78 @@ for (const [tabId, label, mustHave] of [
 }
 
 /**
- * —— 2b) 三列布局的结构契约 ——
+ * —— 2b) 「账号」页（三列布局）已整页移除 ——
  *
- * 「并排三列」靠的是外层 `wbc-cols` 网格 + 三个 `wbc-col` 子列。
- * 光看文本断言不出布局：三列若塌成上下三个独立块，文本一模一样。
- * 所以这里直接检查元素树的结构与 class。
+ * 这一段原先钉的是账号页的结构契约：外层 `wbc-cols` 网格 + 三个 `wbc-col`
+ * 子列（WorkBuddy / Trae / Qoder）、三列各自的列头控件、以及「两列必须用同一
+ * 套模块 class / 列头骨架」这条样式一致性要求。
  *
- * Qoder 并入「账号」页是第三列（此前只有 WorkBuddy / Trae 两列）。
+ * 「账号」页连同 AccountsTab / WorkBuddyAccountsPanel / TraeAccountsPanel
+ * 已经整体删除，`wbc-cols` 这个多列容器也**不再被任何地方使用** ——
+ * 三个页面各自都是单列自上而下。所以这一段整体删掉（而不是改成断言
+ * 「页面里没有 wbc-cols」）：一个再也不会出现的 class 不值得占一条断言位。
+ *
+ * 样式一致性的守卫没有丢：改成两页对照的形态收在文件末尾
+ * 「两个配置页的样式一致性」那一组（pool-config vs trae-config）。
  */
-{
-  const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' });
-  const jsxRuntime = makeJsxRuntime();
-  const Page = createConsoleSection({ react, jsxRuntime, embedded: makeEmbedded() });
-  const tree = Page({});
-
-  /** 在元素树里按 className 找节点 */
-  function findByClass(node, needle, depth = 0, hits = []) {
-    if (depth > 40 || node === null || node === undefined || typeof node !== 'object') return hits;
-    if (Array.isArray(node)) {
-      for (const c of node) findByClass(c, needle, depth, hits);
-      return hits;
-    }
-    const { type, props } = node;
-    if (typeof props?.className === 'string' && props.className.includes(needle)) hits.push(node);
-    if (typeof type === 'function') findByClass(type(props ?? {}), needle, depth + 1, hits);
-    else if (typeof type === 'string') findByClass(props?.children, needle, depth + 1, hits);
-    return hits;
-  }
-
-  const colsWrappers = findByClass(tree, 'wbc-cols');
-  ok('账号页有 wbc-cols 多列容器', colsWrappers.length === 1, `找到 ${colsWrappers.length} 个`);
-  const cols = findByClass(tree, 'wbc-col ');
-  const colNodes = findByClass(tree, 'wbc-col');
-  // 'wbc-col' 也会命中 'wbc-cols'，用边界匹配排除
-  const realCols = colNodes.filter((n) => /(^|\s)wbc-col(\s|$)/.test(String(n.props.className)));
-  ok('多列容器内恰好有三个 wbc-col 子列', realCols.length === 3, `找到 ${realCols.length} 个`);
-  void cols;
-
-  // 三列的标题分别是 WorkBuddy / Trae / Qoder，顺序不能反。
-  // 注意：`wbc-col-title` 也被各列**内部的子区块**复用（如 Qoder 列的
-  // 「账号使用方式」），所以不能遍历整棵树收集标题 —— 那样会把子区块标题
-  // 也算进来。这里直接取三列各自的列头（`wbc-col-head` 下的第一个标题）。
-  const titles = realCols.map((col) => {
-    const head = findByClass(col, 'wbc-col-head')[0];
-    const titleNode = head === undefined ? undefined : findByClass(head, 'wbc-col-title')[0];
-    const out = [];
-    collectText2(titleNode?.props?.children, out);
-    return out.join('');
-  });
-  function collectText2(node, out) {
-    if (node === null || node === undefined) return;
-    if (typeof node === 'string' || typeof node === 'number') { out.push(String(node)); return; }
-    if (Array.isArray(node)) { for (const c of node) collectText2(c, out); return; }
-    if (typeof node === 'object') collectText2(node.props?.children, out);
-  }
-  ok(
-    '三列依次是 WorkBuddy、Trae、Qoder（顺序正确）',
-    titles.length === 3 &&
-      titles[0] === 'WorkBuddy' &&
-      titles[1] === 'Trae' &&
-      titles[2] === 'Qoder 号池',
-    `实际: [${titles.join(', ')}]`,
-  );
-
-  // 三侧的筛选按钮应各在自己的列头里，不会串到一起
-  for (const [col, mustHave] of [
-    [0, ['国内版', '国际版', '重新检测']],
-    [1, ['Trae 国内版', 'Trae 国际版', '重新检测', '签到']],
-    // Qoder 列没有区域划分（只有 CN），主操作是「添加账号」而非「重新检测」；
-    // 「清冷却」三个页面的账号区里都叫「清除冷却」（先前 Qoder 是「重置冷却」）
-    [2, ['添加账号', '清除冷却']],
-  ]) {
-    const colNode = realCols[col];
-    const textsInCol = [];
-    collectText(colNode, textsInCol);
-    const joined = textsInCol.join(' | ');
-    const missing = mustHave.filter((s) => !joined.includes(s));
-    ok(
-      `第 ${col + 1} 列包含自己的控件`,
-      missing.length === 0,
-      missing.length > 0 ? `缺少: ${missing.join(', ')}` : '',
-    );
-  }
-
-  /**
-   * —— 2c) 两列必须是**同一套模块样式** ——
-   *
-   * 这是「把两个模块做成一样的样式」这条需求的**唯一可靠断言**。
-   *
-   * 为什么不能只看文本：两列若各写各的（比如一侧没有统计行、另一侧卡片字段
-   * 与按钮位置不同），文本照样能全部对上，肉眼并排一看却明显是两套东西。
-   * 所以这里比对**元素骨架**：把每列展开成「标签 + className」序列，
-   * 断言两侧用到的 class 集合一致、且统计行/账号卡的骨架逐项对应。
-   */
-  const skeletonOf = (node, out = [], depth = 0) => {
-    if (depth > 40 || node === null || node === undefined || typeof node !== 'object') return out;
-    if (Array.isArray(node)) {
-      for (const c of node) skeletonOf(c, out, depth);
-      return out;
-    }
-    const { type, props } = node;
-    if (typeof type === 'function') {
-      skeletonOf(type(props ?? {}), out, depth + 1);
-      return out;
-    }
-    if (typeof type === 'string') {
-      const cls = typeof props?.className === 'string' ? props.className.trim() : '';
-      out.push(cls === '' ? type : `${type}.${cls}`);
-      skeletonOf(props?.children, out, depth + 1);
-      return out;
-    }
-    skeletonOf(props?.children, out, depth + 1);
-    return out;
-  };
-
-  /** 把骨架归一成「模块级 class 的集合」，忽略具体文本与条目数 */
-  const MODULE_CLASSES = [
-    'wbc-col-head',
-    'wbc-col-title',
-    'wbc-sums',
-    'wbc-sum',
-    'wbc-sum-label',
-    'wbc-sum-value',
-    'wbc-sum-sub',
-    'wbc-cards',
-    'wbc-card',
-    'wbc-card-head',
-    'wbc-name',
-    'wbc-tag',
-    'wbc-kv',
-    'wbc-k',
-    'wbc-v',
-    'wbc-btn',
-  ];
-  const modulesOf = (colNode) => {
-    const sk = skeletonOf(colNode);
-    const present = new Set();
-    for (const item of sk) {
-      for (const cls of MODULE_CLASSES) {
-        // 逐 token 匹配，避免 wbc-card 命中 wbc-cards
-        const tokens = item.split('.').slice(1).join(' ').split(/\s+/);
-        if (tokens.includes(cls)) present.add(cls);
-      }
-    }
-    return { present, skeleton: sk };
-  };
-
-  const wbMods = modulesOf(realCols[0]);
-  const traeMods = modulesOf(realCols[1]);
-
-  const missingInTrae = [...wbMods.present].filter((c) => !traeMods.present.has(c));
-  const missingInWb = [...traeMods.present].filter((c) => !wbMods.present.has(c));
-  ok(
-    '两列使用同一套模块 class（左列有的右列也有）',
-    missingInTrae.length === 0,
-    missingInTrae.length > 0 ? `右列缺少: ${missingInTrae.join(', ')}` : '',
-  );
-  ok(
-    '两列使用同一套模块 class（右列有的左列也有）',
-    missingInWb.length === 0,
-    missingInWb.length > 0 ? `左列缺少: ${missingInWb.join(', ')}` : '',
-  );
-
-  /**
-   * 两列的**列头骨架必须逐项一致**：标题 + 区域按钮 + spacer + 操作按钮。
-   * 这是先前那版最明显的差异 —— 一侧列头只有一个按钮、另一侧有两个。
-   */
-  const headSkeleton = (colNode) => {
-    const heads = [];
-    (function walk(node, depth = 0) {
-      if (depth > 40 || node === null || node === undefined || typeof node !== 'object') return;
-      if (Array.isArray(node)) { for (const c of node) walk(c, depth); return; }
-      const { type, props } = node;
-      if (typeof props?.className === 'string' && /(^|\s)wbc-col-head(\s|$)/.test(props.className)) {
-        heads.push(props.children);
-        return;
-      }
-      if (typeof type === 'function') walk(type(props ?? {}), depth + 1);
-      else if (typeof type === 'string') walk(props?.children, depth + 1);
-    })(colNode);
-    return heads[0];
-  };
-
-  const headShapeOf = (children) => {
-    const flat = Array.isArray(children) ? children.flat(Infinity).filter(Boolean) : [children];
-    return flat
-      .filter((c) => c !== null && c !== undefined)
-      .map((c) => {
-        const cls = typeof c?.props?.className === 'string' ? c.props.className.trim() : '';
-        const tag = typeof c?.type === 'string' ? c.type : String(c?.type?.name ?? '?');
-        // 区域按钮与操作按钮都算 wbc-btn，归类即可
-        if (cls.includes('wbc-btn')) return 'button.wbc-btn';
-        if (cls.includes('wbc-spacer')) return 'spacer';
-        if (cls.includes('wbc-col-title')) return 'title';
-        return cls === '' ? tag : `${tag}.${cls}`;
-      });
-  };
-
-  const wbHead = headShapeOf(headSkeleton(realCols[0]));
-  const traeHead = headShapeOf(headSkeleton(realCols[1]));
-
-  // 归一：把连续的多个区域按钮折叠成一个占位，只比较「结构槽位」
-  const normalizeHead = (arr) => {
-    const out = [];
-    for (const item of arr) {
-      if (item === 'button.wbc-btn' && out[out.length - 1] === 'button.wbc-btn') continue;
-      out.push(item);
-    }
-    return out;
-  };
-  ok(
-    '两列列头骨架一致（标题 + 区域切换 + spacer + 操作按钮）',
-    JSON.stringify(normalizeHead(wbHead)) === JSON.stringify(normalizeHead(traeHead)),
-    `左: [${normalizeHead(wbHead).join(', ')}] 右: [${normalizeHead(traeHead).join(', ')}]`,
-  );
-}
 
 /**
  * —— 2d) WorkBuddy 侧要有「浏览器登录添加账号」入口 ——
  *
- * 这是新加的能力。要守住三件事：
- *   1. 入口存在（左列列头有「添加账号」按钮）
+ * 要守住三件事：
+ *   1. 入口存在（页头有「添加账号」按钮）
  *   2. 登录中要有提示（否则用户点了以为卡住）
  *   3. 失败要有提示（否则静默失败最难排查）
  *
  * 反向验证过：把 onAddAccount 的传参去掉 → 按钮消失，断言失败。
+ *
+ * 入口原先只长在「账号」页左列，那一页删掉后搬到了 workbuddy 配置页的页头
+ * （与另两页同一排按钮），所以这里改成 `0: 'pool-config'`。
+ * hook 6 是 login —— 不再和 traeStatus 抢槽位，夹具下标反而更直白了。
  */
 {
-  // 常态：应有「添加账号」按钮（hook 13 是 login 状态，留空即常态）
-  const text = renderPage({ ...withData, 9: traeFixture, 0: 'accounts' });
-  ok('WorkBuddy 列有「添加账号」入口', text.includes('添加账号'), text.slice(0, 160));
+  const wbPage = (extra) =>
+    renderPage({ ...withData, 0: 'pool-config', ...(extra ?? {}) });
+
+  // 常态：应有「添加账号」按钮（hook 5 是 login 状态，留空即常态）
+  const text = wbPage();
+  ok('WorkBuddy 页有「添加账号」入口', text.includes('添加账号'), text.slice(0, 160));
   ok('常态下没有登录进行中的提示', !text.includes('已在浏览器打开登录页'));
 
-  // 登录中：按钮转「登录中…」并提示去浏览器
-  const pending = renderPage({
-    ...withData,
-    9: traeFixture,
-    0: 'accounts',
-    13: { pending: true, authUrl: 'https://www.workbuddy.cn/login?x=1', opened: true },
+  /**
+   * 登录中：提示去浏览器 + 按钮**置灰**。
+   *
+   * ⚠️ 这里**不能**再断言按钮文案变成「登录中…」。三页页头是同一条规矩：
+   * 按钮文案固定不改字，状态只用禁用态与说明行表达（见 PoolConfigTab 的
+   * 注释）。原先账号页左列那版会改成「登录中…」，正是那条规矩要消掉的
+   * 不一致；入口搬到配置页页头后，按钮就只剩「添加账号」这一个文案了。
+   */
+  const pending = wbPage({
+    5: { pending: true, authUrl: 'https://www.workbuddy.cn/login?x=1', opened: true },
   });
   ok('登录中提示去浏览器完成', pending.includes('已在浏览器打开登录页'));
-  ok('登录中按钮显示「登录中…」', pending.includes('登录中…'));
+  const wbButtons = collectButtons(
+    createConsoleSection({
+      react: makeReact({ ...withData, 0: 'pool-config', 5: { pending: true } }),
+      jsxRuntime: makeJsxRuntime(),
+      embedded: makeEmbedded(),
+    })({}),
+  );
+  const addBtn = wbButtons.find((b) => b.label === '添加账号');
+  ok(
+    '登录中「添加账号」按钮文案不变、只置灰（三页同一条规矩）',
+    addBtn !== undefined && addBtn.disabled === true && !pending.includes('登录中…'),
+    JSON.stringify(wbButtons.map((b) => [b.label, b.disabled])),
+  );
 
   // 浏览器没自动打开时，要给出可手动打开的链接
-  const notOpened = renderPage({
-    ...withData,
-    9: traeFixture,
-    0: 'accounts',
-    13: { pending: true, authUrl: 'https://www.workbuddy.cn/login?x=1', opened: false },
+  const notOpened = wbPage({
+    5: { pending: true, authUrl: 'https://www.workbuddy.cn/login?x=1', opened: false },
   });
   ok('浏览器没打开时给出手动链接', notOpened.includes('https://www.workbuddy.cn/login?x=1'));
 
   // 失败：要显示原因
-  const failed = renderPage({
-    ...withData,
-    9: traeFixture,
-    0: 'accounts',
-    13: { error: '登录服务没有返回 authUrl' },
-  });
+  const failed = wbPage({ 5: { error: '登录服务没有返回 authUrl' } });
   ok('登录失败时显示原因', failed.includes('添加账号失败') && failed.includes('authUrl'));
 }
 
@@ -1650,215 +1444,57 @@ for (const [tabId, label, mustHave] of [
  * 与 WorkBuddy 同款三件事：入口存在、登录中提示、失败提示。
  * 另外多一条 Trae 特有的：登录中要给出**手动粘贴兜底**
  * （官方授权页偶尔停在原地不跳回环地址，AgentHub/参考项目都记录过）。
+ *
+ * 入口同样从「账号」页中列搬到了 trae 配置页的页头，所以这里改成
+ * `0: 'trae-config'`；hook 6 是 traeLogin。
  */
 {
-  const traeLogin = (extra) => ({
+  const traePage = (extra) => ({
     ...withData,
-    9: traeFixture,
-    0: 'accounts',
-    14: extra,
+    0: 'trae-config',
+    6: extra,
   });
 
-  const text = renderPage(traeLogin(null));
-  ok('Trae 列有「添加账号」入口', text.includes('添加账号'), text.slice(0, 160));
+  const text = renderPage(traePage(null));
+  ok('Trae 页有「添加账号」入口', text.includes('添加账号'), text.slice(0, 160));
 
-  const pending = renderPage(traeLogin({ pending: true, authUrl: 'https://login.trae.cn/authorization?x=1', opened: true }));
+  const pending = renderPage(traePage({ pending: true, authUrl: 'https://login.trae.cn/authorization?x=1', opened: true }));
   ok('Trae 登录中提示去官方授权页', pending.includes('已在浏览器打开官方授权页'));
   ok('Trae 登录为自动回调，不再有手动粘贴兜底', !pending.includes('把地址栏整段复制到下面') && !pending.includes('提交回调'));
 
-  const failed = renderPage(traeLogin({ error: '登录主机不可达' }));
+  const failed = renderPage(traePage({ error: '登录主机不可达' }));
   ok('Trae 登录失败时显示原因', failed.includes('登录主机不可达'), failed.slice(0, 160));
 }
 
 /**
- * —— 2e-bis) 账号页两列也要有「账号使用方式」——
+ * —— 2e-bis) 三个配置页的「账号使用方式」：读对来源、写对键 ——
  *
- * 需求原话是「workbuddy 和 trae 的账号页面也做」。做这件事有两个**静默**
- * 的失败方向，都必须钉住：
+ * 这一段原先测「账号」页两列的分配策略（左 WorkBuddy 读顶层 `distribution`、
+ * 右 Trae 读 `regions.<region>.distribution`，夹具刻意给两个不同的值来分辨
+ * 读错来源）。那一页删掉后，同一组按钮仍然活在**两个配置页各自的「账号」区**里
+ * —— 功能没变，变的只是入口，所以这一段**改写**（而不是删掉）指向配置页：
  *
- *   1. **读错来源**：WorkBuddy 的策略是顶层 `distribution`（池级单键），
- *      Trae 的是 `pool.distribution`（按区域）。两边若读同一处，界面照样
- *      渲染，只是显示的是别人的策略 —— 夹具刻意给了两个**不同**的值
- *      （round-robin / balanced），读错来源就会暴露。
- *   2. **控件画出来但写不进去**：所以下面既断言按钮存在、也抓 onClick
- *      真点一次，断言设置作用域收到了正确的键与值。
+ *   - pool-config 的「账号」区：`distribution` 是**顶层**设置键（池级单键），
+ *     写完刷新 `/status`；
+ *   - trae-config 的「账号」区：策略存在 `regions.<region>.distribution`，
+ *     只改目标区域槽、其余槽原样带过，写完读回确认。
  *
- * 另外「作用范围」文案也要断言：左列列头有国内版/国际版切换，但策略是
- * 池级的；右列策略则确实按区域存。两者说反了用户会做出错误预期。
- */
-{
-  const accountsPage = (extra) =>
-    renderPage({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts', ...(extra ?? {}) });
-
-  const text = accountsPage();
-  /**
-   * **只有两列**有「账号使用方式」：WorkBuddy 与 Trae。
-   *
-   * Qoder 列曾经也有第三个，但那些按钮（优先/轮换/均衡）会在每次请求上换
-   * 账号 —— 用户固定了账号也照换不误，正是「固定了账号，请求还是打到别的号
-   * 上」的来源。现在 Qoder 侧只剩「当前账号 + 备用 + 手动切换」，所以这里
-   * 断言的是**它不再有**这一区。
-   */
-  const occurrences = text.split('账号使用方式').length - 1;
-  ok('账号页只有 WB / Trae 两列有「账号使用方式」', occurrences === 2, `实际 ${occurrences} 处`);
-  for (const label of ['优先模式', '轮换模式', '均衡模式']) {
-    ok(`账号页两列都有「${label}」`, text.includes(label), '');
-  }
-
-  // WorkBuddy 读顶层 distribution=round-robin → 「轮换模式」应是高亮那个
-  ok('左列作用范围说明：整个池共用（不随区域）', text.includes('整个池共用一套策略'), '');
-  // Trae 读 pool.distribution=balanced → 「均衡模式」
-  ok('右列作用范围说明：只作用于当前区域', text.includes('只作用于当前区域'), '');
-
-  /**
-   * 高亮项必须**按列**对上各自的来源。
-   *
-   * 这是「读错来源」的唯一可靠判据：两列读同一处时界面照样渲染、文案照样
-   * 齐全，只有高亮的那个按钮会露馅。夹具刻意给了两个不同的值
-   * （WorkBuddy round-robin / Trae balanced），所以这里能分辨。
-   */
-  {
-    const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' });
-    const tree = createConsoleSection({
-      react,
-      jsxRuntime: makeJsxRuntime(),
-      embedded: makeEmbedded(),
-    })({});
-
-    /** 取三列各自的元素节点 */
-    const cols = [];
-    (function walk(n, d = 0) {
-      if (d > 40 || n === null || typeof n !== 'object') return;
-      if (Array.isArray(n)) {
-        for (const c of n) walk(c, d);
-        return;
-      }
-      const { type, props } = n;
-      if (typeof type === 'function') {
-        try {
-          walk(type(props ?? {}), d + 1);
-        } catch {
-          /* 忽略 */
-        }
-        return;
-      }
-      if (typeof props?.className === 'string' && /(^|\s)wbc-col(\s|$)/.test(props.className)) {
-        cols.push(n);
-        return;
-      }
-      if (typeof type === 'string') walk(props?.children, d + 1);
-    })(tree);
-
-    /**
-     * 找该列里「账号使用方式」那一条 wbc-bar，再取其中高亮的按钮文字。
-     *
-     * 不能直接取列里第一个 `wbc-btn-primary`：列头的区域按钮（「国内版」
-     * 之类）也是 primary，会先命中。必须定位到分配策略那一条 bar。
-     */
-    const activeLabelOf = (node) => {
-      let label = null;
-      (function walk(n, d = 0) {
-        if (label !== null || d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略 */
-          }
-          return;
-        }
-        const cls = typeof props?.className === 'string' ? props.className : '';
-        if (/(^|\s)wbc-bar(\s|$)/.test(cls)) {
-          // 这条 bar 是不是「账号使用方式」那条？
-          const texts = [];
-          collectText(props?.children, texts);
-          if (texts.join('').includes('账号使用方式')) {
-            (function findPrimary(bar, bd = 0) {
-              if (label !== null || bd > 20 || bar === null || typeof bar !== 'object') return;
-              if (Array.isArray(bar)) {
-                for (const c of bar) findPrimary(c, bd);
-                return;
-              }
-              const bp = bar.props;
-              const bcls = typeof bp?.className === 'string' ? bp.className : '';
-              if (bar.type === 'button' && bcls.includes('wbc-btn-primary')) {
-                label = bp.children;
-                return;
-              }
-              findPrimary(bp?.children, bd + 1);
-            })(props?.children);
-          }
-          return;
-        }
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(node);
-      return label;
-    };
-
-    ok('三列节点收集完整', cols.length === 3, `找到 ${cols.length}`);
-    ok(
-      '左列高亮的是它自己读到的策略（轮换模式）',
-      activeLabelOf(cols[0]) === '轮换模式',
-      `实际高亮: ${activeLabelOf(cols[0])}`,
-    );
-    ok(
-      '右列高亮的是它自己读到的策略（均衡模式）',
-      activeLabelOf(cols[1]) === '均衡模式',
-      `实际高亮: ${activeLabelOf(cols[1])}`,
-    );
-    ok('Qoder 列没有分配策略按钮（该区已删除）', activeLabelOf(cols[2]) === null, `实际高亮: ${activeLabelOf(cols[2])}`);
-    /**
-     * Qoder 列改断言 Trae 同款的那套：夹具里 q1 是「当前使用」（池的
-     * effectiveSelected 落在它身上）、q2 是备用，备用卡上必须有
-     * 「切换到此账号」且点它写的是 **qoderSettings**（provider 唯一读的地方），
-     * 不是管理页那座 HTTP 路由。
-     */
-    const qoderOut = [];
-    collectText(cols[2], qoderOut);
-    const qoderText = qoderOut.join(' ');
-    ok('Qoder 列标出「当前使用」', qoderText.includes('当前使用'), '');
-    ok('Qoder 列标出「备用」', qoderText.includes('备用'), '');
-    ok('Qoder 列有「切换到此账号」', qoderText.includes('切换到此账号'), '');
-    ok('Qoder 列不再有「设为当前 / 取消固定」旧按钮', !qoderText.includes('设为当前') && !qoderText.includes('取消固定'), '');
-  }
-}
-
-/**
- * —— 2e-ter) 账号页两列的分配策略**真的写得进去** ——
- *
- * 只断言渲染不够：控件画出来了但 onClick 写错键名/写错地方，测试照样全绿。
- * 这里抓出按钮的 onClick 真点一次：
- *
- *   - WorkBuddy：`wbSettings` 作用域收到 ('distribution','priority')
- *   - Trae：`traeSettings` 作用域收到 ('regions', …)，且目标区域槽里
- *     `distribution` 已改、**其它区域槽原样保留**
- *
- * 写完还要刷新（读回新值），否则界面会停在旧策略上。
+ * 两条路径都可能**静默写错**（写错键名 / 写错区域 / 写完不刷新），所以这里
+ * 既断言按钮存在，也抓 onClick 真点一次，断言作用域收到了正确的键与值。
  */
 await (async () => {
   const prevFetch = globalThis.fetch;
   let statusCalls = 0;
-  let traeCalls = 0;
+  let traeUsageCalls = 0;
   globalThis.fetch = (url) => {
     const u = String(url);
     if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
       statusCalls += 1;
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(statusFixture) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(poolStatusFixture) });
     }
     if (u.includes('/plugins/dsh-connect-trae/usage')) {
-      traeCalls += 1;
+      traeUsageCalls += 1;
       return Promise.resolve({ ok: true, json: () => Promise.resolve(traeFixture) });
-    }
-    if (u.includes('/qoder/pool')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(qoderFixture) });
-    }
-    if (u.includes('/qoder/credits/refresh')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, refreshed: 1, failed: 0, accounts: [] }) });
     }
     return new Promise(() => {});
   };
@@ -1874,12 +1510,15 @@ await (async () => {
      * Trae 的写入必须**真的落到快照里**。
      *
      * `writeTraeField` 写完会读回确认落地（宿主 resolve 了不等于写进去了），
-     * 一个只记录、不改快照的桩会被这条检查正确地判为失败 —— 先前这里正是
-     * 这样，表现为「写入后没有刷新状态」。所以桩要维护一份可变的文档。
+     * 一个只记录、不改快照的桩会被这条检查正确地判为失败 —— 所以桩要维护
+     * 一份可变的文档。
      */
     let traeDoc = {
       // 两个区域槽：断言写入**只动 cn**、ai 原样带过
-      regions: { cn: { enabled: true, distribution: 'balanced' }, ai: { enabled: true, distribution: 'priority' } },
+      regions: {
+        cn: { enabled: true, distribution: 'balanced' },
+        ai: { enabled: true, distribution: 'priority' },
+      },
     };
     const traeScope = makeTraeScope(traeDoc);
     traeScope.getSnapshot = () => ({ status: 'ready', value: traeDoc, writable: true });
@@ -1889,172 +1528,90 @@ await (async () => {
       return Promise.resolve(true);
     };
 
-    const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' }, true);
-    const Page = createConsoleSection({
-      react,
-      jsxRuntime: makeJsxRuntime(),
-      embedded: { wbSettings: makeHandle(wbScope), traeSettings: makeHandle(traeScope) },
-    });
-    const collectAll = (node) => {
-      const out = [];
-      collectText(node, out);
-      return out.join(' | ');
+    /** 挂一页并驱动到「拿到数据」的那一帧，返回元素树 */
+    const mount = async (tabId) => {
+      const react = makeReact({ 0: tabId }, true);
+      const Page = createConsoleSection({
+        react,
+        jsxRuntime: makeJsxRuntime(),
+        embedded: { wbSettings: makeHandle(wbScope), traeSettings: makeHandle(traeScope) },
+      });
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      react.reset();
+      return Page({});
     };
-    collectAll(Page({}));
-    await new Promise((r) => setTimeout(r, 0));
-    react.reset();
-    const tree = Page({});
+    /**
+     * 该页里 label 对应的那个按钮。
+     *
+     * ⚠️ 必须**只扫一遍**：元素树里的函数组件是"每次展开都会真的重新调用一遍"
+     * 的，而迷你 react 的 hook 游标是整棵树共用的一维数组。同一棵树扫第二遍，
+     * 游标已经停在上一遍的末尾，读到的 state 全是别人的 —— 表现就是「按钮明明
+     * 在，第二次却一个都找不到」。所以这里一次收全，之后只在结果里查。
+     */
+    const buttonsOf = (tree) => collectButtons(tree);
+    const buttonOf = (buttons, label) => buttons.find((b) => b.label === label);
 
-    /** 在元素树里按文字找按钮，取它所在**列**的 className（区分左右两列） */
-    const findButtons = (label) => {
-      const hits = [];
-      (function walk(n, d = 0) {
-        if (d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略渲染失败的子树 */
-          }
-          return;
-        }
-        if (type === 'button' && props?.children === label) hits.push(props.onClick);
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(tree);
-      return hits;
-    };
+    // —— WorkBuddy：策略是池级单键，夹具里是 round-robin（应为高亮那颗） ——
+    {
+      const found = buttonsOf(await mount('pool-config'));
+      const strategy = ["优先模式", "轮换模式", "均衡模式"].map((l) => buttonOf(found, l));
+      ok(
+        'XD Pool 账号区有「优先 / 轮换 / 均衡」三颗策略按钮',
+        strategy.every((b) => b !== undefined),
+        JSON.stringify(found.map((b) => b.label)),
+      );
+      ok(
+        'XD Pool 当前策略（round-robin）那颗是主按钮（高亮）',
+        buttonOf(found, '轮换模式')?.node?.props?.className?.includes('wbc-btn-primary') === true,
+        String(buttonOf(found, '轮换模式')?.node?.props?.className),
+      );
+      const beforeStatus = statusCalls;
+      await buttonOf(found, '优先模式').onClick();
+      ok(
+        'XD Pool 点「优先模式」把 distribution 写进 wbSettings',
+        wbWrites.some(([f, v]) => f === 'distribution' && v === 'priority'),
+        JSON.stringify(wbWrites),
+      );
+      ok('XD Pool 写入后刷新了池状态', statusCalls > beforeStatus, `${beforeStatus} → ${statusCalls}`);
+    }
 
-    // 「优先模式」只在 WB / Trae 两列里（Qoder 侧的策略按钮已删除），共 2 个，
-    // 依次属于这两列（列顺序固定）。
-    const priorityButtons = findButtons('优先模式');
-    ok('账号页找得到两个「优先模式」按钮（WB / Trae 各一）', priorityButtons.length === 2, `实际 ${priorityButtons.length}`);
-
-    const beforeStatus = statusCalls;
-    await priorityButtons[0]();
-    ok(
-      '左列点「优先模式」把 distribution 写进 wbSettings',
-      wbWrites.some(([f, v]) => f === 'distribution' && v === 'priority'),
-      JSON.stringify(wbWrites),
-    );
-    ok('左列写入后刷新了池状态', statusCalls > beforeStatus, `${beforeStatus} → ${statusCalls}`);
-
-    const beforeTrae = traeCalls;
-    await priorityButtons[1]();
-    const regionWrite = traeWrites.find(([f]) => f === 'regions');
-    ok('右列点「优先模式」把 regions 写进 traeSettings', regionWrite !== undefined, JSON.stringify(traeWrites));
-    const nextRegions = regionWrite?.[1];
-    ok(
-      '右列写入落在当前区域槽（cn.distribution=priority）',
-      nextRegions?.cn?.distribution === 'priority',
-      JSON.stringify(nextRegions),
-    );
-    ok(
-      '右列写入不动其它区域槽（ai 原样保留）',
-      nextRegions?.ai?.distribution === 'priority' && nextRegions?.ai?.enabled === true,
-      JSON.stringify(nextRegions),
-    );
-    ok('右列写入后刷新了 Trae 状态', traeCalls > beforeTrae, `${beforeTrae} → ${traeCalls}`);
+    // —— Trae：策略按区域存在 regions.<region>.distribution ——
+    {
+      const found = buttonsOf(await mount('trae-config'));
+      const strategy = ["优先模式", "轮换模式", "均衡模式"].map((l) => buttonOf(found, l));
+      ok(
+        'Trae 账号区有「优先 / 轮换 / 均衡」三颗策略按钮',
+        strategy.every((b) => b !== undefined),
+        JSON.stringify(found.map((b) => b.label)),
+      );
+      const beforeUsage = traeUsageCalls;
+      await buttonOf(found, '优先模式').onClick();
+      // 写入之后的重读是**异步**的（writeTraeField 读回确认 → loadUsage），
+      // 所以要让一拍再断言请求计数，否则会看到「写进去了但没重读」的假象。
+      await new Promise((r) => setTimeout(r, 0));
+      const regionWrite = traeWrites.find(([f]) => f === 'regions');
+      ok('Trae 点「优先模式」把 regions 写进 traeSettings', regionWrite !== undefined, JSON.stringify(traeWrites));
+      const nextRegions = regionWrite?.[1];
+      ok(
+        'Trae 写入落在当前区域槽（cn.distribution=priority）',
+        nextRegions?.cn?.distribution === 'priority',
+        JSON.stringify(nextRegions),
+      );
+      ok(
+        'Trae 写入不动其它区域槽（ai 原样保留）',
+        nextRegions?.ai?.distribution === 'priority' && nextRegions?.ai?.enabled === true,
+        JSON.stringify(nextRegions),
+      );
+      ok('Trae 写入后重读了 usage', traeUsageCalls > beforeUsage, `${beforeUsage} → ${traeUsageCalls}`);
+    }
   } finally {
     globalThis.fetch = prevFetch;
   }
 })();
 
 /**
- * —— 2e-quater) 作用域不可写时，两列给出诊断而不是假控件 ——
- *
- * 「保存了又弹回去」那个故障的可见面：不可写时必须说明原因，而不是画一个
- * 按下去什么都不发生的按钮。写入被宿主拒绝（`set()` 返回 false）也要报出来。
- */
-await (async () => {
-  const readOnly = {
-    getSnapshot: () => ({ status: 'ready', value: { regions: { cn: { enabled: true } } }, writable: false }),
-    subscribe: () => () => {},
-    set: () => Promise.resolve(false),
-  };
-  const text = renderPage(
-    { ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' },
-    {},
-    { wbSettings: makeHandle(readOnly), traeSettings: makeHandle(readOnly) },
-  );
-  ok('两列作用域不可写时给出诊断', text.includes('设置作用域不可写，无法保存'), text.slice(0, 200));
-
-  // 可写但宿主拒绝：必须显示拒绝原因，不能假装成功
-  const prevFetch = globalThis.fetch;
-  globalThis.fetch = (url) => {
-    const u = String(url);
-    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(statusFixture) });
-    }
-    if (u.includes('/plugins/dsh-connect-trae/usage')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(traeFixture) });
-    }
-    if (u.includes('/qoder/pool')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(qoderFixture) });
-    }
-    return new Promise(() => {});
-  };
-  try {
-    const rejecting = makeScope({}, true);
-    rejecting.set = () => Promise.resolve(false);
-    const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' }, true);
-    const Page = createConsoleSection({
-      react,
-      jsxRuntime: makeJsxRuntime(),
-      embedded: { wbSettings: makeHandle(rejecting), traeSettings: makeHandle(rejecting) },
-    });
-    const collectAll = (node) => {
-      const out = [];
-      collectText(node, out);
-      return out.join(' | ');
-    };
-    collectAll(Page({}));
-    await new Promise((r) => setTimeout(r, 0));
-    react.reset();
-    let tree = Page({});
-    const findButton = (label, node) => {
-      let handler = null;
-      (function walk(n, d = 0) {
-        if (handler !== null || d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略 */
-          }
-          return;
-        }
-        if (type === 'button' && props?.children === label) handler = props.onClick;
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(node);
-      return handler;
-    };
-    await findButton('轮换模式', tree)();
-    react.reset();
-    tree = Page({});
-    const after = [];
-    collectText(tree, after);
-    ok(
-      '宿主拒绝写入时显示失败原因（不假装成功）',
-      after.join(' | ').includes('分配策略保存失败'),
-      after.join(' | ').slice(0, 240),
-    );
-  } finally {
-    globalThis.fetch = prevFetch;
-  }
-})();
-
-/**
- * —— 2e-quinquies) 宿主「假装写入成功」时右列必须报错 ——
+ * —— 2e-quinquies) 宿主「假装写入成功」时 Trae 页必须报错 ——
  *
  * 这是本项目反复踩到的那个故障的精确形状：`set()` resolve 了 `true`，
  * 但文档**没变**（被拒的写入会重载宿主状态后正常返回）。上游客户端曾因此
@@ -2063,19 +1620,17 @@ await (async () => {
  * 所以 `writeTraeField` 写完必须**读回确认**。一个只 `return true`、
  * 不改快照的桩就是这种宿主的替身 —— 先前这条检查没有任何测试覆盖，
  * 把 `landed` 改成恒真整个套件照样全绿（变异测试实测如此）。
+ *
+ * 这一段原先打在「账号」页右列（Trae）上；那一页删掉后，同一条读回确认链
+ * 由 trae 配置页的「账号」区走（`writePoolField` → `writeTraeField`），
+ * 所以这里改成 `0: 'trae-config'`、在那一页里点策略按钮。
  */
 await (async () => {
   const prevFetch = globalThis.fetch;
   globalThis.fetch = (url) => {
     const u = String(url);
-    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(statusFixture) });
-    }
     if (u.includes('/plugins/dsh-connect-trae/usage')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(traeFixture) });
-    }
-    if (u.includes('/qoder/pool')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(qoderFixture) });
     }
     return new Promise(() => {});
   };
@@ -2086,78 +1641,33 @@ await (async () => {
     stuck.getSnapshot = () => ({ status: 'ready', value: stuckDoc, writable: true });
     stuck.set = () => Promise.resolve(true);
 
-    const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'accounts' }, true);
+    const react = makeReact({ 0: 'trae-config' }, true);
     const Page = createConsoleSection({
       react,
       jsxRuntime: makeJsxRuntime(),
       embedded: { wbSettings: makeHandle(makeWbScope({})), traeSettings: makeHandle(stuck) },
     });
-    const collectAll = (node) => {
-      const out = [];
-      collectText(node, out);
-      return out.join(' | ');
-    };
-    collectAll(Page({}));
+    collectText(Page({}), []);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
-    let tree = Page({});
-
-    /** 取右列（Trae 列）「均衡模式」按钮 —— 它当前是 priority，点了要变 balanced */
-    const findInCol = (colIndex, label, node) => {
-      const cols = [];
-      (function walk(n, d = 0) {
-        if (d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略 */
-          }
-          return;
-        }
-        if (typeof props?.className === 'string' && /(^|\s)wbc-col(\s|$)/.test(props.className)) {
-          cols.push(n);
-          return;
-        }
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(node);
-      let handler = null;
-      (function walk(n, d = 0) {
-        if (handler !== null || d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略 */
-          }
-          return;
-        }
-        if (type === 'button' && props?.children === label) handler = props.onClick;
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(cols[colIndex]);
-      return handler;
-    };
-
-    await findInCol(1, '均衡模式', tree)();
+    /**
+     * ⚠️ 一次遍历收全按钮，别对同一棵树扫第二遍 —— 函数组件每次展开都会真的
+     * 重跑一遍，而 hook 游标是整棵树共用的，第二遍读到的 state 全是别人的
+     * （表现为「按钮明明在，第二次一个都找不到」）。
+     */
+    const found = collectButtons(Page({}));
+    const button = found.find((b) => b.label === '均衡模式');
+    ok('Trae 页找得到「均衡模式」按钮（当前是 priority，点了要变 balanced）', button !== undefined, JSON.stringify(found.map((b) => b.label)));
+    await button.onClick();
+    await new Promise((r) => setTimeout(r, 0));
     react.reset();
-    tree = Page({});
     const after = [];
-    collectText(tree, after);
+    collectText(Page({}), after);
     const joined = after.join(' | ');
     ok(
-      '宿主假装写入成功时右列报错（读回确认生效）',
-      joined.includes('分配策略保存失败') && joined.includes('未能写入'),
-      joined.slice(0, 260),
+      '宿主假装写入成功时 Trae 页报错（读回确认生效）',
+      joined.includes('分配策略') && joined.includes('未能写入'),
+      joined.slice(0, 400),
     );
   } finally {
     globalThis.fetch = prevFetch;
@@ -2166,6 +1676,10 @@ await (async () => {
 
 /**
  * —— 2e-sexies) Qoder 号池的写入路径 = **settings**（本 bug 的修复判据）——
+ *
+ * ⚠️ 这一段原先在「账号」页第三列上跑（Qoder 面板当时挂两处）。那一页删除后
+ * Qoder 面板只剩 `0: 'qoder'` 一个出口，所以这里改成整页取面板根节点
+ * （`qoderPanelOf`）—— 断言内容与判据一个字没改，只是取节点的路径变了。
  *
  * 这一组测的是真机那个故障的修复：管理页曾经用 HTTP 路由
  * （`/qoder/pool/select` 等）写「自己的」池实例，而请求路径用的是 provider
@@ -2224,13 +1738,13 @@ await (async () => {
     };
 
     /**
-     * ⚠️ **不预置 hook 15（qoderStatus）**。
+     * ⚠️ **不预置 hook 8（qoderStatus）**。
      *
      * preset 的优先级高于 setState 存下来的值，于是「写入 → 重读快照 → 重渲染」
      * 这条链会被打回静态夹具 —— 断言就永远看不到新状态（下面「写入后当前使用换
      * 人」那条会莫名其妙地失败）。让状态真的来自 fetch，链才跑得通。
      */
-    const react = makeReact({ ...withData, 0: 'accounts' }, true);
+    const react = makeReact({ ...withData, 0: 'qoder' }, true);
     const Page = createConsoleSection({
       react,
       jsxRuntime: makeJsxRuntime(),
@@ -2246,9 +1760,15 @@ await (async () => {
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
 
-    /** 取第 colIndex 列（WB / Trae / Qoder 顺序固定） */
-    const columnAt = (colIndex, node) => {
-      const cols = [];
+    /**
+     * 取 Qoder 面板根节点。
+     *
+     * 早先面板是「账号」页的第三列，靠 `columnAt(2)` 取；那一页删除后面板
+     * 成了 qoder 整页内容，根节点就是页面体里的第一个 `wbc-flat` 容器
+     * （`QoderPoolPanel` 以 `flat: true` 渲染，不再自带 `wbc-col`）。
+     */
+    const qoderPanelOf = (node) => {
+      const hits = [];
       (function walk(n, d = 0) {
         if (d > 40 || n === null || typeof n !== 'object') return;
         if (Array.isArray(n)) {
@@ -2264,14 +1784,14 @@ await (async () => {
           }
           return;
         }
-        if (typeof props?.className === 'string' && /(^|\s)wbc-col(\s|$)/.test(props.className)) {
-          cols.push(n);
-          return;
+        if (typeof props?.className === 'string' && /(^|\s)wbc-flat(\s|$)/.test(props.className)) {
+          hits.push(n);
         }
         if (typeof type === 'string') walk(props?.children, d + 1);
       })(node);
-      return cols[colIndex];
+      return hits[0];
     };
+
     /**
      * 按标签抓按钮。
      *
@@ -2434,15 +1954,15 @@ await (async () => {
     };
 
     /**
-     * Qoder 是第三列（WB / Trae / Qoder）。夹具里 q1 = 当前使用，
+     * Qoder 面板（面板现在挂在 qoder 整页上）。夹具里 q1 = 当前使用，
      * q2 / q3 = 备用 ——「切换到此账号」只出现在**非当前**的卡片上。
      */
     react.reset();
     let tree = Page({});
-    const qoderCol = columnAt(2, tree);
-    ok('第三列就是 Qoder 号池', textOf(qoderCol).includes('Qoder 号池'), textOf(qoderCol).slice(0, 120));
+    const qoderCol = qoderPanelOf(tree);
+    ok('qoder 页渲染出的就是 Qoder 号池面板', textOf(qoderCol).includes('Qoder 号池'), textOf(qoderCol).slice(0, 120));
     // 夹具里 4 个账号，恰好 1 个是「当前使用」→ 备用卡上共 3 个「切换到此账号」。
-    // （Trae 列的按钮文案与这里**同名**，所以必须限定在 Qoder 这一列里数。）
+    // （Trae 页的按钮文案与这里**同名**，所以必须限定在 Qoder 面板里数。）
     const spareCount = qoderFixture.accounts.filter((a) => a.id !== 'q1').length;
     ok(
       '每张备用卡上都有一个「切换到此账号」',
@@ -2471,7 +1991,7 @@ await (async () => {
      */
     react.reset();
     tree = Page({});
-    const afterCol = columnAt(2, tree);
+    const afterCol = qoderPanelOf(tree);
     ok(
       '写入后界面刷新：q2 那张卡变成「当前使用」',
       buttonIn(cardWith(afterCol, 'qoder-backup@example.com'), '切换到此账号') === null
@@ -2485,7 +2005,7 @@ await (async () => {
     doc = { ...doc, disabledAccountIds: ['q3'] };
     react.reset();
     tree = Page({});
-    const rotateBox = checkIn(cardWith(columnAt(2, tree), 'qoder-user@example.com'), '参与轮换');
+    const rotateBox = checkIn(cardWith(qoderPanelOf(tree), 'qoder-user@example.com'), '参与轮换');
     ok('账号卡里有「参与轮换」勾选框，且默认勾上', rotateBox?.checked === true, JSON.stringify(rotateBox));
     // ⚠️ 不 await onChange 的返回值：勾选框的回调会把写入承诺一路返回上来，而
     // 写入之后的「重读号池」打的是本块没桩的接口（永远 pending），await 它会
@@ -2503,7 +2023,7 @@ await (async () => {
     doc = { ...doc, disabledAccountIds: ['q1', 'q3'] };
     react.reset();
     tree = Page({});
-    const rotateBox2 = checkIn(cardWith(columnAt(2, tree), 'qoder-user@example.com'), '参与轮换');
+    const rotateBox2 = checkIn(cardWith(qoderPanelOf(tree), 'qoder-user@example.com'), '参与轮换');
     ok('已停用的账号勾选框是未勾上的', rotateBox2?.checked === false, JSON.stringify(rotateBox2));
     rotateBox2.onChange({ target: { checked: true } });
     await new Promise((r) => setTimeout(r, 0));
@@ -2519,10 +2039,10 @@ await (async () => {
     doc = { ...doc, disabledAccountIds: [], creditReserves: {} };
     react.reset();
     tree = Page({});
-    reserveInputIn(cardWith(columnAt(2, tree), 'qoder-backup@example.com'))({ target: { value: '120' } });
+    reserveInputIn(cardWith(qoderPanelOf(tree), 'qoder-backup@example.com'))({ target: { value: '120' } });
     react.reset();
     tree = Page({});
-    await buttonIn(cardWith(columnAt(2, tree), 'qoder-backup@example.com'), '保存').onClick();
+    await buttonIn(cardWith(qoderPanelOf(tree), 'qoder-backup@example.com'), '保存').onClick();
     const reserveWrite = writes.find(([f]) => f === 'creditReserves');
     ok(
       '点「保存」把保留额度写进 creditReserves',
@@ -2539,6 +2059,9 @@ await (async () => {
  *
  * 与 Trae 侧同一个坑：`set()` resolve 了 true，文档却没变。没有读回确认，
  * 用户看到的就是「点了切换但没反应」——而那正是这个 bug 当初难以定位的原因。
+ *
+ * ⚠️ 这一段原先在「账号」页第三列上跑；那一页删除后 Qoder 面板只剩
+ * `0: 'qoder'` 一个出口，所以改成整页取面板根节点。判据一个字没改。
  */
 await (async () => {
   const prevFetch = globalThis.fetch;
@@ -2555,7 +2078,7 @@ await (async () => {
     stuck.getSnapshot = () => ({ status: 'ready', value: stuckDoc, writable: true });
     stuck.set = () => Promise.resolve(true); // 假装成功，值不动
 
-    const react = makeReact({ ...withData, 15: qoderFixture, 0: 'accounts' }, true);
+    const react = makeReact({ ...withData, 0: 'qoder' }, true);
     const Page = createConsoleSection({
       react,
       jsxRuntime: makeJsxRuntime(),
@@ -2569,54 +2092,21 @@ await (async () => {
     textOf(Page({}));
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
-    const tree = Page({});
     /**
-     * ⚠️ 必须**限定在 Qoder 那一列**里找：`切换到此账号` 是 Trae 与 Qoder
-     * 共用的文案，Trae 列在前，全页搜索会抓到 Trae 的按钮 —— 那样测的是 Trae
-     * 的读回确认，而 Qoder 侧报不报错完全没被覆盖。
+     * 取 Qoder 面板根节点（`wbc-flat`）。
+     *
+     * 面板原先挂在「账号」页第三列，靠 `cols[2]` 定位；那一页删除后面板成了
+     * qoder 整页唯一的号池面板，直接取它即可。仍然**必须在面板内**找按钮：
+     * `切换到此账号` 是 Trae 与 Qoder 共用的文案，在别的页面/别处按文字全页
+     * 搜索会抓到 Trae 的按钮 —— 那样测的是 Trae 的读回确认，而 Qoder 侧
+     * 报不报错完全没被覆盖。
+     *
+     * ⚠️ 只扫一遍树：函数组件每次展开都会真的重跑，而 hook 游标整棵树共用，
+     * 第二遍读到的 state 全是别人的。
      */
-    const cols = [];
-    (function walk(n, d = 0) {
-      if (d > 40 || n === null || typeof n !== 'object') return;
-      if (Array.isArray(n)) {
-        for (const c of n) walk(c, d);
-        return;
-      }
-      const { type, props } = n;
-      if (typeof type === 'function') {
-        try {
-          walk(type(props ?? {}), d + 1);
-        } catch {
-          /* 忽略 */
-        }
-        return;
-      }
-      if (typeof props?.className === 'string' && /(^|\s)wbc-col(\s|$)/.test(props.className)) {
-        cols.push(n);
-        return;
-      }
-      if (typeof type === 'string') walk(props?.children, d + 1);
-    })(tree);
-    let handler = null;
-    (function walk(n, d = 0) {
-      if (handler !== null || d > 40 || n === null || typeof n !== 'object') return;
-      if (Array.isArray(n)) {
-        for (const c of n) walk(c, d);
-        return;
-      }
-      const { type, props } = n;
-      if (typeof type === 'function') {
-        try {
-          walk(type(props ?? {}), d + 1);
-        } catch {
-          /* 忽略 */
-        }
-        return;
-      }
-      if (type === 'button' && props?.children === '切换到此账号') handler = props.onClick;
-      if (typeof type === 'string') walk(props?.children, d + 1);
-    })(cols[2]);
-    ok('在 Qoder 列里找到了「切换到此账号」', handler !== null);
+    const found = collectButtons(Page({}));
+    const handler = found.find((b) => b.label === '切换到此账号')?.onClick ?? null;
+    ok('在 Qoder 面板里找到了「切换到此账号」', handler !== null, JSON.stringify(found.map((b) => b.label)));
     await handler();
     react.reset();
     const joined = textOf(Page({}));
@@ -2978,7 +2468,7 @@ await (async () => {
       ['Trae', await treeOf({ 0: 'trae-config' }, true)],
       // Qoder 的数据直接由 hook 15 注入；**不跑副作用** —— 页内自带 30 秒自动
       // 刷新定时器，为了这一块断言留一个活 timer 会拖着测试进程不退。
-      ['Qoder', await treeOf({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'qoder' }, false)],
+      ['Qoder', await treeOf({ ...withData, 7: qoderFixture, 0: 'qoder' }, false)],
     ];
 
     const byLabel = {};
@@ -3580,7 +3070,7 @@ await (async () => {
       return Promise.resolve(true);
     };
     const mount = async () => {
-      const react = makeReact({ ...withData, 15: qoderFixture, 0: 'qoder' }, true);
+      const react = makeReact({ ...withData, 7: qoderFixture, 0: 'qoder' }, true);
       const Page = createConsoleSection({
         react,
         jsxRuntime: makeJsxRuntime(),
@@ -3767,6 +3257,100 @@ await (async () => {
       String(switchIn(cardWith(busyTree, 'qoder-spare@example.com'))?.disabled),
     );
     release?.();
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+})();
+
+/**
+ * —— 2g-3b) XD Pool 的账号启停必须走路由，不能整段覆盖设置 ——
+ *
+ * `disabledAccountIds` 是国内版与国际版**共用**的一份扁平数组（两个 provider 注册
+ * 的是同一个 `settingsNs` + `settingsPath: []`），而配置页一次只拿得到一个区域的
+ * 账号列表。照本区域的名单拼一份完整数组写回设置，另一个区域里已停用的账号会被
+ * **静默重新启用** —— 那份名单只存在于设置文档里，这一页上根本看不见。
+ *
+ * 所以断言两件事，缺一不可：
+ *   1. `POST /plugins/dsh-workbuddy-xdpool/accounts/disabled` 发出去了；
+ *   2. **没有**顺手写 `disabledAccountIds` 设置 —— 后者才是这条回归的真正形态
+ *      （只断言 ① 的话，将来「路由 + 顺手再写一次设置」也能全绿）。
+ */
+await (async () => {
+  const writes = [];
+  const calls = [];
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = (url, init) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(poolStatusFixture) });
+    }
+    if (u.includes('/accounts/disabled')) {
+      calls.push({ url: u, method: init?.method, body: init?.body });
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, accountId: 'u1', disabled: true }),
+      });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    const react = makeReact({ 0: 'pool-config' }, true);
+    const wbScope = makeScope({ disabledAccountIds: ['另一个区域的账号'] });
+    wbScope.set = (field, value) => {
+      writes.push([field, value]);
+      return Promise.resolve(true);
+    };
+    const Page = createConsoleSection({
+      react,
+      jsxRuntime: makeJsxRuntime(),
+      embedded: { wbSettings: makeHandle(wbScope), traeSettings: makeHandle(makeTraeScope({})) },
+    });
+    collectText(Page({}), []);
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    const tree = Page({});
+
+    const card = collectByClass(tree, 'wbc-card').find((c) => textOfNode(c).includes('池内主号'));
+    ok('找得到「池内主号」那张账号卡', card !== undefined);
+    /** 卡里那个「参与轮换」勾选框（启停控件，三个配置页同款） */
+    const boxes = [];
+    (function walk(n, d = 0) {
+      if (n === null || n === undefined || typeof n !== 'object' || d > 40) return;
+      if (Array.isArray(n)) {
+        for (const c of n) walk(c, d);
+        return;
+      }
+      if (typeof n.type === 'function') {
+        try {
+          walk(n.type(n.props ?? {}), d + 1);
+        } catch {
+          /* 渲染失败的子树跳过 */
+        }
+        return;
+      }
+      if (n.type === 'input' && n.props?.type === 'checkbox') boxes.push(n);
+      walk(n.props?.children, d + 1);
+    })(card);
+    ok('账号卡里只有一个勾选框（就是「参与轮换」）', boxes.length === 1, `n=${boxes.length}`);
+    boxes[0]?.props?.onChange?.({ target: { checked: false } });
+    await new Promise((r) => setTimeout(r, 0));
+
+    ok(
+      '取消「参与轮换」打的是 /accounts/disabled 路由',
+      calls.length === 1 && calls[0].method === 'POST' && calls[0].url.includes('/accounts/disabled'),
+      calls.map((c) => `${c.method} ${c.url}`).join(' | '),
+    );
+    ok(
+      '路由请求体只带这一个账号',
+      JSON.parse(String(calls[0]?.body ?? '{}')).accountId === 'u1' &&
+        JSON.parse(String(calls[0]?.body ?? '{}')).disabled === true,
+      String(calls[0]?.body),
+    );
+    ok(
+      '没有顺手整段覆盖 disabledAccountIds 设置（另一个区域的名单会被抹掉）',
+      !writes.some(([f]) => f === 'disabledAccountIds'),
+      JSON.stringify(writes),
+    );
   } finally {
     globalThis.fetch = prevFetch;
   }
@@ -4234,65 +3818,22 @@ await (async () => {
    *
    * 渲染只会画出按钮、不会替用户点击，所以要在元素树里找到「添加账号」
    * 那个按钮并调用它的 onClick —— 这才是用户实际走的路径。
+   *
+   * ⚠️ 这一段原先跑在「账号」页上：那一页左右两列的按钮都叫「添加账号」
+   * （左 WorkBuddy、右 Trae），所以当时要按 wbc-col 的**列序**取第二列。
+   * 那一页删除后，Trae 的「添加账号」就在 trae 配置页的页头（全页唯一一个），
+   * 直接按文字取即可 —— 不必再找列，也不会误抓 WorkBuddy 的那颗。
    */
   const clickAddAccount = async (opened) => {
     opens.length = 0;
     globalThis.fetch = withStart(opened);
-    const react = makeReact({ 0: 'accounts' }, true);
+    const react = makeReact({ 0: 'trae-config' }, true);
     const jsxRuntime = makeJsxRuntime();
     const Page = createConsoleSection({ react, jsxRuntime, embedded: makeEmbedded() });
-    const tree = Page({});
-    /**
-     * 左右两列的按钮都叫「添加账号」（左 WorkBuddy、右 Trae），
-     * 所以按**列序**取：先找到两个 wbc-col，取第二列（Trae）里的那个。
-     * 只按文字找会拿到 WorkBuddy 的按钮 —— 那测的就不是 Trae 这条路径了
-     * （实测如此：抓到的第一个按钮打的是 /wb/login/start）。
-     */
-    const cols = [];
-    (function findCols(n, d = 0) {
-      if (d > 40 || n === null || typeof n !== 'object') return;
-      if (Array.isArray(n)) {
-        for (const c of n) findCols(c, d);
-        return;
-      }
-      const { type, props } = n;
-      if (typeof props?.className === 'string' && /(^|\s)wbc-col(\s|$)/.test(props.className)) {
-        cols.push(n);
-        return;
-      }
-      if (typeof type === 'function') {
-        try {
-          findCols(type(props ?? {}), d + 1);
-        } catch {
-          /* 忽略渲染失败的子树 */
-        }
-        return;
-      }
-      if (typeof type === 'string') findCols(props?.children, d + 1);
-    })(tree);
-    const traeCol = cols[1];
-    let handler = null;
-    (function walk(n, d = 0) {
-      if (handler !== null || d > 40 || n === null || typeof n !== 'object') return;
-      if (Array.isArray(n)) {
-        for (const c of n) walk(c, d);
-        return;
-      }
-      const { type, props } = n;
-      if (typeof type === 'string' && type === 'button' && props?.children === '添加账号') {
-        handler = props.onClick;
-        return;
-      }
-      if (typeof type === 'function') {
-        try {
-          walk(type(props ?? {}), d + 1);
-        } catch {
-          /* 忽略渲染失败的子树 */
-        }
-        return;
-      }
-      if (typeof type === 'string') walk(props?.children, d + 1);
-    })(traeCol);
+    // ⚠️ 只扫一遍树：函数组件每次展开都会真的重跑，而 hook 游标整棵树共用，
+    // 第二遍读到的 state 全是别人的（表现为「按钮明明在，第二次找不到」）。
+    const found = collectButtons(Page({}));
+    const handler = found.find((b) => b.label === '添加账号')?.onClick ?? null;
     if (handler === null) return 'no-button';
     // 轮询第一次要等 1.5s，status 返回 done 之后才会退出循环
     await handler();
@@ -4302,7 +3843,7 @@ await (async () => {
   const prevFetch = globalThis.fetch;
   // ① 服务端已打开（opened: true）→ 前端不得再开
   let err = await clickAddAccount(true);
-  ok('能在账号页找到「添加账号」按钮', err !== 'no-button', err === 'no-button' ? '未找到按钮' : '');
+  ok('能在 trae 配置页找到「添加账号」按钮', err !== 'no-button', err === 'no-button' ? '未找到按钮' : '');
   ok(
     '服务端 opened=true 时前端不再开第二个页面（一次点击 = 一个页面）',
     opens.length === 0,
@@ -4324,16 +3865,15 @@ await (async () => {
 }
 
 // —— 3) 无数据 / 坏数据下不崩 ——
+//
+// 「账号」页那一列已删除，tab 清单改成现在真实存在的三个。
 for (const [name, preset] of [
-  ['status/summary 均为 null', {}],
-  ['accounts 不是数组', { 2: { accounts: 'oops' }, 3: { accounts: null, dailyTrend: null } }],
-  [
-    'credits 字段缺失',
-    { 2: { accounts: [{ id: 'x' }] }, 3: { accounts: [{ uid: 'x' }], dailyTrend: [{ day: 'd', delta: 0 }] } },
-  ],
-  ['delta 为 NaN', { 2: statusFixture, 3: { accounts: [{ uid: 'x', delta: NaN }], dailyTrend: [{ day: 'd', delta: NaN }] } }],
+  ['status 为 null', {}],
+  ['accounts 不是数组', { 2: { accounts: 'oops' } }],
+  ['credits 字段缺失', { 2: { accounts: [{ id: 'x' }] } }],
+  ['status 有值但字段离谱', { 2: statusFixture }],
 ]) {
-  for (const tabId of ['accounts', 'wb-credits', 'wb-history']) {
+  for (const tabId of ['pool-config', 'trae-config', 'qoder']) {
     let err = null;
     try {
       renderPage({ ...preset, 0: tabId });
@@ -4344,7 +3884,15 @@ for (const [name, preset] of [
   }
 }
 
-// —— 4) 账号 tab 的签到/额度边界值 ——
+/**
+ * —— 4) WorkBuddy 账号卡的边界值（原「账号」tab 的签到/额度边界值）——
+ *
+ * 这一段原先跑在已删除的「账号」页左列上。那些边界值本身仍然值得守 ——
+ * 同一份 `status.accounts` 现在喂给 **workbuddy 配置页的「账号」区**
+ * （账号卡、签到按钮、余额读法都在那里），所以**改写**成那个页面，
+ * 而不是删掉：删了就等于「签到行缺字段、creditsError、非法 expiresAt
+ * 会不会把页面打崩」再也没人管。
+ */
 for (const [name, acct] of [
   ['checkin 缺失', { id: 'a', credits: { total: 1 } }],
   ['checkinError', { id: 'a', credits: { total: 1 }, checkinError: 'boom' }],
@@ -4354,66 +3902,71 @@ for (const [name, acct] of [
   ['nickname 缺失', { id: 'a-id', credits: { total: 1 } }],
 ]) {
   let err = null;
-  try {
-    renderPage({ ...withData, 0: 'accounts', 2: { accounts: [acct] } });
-  } catch (e) {
-    err = e;
-  }
-  ok(`账号边界（${name}）不崩`, err === null, err?.message);
-}
-
-/**
- * —— 5) 账号页右列（Trae）的边界值 ——
- *
- * Trae 那半并入「账号」标签页后，它与 WorkBuddy 共用一个渲染树。
- * 它这边抛错同样会让整个设置面板白屏 —— 所以单列出来覆盖。
- * 尤其要覆盖「一侧坏、另一侧好」：两列必须互不连坐。
- */
-for (const [name, traeStatus] of [
-  ['traeStatus 为 null', null],
-  ['未登录', { status: 'signed-out', accounts: [] }],
-  ['error 状态', { status: 'error', accounts: [], message: 'boom' }],
-  ['accounts 不是数组', { status: 'signed-in', accounts: 'oops' }],
-  ['credits 缺失', { status: 'signed-in', accounts: [{ id: 't', selected: true }] }],
-  ['credits 为坏值', { status: 'signed-in', accounts: [{ id: 't', selected: true }], credits: { generalAvailable: 'x' } }],
-  ['checkin 缺失', { status: 'signed-in', accounts: [{ id: 't', selected: true }], credits: {} }],
-  ['账号缺 accountName', { status: 'signed-in', accounts: [{ id: 't1' }], credits: {} }],
-  ['无 selected 账号', { status: 'signed-in', accounts: [{ id: 't1' }, { id: 't2' }], credits: {} }],
-]) {
-  let err = null;
-  try {
-    // 0=tab(accounts) · 2=左侧 status · 9=右侧 traeStatus
-    renderPage({ ...withData, 0: 'accounts', 9: traeStatus });
-  } catch (e) {
-    err = e;
-  }
-  ok(`Trae 列边界（${name}）不崩`, err === null, err?.message);
-}
-
-/**
- * 一侧数据坏掉时，另一列必须照常渲染出内容 —— 两列互不连坐。
- * 这是「合并到同一个 tab」最容易引入的回归：一个共用的取值就同时打穿两边。
- */
-{
   let text = '';
-  let err = null;
   try {
-    text = renderPage({ ...withData, 0: 'accounts', 2: { accounts: 'oops' }, 9: traeFixture });
+    text = renderPage({ ...withData, 0: 'pool-config', 2: { ...statusFixture, accounts: [acct] } });
   } catch (e) {
     err = e;
   }
-  ok('左列坏数据时右列仍渲染', err === null && text.includes('trae-user@example.com'), err?.message);
-
-  let text2 = '';
-  let err2 = null;
-  try {
-    text2 = renderPage({ ...withData, 0: 'accounts', 2: statusFixture, 9: { status: 'signed-in', accounts: 'oops' } });
-  } catch (e) {
-    err2 = e;
-  }
-  ok('右列坏数据时左列仍渲染', err2 === null && text2.includes('测试账号'), err2?.message);
+  ok(`WorkBuddy 账号边界（${name}）不崩`, err === null, err?.message);
+  // 卡片还在才算真的走到了那条渲染分支（空渲染也不会抛）。
+  ok(
+    `WorkBuddy 账号边界（${name}）仍渲染出账号区`,
+    err === null && (text.includes('a-id') || text.includes('a')),
+    text.slice(0, 160),
+  );
 }
 
+/**
+ * —— 5) Trae 账号区的边界值 ——
+ *
+ * 这一段原先测的是「账号」页中列（Trae）—— 它与 WorkBuddy 共用一棵渲染树，
+ * 一侧抛错会让整个设置面板白屏。那一页删除后，同一份 `/usage` 应答由
+ * **trae 配置页**消费，所以改成把坏数据喂给那一页的 fetch 桩：
+ * 「TraeConfigTab 拿到畸形 usage 会不会崩」这条守卫必须留着。
+ *
+ * 覆盖不到的原「两列互不连坐」那两条（左列坏右列仍在 / 右列坏左列仍在）随
+ * 账号页一起删掉了：现在两个池分处两个独立 tab，各自的渲染树不再共享，
+ * 「连坐」这个失败模式已经不存在。
+ */
+await (async () => {
+  const prevFetch = globalThis.fetch;
+  for (const [name, traeUsage] of [
+    // usage 为 null：页面停在加载态，不能崩
+    ['usage 为 null', null],
+    ['未登录', { status: 'signed-out', accounts: [] }],
+    ['error 状态', { status: 'error', accounts: [], message: 'boom' }],
+    ['accounts 不是数组', { status: 'signed-in', accounts: 'oops' }],
+    ['credits 缺失', { status: 'signed-in', accounts: [{ id: 't', selected: true }] }],
+    ['credits 为坏值', { status: 'signed-in', accounts: [{ id: 't', selected: true }], credits: { generalAvailable: 'x' } }],
+    ['checkin 缺失', { status: 'signed-in', accounts: [{ id: 't', selected: true }], credits: {} }],
+    ['账号缺 accountName', { status: 'signed-in', accounts: [{ id: 't1' }], credits: {} }],
+    ['无 selected 账号', { status: 'signed-in', accounts: [{ id: 't1' }, { id: 't2' }], credits: {} }],
+  ]) {
+    globalThis.fetch = (url) => {
+      const u = String(url);
+      if (u.includes('/plugins/dsh-connect-trae/usage')) {
+        // null 用「永不 resolve」表达「这一拍读不到」，与页面真实加载态一致
+        if (traeUsage === null) return new Promise(() => {});
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(traeUsage) });
+      }
+      return new Promise(() => {});
+    };
+    let err = null;
+    try {
+      const react = makeReact({ 0: 'trae-config' }, true);
+      const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      react.reset();
+      collectText(Page({}), []);
+    } catch (e) {
+      err = e;
+    }
+    ok(`Trae 账号区边界（${name}）不崩`, err === null, err?.message);
+  }
+  globalThis.fetch = prevFetch;
+})();
 //#region 输入框下方的「当前模型额度」胶囊
 //
 // 这个组件挂在 conversation.composer.dock（输入框正下方那一行），
@@ -4456,6 +4009,82 @@ function renderPill(provider, { modelDir, sessionId = 's1', preset = {}, runEffe
   collectText(node, out);
   return { node, text: out.join('') };
 }
+
+/**
+ * 在胶囊的树里找那个**触发按钮**。
+ *
+ * 根节点现在是一个 `span.wotr-credit-anchor`（为了把展开的卡片挂在它旁边），
+ * 触发按钮是它的第一个孩子 —— 所以「点一下」和「读 title」都要先走到按钮上，
+ * 不能再直接读根节点的 props。
+ */
+function pillTrigger(node) {
+  const wants = (child) =>
+    typeof child?.props?.className === 'string' &&
+    child.props.className.split(' ').includes('wotr-credit-pill');
+  if (wants(node)) return node;
+  for (const child of Array.isArray(node?.props?.children) ? node.props.children : []) {
+    if (wants(child)) return child;
+  }
+  return null;
+}
+
+/** 点一下胶囊（等价于真实点击触发按钮） */
+function clickPill(node) {
+  pillTrigger(node)?.props?.onClick?.();
+}
+
+/** 读胶囊触发按钮上的 title（说明「这个数字是谁的」） */
+function pillTitle(node) {
+  return String(pillTrigger(node)?.props?.title ?? '');
+}
+
+/** 按 class 找树里的第一个节点（找卡片用） */
+function findByClass(node, cls, depth = 0) {
+  if (node === null || node === undefined || depth > 30) return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findByClass(child, cls, depth + 1);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (typeof node !== 'object') return null;
+  const own = String(node?.props?.className ?? '');
+  if (own.split(' ').includes(cls)) return node;
+  return findByClass(node?.props?.children, cls, depth + 1);
+}
+
+/** 按 class 找树里所有节点（列账号行用） */
+function findAllByClass(node, cls, out = [], depth = 0) {
+  if (node === null || node === undefined || depth > 30) return out;
+  if (Array.isArray(node)) {
+    for (const child of node) findAllByClass(child, cls, out, depth + 1);
+    return out;
+  }
+  if (typeof node !== 'object') return out;
+  const own = String(node?.props?.className ?? '');
+  if (own.split(' ').includes(cls)) out.push(node);
+  findAllByClass(node?.props?.children, cls, out, depth + 1);
+  return out;
+}
+
+/**
+ * 胶囊的 hook 槽位（顺序必须与 console.mjs 里 ComposerCreditsPill 的
+ * useXxx 调用顺序一致）。单测靠 preset 直填槽位来模拟「effect 跑完」，
+ * 所以这里集中列出，改组件时只改一处。
+ */
+const PILL_SLOTS = {
+  current: 0, // useCurrentModel: useState(current)
+  currentEffect: 1, // useCurrentModel: useEffect
+  tick: 2, // useState(tick)
+  open: 3, // useState(open)
+  pos: 4, // useState(pos)
+  busyRow: 5, // useState(busyRow)
+  writeError: 6, // useState(writeError)
+  note: 7, // useState(note)
+  anchorRef: 8, // useRef(anchor)
+  panelRef: 9, // useRef(panel)
+};
 
 // 非本插件的 provider：必须不渲染任何东西
 for (const foreign of ['deepseek', 'deepseek-v4.1-flash', '', undefined]) {
@@ -4513,8 +4142,12 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
     modelDir: () => makeModelStore(provider).store,
     preset: { 0: { provider, model: 'some-model' } },
   });
-  const cls = String(node?.props?.className ?? '');
-  ok(`provider=${provider} 渲染胶囊`, cls.includes('wotr-credit-pill'), cls);
+  const anchor = String(node?.props?.className ?? '');
+  ok(
+    `provider=${provider} 渲染胶囊（锚点 + 触发按钮）`,
+    anchor.includes('wotr-credit-anchor') && pillTrigger(node) !== null,
+    anchor,
+  );
   const out = [];
   collectText(node, out);
   ok(`provider=${provider} 胶囊含「积分」字样`, out.join('').includes('积分'), out.join(''));
@@ -4548,7 +4181,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
     // 点击 = 清缓存 + 重新取，是真实用户能走的路径
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4561,7 +4194,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   ok('取到额度后显示被调用账号的数字', err === null && text.includes('66'), text);
   ok('胶囊上带出被调用账号的名字', text.includes('111'), text);
   ok('不再显示全池合计（那与被调用账号无关）', !text.includes('1,300') && !text.includes('1,234'), text);
-  const title = String(node?.props?.title ?? '');
+  const title = pillTitle(node);
   ok('title 说明这个数字是谁的', title.includes('111') && title.includes('66'), title);
   ok('title 里全池合计只作参考值', title.includes('1,300'), title);
   globalThis.fetch = prevFetch;
@@ -4581,7 +4214,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   let err = null;
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4615,7 +4248,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   let err = null;
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4646,7 +4279,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   let node = null;
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4683,7 +4316,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   let err = null;
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4695,7 +4328,52 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   const text = out.join('');
   ok('Trae 显示被调用账号的余额', err === null && text.includes('2,950') && text.includes('1412'), text);
   ok('Trae 不再显示区域合计', !text.includes('525'), text);
-  ok('Trae 的 title 仍带上区域合计作参考', String(node?.props?.title ?? '').includes('525'), String(node?.props?.title ?? ''));
+  ok('Trae 的 title 仍带上区域合计作参考', pillTitle(node).includes('525'), pillTitle(node));
+  globalThis.fetch = prevFetch;
+}
+
+// Trae：「剩余」取的是通用池余额，不是上游的发放总量
+//
+// 真机上 `credits.total` 是**发放量**（consumed + available），一个只剩 796 的
+// 账号 total 写着 3050。早先按 total 显示，胶囊与卡片都在报一个偏大的数字 ——
+// 用户会据此以为账号还很充裕。这里把口径钉住。
+{
+  const prevFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      status: 'signed-in',
+      accountId: 'acct-1',
+      pool: { distribution: 'priority' },
+      accounts: [
+        {
+          id: 'acct-1',
+          accountName: '1412',
+          selected: true,
+          credits: { total: 3050, consumed: 2253.12, available: 796.88, generalAvailable: 796.8844, workAvailable: 0 },
+        },
+      ],
+    }),
+  });
+  const store = makeModelStore('trae');
+  const react = makeReact({ 0: { provider: 'trae', model: 'm' } }, false);
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: {} }).ComposerCreditsPill;
+  let node = null;
+  let err = null;
+  try {
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+    clickPill(node);
+    await new Promise((r) => setTimeout(r, 0));
+    react.reset();
+    node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  const text = out.join('');
+  ok('Trae 显示通用池剩余 796.88（而不是发放总量）', err === null && text.includes('796.88'), err?.message ?? text);
+  ok('Trae 不把发放总量 3,050 当成余额显示', !text.includes('3,050'), text);
   globalThis.fetch = prevFetch;
 }
 
@@ -4722,7 +4400,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   let err = null;
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4732,7 +4410,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   const out = [];
   collectText(node, out);
   const text = out.join('');
-  ok('provider=qoder 渲染胶囊', err === null && String(node?.props?.className ?? '').includes('wotr-credit-pill'), err?.message);
+  ok('provider=qoder 渲染胶囊', err === null && pillTrigger(node) !== null, err?.message);
   ok('Qoder 显示被调用账号的余额', text.includes('420'), text);
   ok('Qoder 不显示全池合计', !text.includes('9,000') && !text.includes('9,420'), text);
   // 账号名是整条 UUID —— 必须缩短，否则会把 composer 那一行撑开。
@@ -4758,7 +4436,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   let err = null;
   try {
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
-    node?.props?.onClick?.();
+    clickPill(node);
     await new Promise((r) => setTimeout(r, 0));
     react.reset();
     node = Pill({ sessionId: 's1', resolveModelDirectory: () => store.store });
@@ -4768,11 +4446,426 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   const out = [];
   collectText(node, out);
   const text = out.join('');
-  const title = String(node?.props?.title ?? '');
+  const title = pillTitle(node);
   ok('Qoder 读不到余额时显示占位而不是 0', err === null && text.includes('积分 –') && !text.includes('积分 0'), text);
   ok('Qoder 把读失败原因写进 title', title.includes('401'), title);
   globalThis.fetch = prevFetch;
 }
+
+//#region 胶囊展开的账号卡片
+//
+// 卡片回答的是另一个问题：「这个平台的账号各剩多少、谁在轮换里、我想换成谁」。
+// 三条不能破的边界：
+//   1. 只列**当前这个平台**的账号（WorkBuddy 的卡片不许去打 Trae / Qoder 的接口）；
+//   2. WorkBuddy 与 Trae 各把国内版 + 国际版都列出来（同一个平台的两半，
+//      不是「所有平台的账号」）；
+//   3. 两个控件各自的写入路径必须是各平台**真正读**的那一份存储 ——
+//      WorkBuddy 走路由（它的 disabledAccountIds 是两个区域共用的扁平数组，
+//      客户端拼列表会抹掉另一个区域），Trae / Qoder 写设置且必须读旧值合并。
+
+/** 会真正落盘的作用域桩：`set` 改内存值，「读回确认」才通得过 */
+function makeLiveScope(initial) {
+  let value = initial ?? {};
+  const writes = [];
+  return {
+    writes,
+    read: () => value,
+    getSnapshot: () => ({ status: 'ready', value, writable: true }),
+    subscribe: () => () => {},
+    set: (field, next) => {
+      writes.push({ field, value: next });
+      value = { ...value, [field]: next };
+      return Promise.resolve(true);
+    },
+  };
+}
+
+/** 按 URL 分发的 fetch 桩：卡片一次会打两个区域的状态接口 */
+function routeFetch(routes, fallback = { ok: true, accounts: [] }) {
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    calls.push({ url: u, method: init?.method ?? 'GET', body: init?.body });
+    for (const [pattern, handler] of routes) {
+      if (u.includes(pattern)) {
+        return { ok: true, json: async () => (typeof handler === 'function' ? handler(u, init) : handler) };
+      }
+    }
+    return { ok: true, json: async () => fallback };
+  };
+  return calls;
+}
+
+/** 在卡片里按账号名找一行 */
+function findRow(node, name) {
+  const rows = findAllByClass(node, 'wotr-credit-row');
+  return (
+    rows.find((row) => {
+      const out = [];
+      collectText(findByClass(row, 'wotr-credit-row-name'), out);
+      return out.join('').includes(name);
+    }) ?? null
+  );
+}
+
+/** 卡片里的「刷新」按钮（页头那个 mini 按钮） */
+function cardRefresh(node) {
+  return (
+    findAllByClass(node, 'wotr-credit-mini').find((btn) => {
+      const out = [];
+      collectText(btn, out);
+      return out.join('').includes('刷新');
+    }) ?? null
+  );
+}
+
+/**
+ * 打开状态的胶囊渲染一次。
+ *
+ * 用 preset 直填 open / pos 槽位：本文件的 react 桩里 setState 不会触发重渲染，
+ * 所以「点开」这个状态只能靠预置槽位来表达（与既有用例同一套手法）。
+ */
+function renderOpenPill(provider, embedded, presetExtra = {}) {
+  const react = makeReact(
+    { 0: { provider, model: 'm' }, [PILL_SLOTS.open]: true, [PILL_SLOTS.pos]: { left: 8, top: 8 }, ...presetExtra },
+    false,
+  );
+  const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded }).ComposerCreditsPill;
+  const node = Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore(provider).store });
+  return { node, react, Pill };
+}
+
+console.log('\n胶囊展开的账号卡片\n');
+
+// A) WorkBuddy：一次点开要把两个区域都列出来，且**只**打这一家的接口
+{
+  const prevFetch = globalThis.fetch;
+  const calls = routeFetch([
+    [
+      'region=cn',
+      {
+        ok: true,
+        selectedAccountId: 'cn1',
+        activeAccountId: 'cn1',
+        accounts: [
+          { id: 'cn1', nickname: '国内号', credits: { total: 1200 }, creditReserve: 300 },
+          { id: 'cn2', nickname: '国内备用', credits: { total: 40 } },
+        ],
+      },
+    ],
+    [
+      'region=global',
+      {
+        ok: true,
+        activeAccountId: 'g1',
+        accounts: [{ id: 'g1', nickname: '国际号', credits: { total: 80 }, cooling: true }],
+      },
+    ],
+  ]);
+  let node = null;
+  let err = null;
+  try {
+    const first = renderOpenPill('workbuddy-xdpool', makeEmbedded());
+    node = first.node;
+    // 卡片自己的取数路径：点页头「刷新」（不依赖 effect，桩里 effect 默认不跑）
+    cardRefresh(node)?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  const text = out.join('');
+  ok('点开后不抛且渲染出卡片', err === null && findByClass(node, 'wotr-credit-card') !== null, err?.message);
+  ok(
+    'WorkBuddy 卡片把国内版与国际版都列出来',
+    text.includes('国内版') && text.includes('国际版'),
+    text,
+  );
+  ok(
+    '两个区域的账号都在卡片里（含各自积分）',
+    ['国内号', '1,200', '国内备用', '国际号', '80'].every((piece) => text.includes(piece)),
+    text,
+  );
+  ok(
+    '只列当前平台的账号：没有去打 Trae / Qoder 的接口',
+    !calls.some((c) => c.url.includes('/trae/') || c.url.includes('/qoder/')),
+    calls.map((c) => c.url).join(' '),
+  );
+  ok(
+    '两个区域的状态接口都被取过',
+    calls.some((c) => c.url.includes('region=cn')) && calls.some((c) => c.url.includes('region=global')),
+    calls.map((c) => c.url).join(' '),
+  );
+  const row = findRow(node, '国内号');
+  ok('每行都有一个开关 + 一个切换按钮', findByClass(row, 'wotr-credit-switch') !== null && findByClass(row, 'wotr-credit-mini') !== null, text);
+  ok(
+    '被固定的那一行标明「已固定」，并且按钮变成「取消固定」',
+    (() => {
+      const out2 = [];
+      collectText(row, out2);
+      return out2.join('').includes('已固定') && out2.join('').includes('取消固定');
+    })(),
+    text,
+  );
+  ok(
+    '冷却中 / 保留积分的行有对应标签',
+    text.includes('冷却中') && text.includes('保留 300'),
+    text,
+  );
+  ok('页脚说明取数时机（不轮询）', text.includes('打开卡片时取一次'), text);
+  globalThis.fetch = prevFetch;
+}
+
+// B) WorkBuddy 的开关：走路由（服务端按整份设置合并，跨区域安全）
+{
+  const prevFetch = globalThis.fetch;
+  const calls = routeFetch([
+    ['region=cn', { ok: true, selectedAccountId: 'cn1', activeAccountId: 'cn1', accounts: [{ id: 'cn1', nickname: '国内号', credits: { total: 1200 } }, { id: 'cn2', nickname: '国内备用', credits: { total: 40 } }] }],
+    ['region=global', { ok: true, activeAccountId: 'g1', accounts: [{ id: 'g1', nickname: '国际号', credits: { total: 80 } }] }],
+  ]);
+  let node = null;
+  let err = null;
+  try {
+    const first = renderOpenPill('workbuddy-xdpool', makeEmbedded());
+    node = first.node;
+    cardRefresh(node)?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
+    // 点「国内备用」那一行的开关
+    const row = findRow(node, '国内备用');
+    findByClass(row, 'wotr-credit-switch')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
+  } catch (e) {
+    err = e;
+  }
+  const write = calls.find((c) => c.url.includes('/accounts/disabled'));
+  ok(
+    'WorkBuddy 的开关走 /accounts/disabled（POST）',
+    err === null && write !== undefined && write.method === 'POST',
+    err?.message ?? calls.map((c) => `${c.method} ${c.url}`).join(' | '),
+  );
+  ok(
+    '请求体只带 accountId 与 disabled',
+    write !== undefined && JSON.parse(String(write.body))?.accountId === 'cn2' && JSON.parse(String(write.body))?.disabled === true,
+    String(write?.body),
+  );
+  const out = [];
+  collectText(node, out);
+  ok('停用之后卡片上那一行的开关变成关闭态', findByClass(findRow(node, '国内备用'), 'wotr-credit-switch')?.props?.['data-on'] === '0', out.join(''));
+  ok(
+    '写的是国内版那一行，国际版没被连带改动',
+    calls.filter((c) => c.url.includes('/accounts/disabled')).length === 1,
+    calls.map((c) => c.url).join(' '),
+  );
+  globalThis.fetch = prevFetch;
+}
+
+// C) WorkBuddy 的「切换到此账号」：走 /accounts/select?region=，已固定的那行是取消固定
+{
+  const prevFetch = globalThis.fetch;
+  const calls = routeFetch([
+    ['region=cn', { ok: true, selectedAccountId: 'cn1', activeAccountId: 'cn1', accounts: [{ id: 'cn1', nickname: '国内号', credits: { total: 1200 } }, { id: 'cn2', nickname: '国内备用', credits: { total: 40 } }] }],
+    ['region=global', { ok: true, activeAccountId: 'g1', accounts: [{ id: 'g1', nickname: '国际号', credits: { total: 80 } }] }],
+  ]);
+  let err = null;
+  try {
+    const first = renderOpenPill('workbuddy-xdpool', makeEmbedded());
+    let node = first.node;
+    cardRefresh(node)?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
+    // 切到「国内备用」
+    findByClass(findRow(node, '国内备用'), 'wotr-credit-mini')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
+    // 再点已成为「当前」的那一行 = 取消固定
+    findByClass(findRow(node, '国内备用'), 'wotr-credit-mini')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+  } catch (e) {
+    err = e;
+  }
+  const selects = calls.filter((c) => c.url.includes('/accounts/select'));
+  ok(
+    'WorkBuddy 的切换走 /accounts/select?region=cn（POST）',
+    err === null && selects.length === 2 && selects[0].method === 'POST' && selects[0].url.includes('region=cn'),
+    err?.message ?? selects.map((c) => `${c.method} ${c.url}`).join(' | '),
+  );
+  ok(
+    '先带 accountId，再点同一个是 null（取消固定、回到轮换）',
+    JSON.parse(String(selects[0]?.body))?.accountId === 'cn2' && JSON.parse(String(selects[1]?.body))?.accountId === null,
+    selects.map((c) => String(c.body)).join(' | '),
+  );
+  globalThis.fetch = prevFetch;
+}
+
+// D) Trae：两个区域都列出来；开关与切换都写设置（读旧值合并，不覆盖别人）
+{
+  const prevFetch = globalThis.fetch;
+  const scope = makeLiveScope({
+    regions: { cn: { enabled: true, disabledAccountIds: ['keep-me'] }, ai: { enabled: true } },
+    accounts: { cn: 'acct-1' },
+  });
+  routeFetch([
+    [
+      'region=cn',
+      {
+        pool: { lastServedId: 'acct-2', selectedAccountId: 'acct-1', accounts: [{ id: 'acct-1', label: '国内号', cooling: false }, { id: 'acct-2', label: '国内备用', disabled: false, creditReserve: 5 }] },
+        accounts: [
+          { id: 'acct-1', accountName: '国内号', credits: { total: 9000, consumed: 4500, generalAvailable: 4500 } },
+          { id: 'acct-2', accountName: '国内备用', credits: { generalAvailable: 20 } },
+        ],
+      },
+    ],
+    ['region=ai', { pool: { accounts: [{ id: 'ai-1', label: '国际号', disabled: true }] }, accounts: [{ id: 'ai-1', accountName: '国际号' }] }],
+  ]);
+  let node = null;
+  let err = null;
+  try {
+    const embedded = makeEmbedded({ traeSettings: makeHandle(scope) });
+    const first = renderOpenPill('trae', embedded);
+    node = first.node;
+    cardRefresh(node)?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('trae').store });
+    // 停用「国内备用」
+    findByClass(findRow(node, '国内备用'), 'wotr-credit-switch')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('trae').store });
+    // 切换「当前账号」到「国内备用」
+    findByClass(findRow(node, '国内备用'), 'wotr-credit-mini')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('trae').store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  const text = out.join('');
+  ok('Trae 卡片把国内版与国际版都列出来', err === null && text.includes('国内版') && text.includes('国际版'), err?.message ?? text);
+  ok('Trae 两边的账号都在（国际版没有余额接口 → 显示 –）', text.includes('国内号') && text.includes('4,500') && text.includes('国际号'), text);
+  ok('Trae 卡片行显示的也是通用池剩余，不是发放总量 9,000', !text.includes('9,000'), text);
+  const disabledWrite = scope.writes.find((w) => w.field === 'regions');
+  ok(
+    'Trae 的开关写 regions（不动 ai 那边的 enabled）',
+    disabledWrite?.value?.ai?.enabled === true,
+    JSON.stringify(disabledWrite?.value),
+  );
+  ok(
+    'Trae 的停用是**合并**：既有的 keep-me 没被抹掉，新 id 加进去了',
+    Array.isArray(disabledWrite?.value?.cn?.disabledAccountIds) &&
+      disabledWrite.value.cn.disabledAccountIds.includes('keep-me') &&
+      disabledWrite.value.cn.disabledAccountIds.includes('acct-2'),
+    JSON.stringify(disabledWrite?.value?.cn?.disabledAccountIds),
+  );
+  const accountsWrite = scope.writes.find((w) => w.field === 'accounts');
+  ok('Trae 的切换写 accounts.cn = acct-2', accountsWrite?.value?.cn === 'acct-2', JSON.stringify(accountsWrite?.value));
+  ok(
+    'Trae 已经是「当前账号」的那一行不再给切换按钮，别的那一行才有',
+    findByClass(findRow(node, '国内备用'), 'wotr-credit-mini') === null &&
+      findByClass(findRow(node, '国内号'), 'wotr-credit-mini') !== null,
+    text,
+  );
+  ok('国际版那一行标着「已停用」', (() => { const o = []; collectText(findRow(node, '国际号'), o); return o.join('').includes('已停用'); })(), text);
+  globalThis.fetch = prevFetch;
+}
+
+// E) Qoder：只有一个池，所以不分组；两个控件写各自字段且都做合并
+{
+  const prevFetch = globalThis.fetch;
+  const scope = makeLiveScope({ disabledAccountIds: ['other'], selectedAccountId: 'q1' });
+  routeFetch([
+    [
+      'qoder/pool',
+      {
+        ok: true,
+        selectedAccountId: 'q1',
+        serving: { accountId: 'q1', label: 'q1', credits: 420 },
+        accounts: [
+          { id: 'q1', label: '01a0aab2-5f31-4c8d-9e2a-7f0b1c2d3e4f', credits: 420 },
+          { id: 'q2', label: 'q2-account-label-here', credits: 9000, cooling: true },
+        ],
+      },
+    ],
+  ]);
+  let node = null;
+  let err = null;
+  try {
+    const embedded = makeEmbedded({ qoderSettings: makeHandle(scope) });
+    const first = renderOpenPill('qoder', embedded);
+    node = first.node;
+    cardRefresh(node)?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('qoder').store });
+    findByClass(findRow(node, 'q2-accou'), 'wotr-credit-switch')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    findByClass(findRow(node, 'q2-accou'), 'wotr-credit-mini')?.props?.onClick?.();
+    await new Promise((r) => setTimeout(r, 0));
+    first.react.reset();
+    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('qoder').store });
+  } catch (e) {
+    err = e;
+  }
+  const out = [];
+  collectText(node, out);
+  const text = out.join('');
+  ok('Qoder 卡片渲染且不出现区域分组标题', err === null && text.includes('Qoder · 2 个账号') && !text.includes('国内版'), err?.message ?? text);
+  const disabledWrite = scope.writes.find((w) => w.field === 'disabledAccountIds');
+  ok(
+    'Qoder 的停用写 disabledAccountIds 且保留 other',
+    Array.isArray(disabledWrite?.value) && disabledWrite.value.includes('other') && disabledWrite.value.includes('q2'),
+    JSON.stringify(disabledWrite?.value),
+  );
+  const selectWrite = scope.writes.find((w) => w.field === 'selectedAccountId');
+  ok('Qoder 的切换写 selectedAccountId = q2', selectWrite?.value === 'q2', JSON.stringify(selectWrite?.value));
+  ok(
+    'Qoder 已经是「当前账号」的那一行不再给切换按钮',
+    findByClass(findRow(node, 'q2-accou'), 'wotr-credit-mini') === null &&
+      findByClass(findRow(node, '01a0aab2'), 'wotr-credit-mini') !== null,
+    text,
+  );
+  ok('Qoder 长账号名被缩短（卡片不撑破）', text.includes('q2-accou…'), text);
+  globalThis.fetch = prevFetch;
+}
+
+// F) 打开卡片**不新增**任何定时器：上游按账号计费，卡片开着也不许轮询
+{
+  const prevFetch = globalThis.fetch;
+  const prevSetInterval = globalThis.setInterval;
+  const prevClearInterval = globalThis.clearInterval;
+  const timers = [];
+  globalThis.setInterval = (fn, ms) => {
+    timers.push({ fn, ms });
+    return timers.length;
+  };
+  globalThis.clearInterval = () => {};
+  globalThis.fetch = () => new Promise(() => {});
+  let err = null;
+  try {
+    const react = makeReact({ 0: { provider: 'workbuddy-xdpool', model: 'm' }, [PILL_SLOTS.open]: true }, true);
+    const Pill = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() }).ComposerCreditsPill;
+    Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
+    react.unmount();
+  } catch (e) {
+    err = e;
+  }
+  ok('打开卡片后仍然只注册了胶囊自己那一个 30 秒定时器', err === null && timers.length === 1 && timers[0].ms === 30000, `${timers.length} 个：${timers.map((t) => t.ms).join(',')}`);
+  globalThis.setInterval = prevSetInterval;
+  globalThis.clearInterval = prevClearInterval;
+  globalThis.fetch = prevFetch;
+}
+//#endregion
 
 // 点击不抛（强制刷新路径）
 {
@@ -4785,7 +4878,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   });
   let err = null;
   try {
-    node?.props?.onClick?.();
+    clickPill(node);
   } catch (e) {
     err = e;
   }
@@ -4968,7 +5061,7 @@ for (const provider of ['workbuddy-xdpool', 'workbuddy-xdpool-global', 'trae', '
   const creditsCalls = () => urls.filter((u) => u.includes('/qoder/credits/refresh')).length;
 
   // 进入 Qoder 标签页：hook 0 = tab
-  const react = makeReact({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'qoder' }, true);
+  const react = makeReact({ ...withData, 7: qoderFixture, 0: 'qoder' }, true);
   const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
   let err = null;
   try {

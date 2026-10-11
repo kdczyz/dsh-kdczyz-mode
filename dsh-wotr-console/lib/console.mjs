@@ -9,14 +9,16 @@
  *   本插件侧      /plugins/dsh-wotr-console/*       （lib/index.js 挂的只读接口）
  *   Trae 侧       /plugins/dsh-connect-trae/*       （lib/trae.js 挂的路由）
  *
- * 五个区域（第一个是**配置**，其余是**查看/配置**）：
- *   1. XD Pool        —— WorkBuddy 池配置（模型勾选 / 分配策略 / 积分自动化）
- *   2. Trae 配置      —— 供应商开关、账号绑定、模型勾选与测试（本文件自写）
- *   3. 账号           —— 三列同一套模块样式：WorkBuddy / Trae / Qoder
- *   4. 积分           —— 每个账号的额度总额与积分包明细
- *   5. 使用记录       —— 按天聚合的积分变化 + 明细表（来自 credit-store 的落盘数据）
+ * 三个区域（都是**配置**页；原先还有一个只读的「账号」页，已删除）：
+ *   1. workbuddy      —— WorkBuddy 池配置（模型勾选 / 分配策略 / 积分自动化）
+ *   2. trae           —— 供应商开关、账号绑定、模型勾选与测试（本文件自写）
+ *   3. qoder          —— Qoder 号池与模型勾选
  *
- * XD Pool 标签页同样**本包自写**（PoolConfigTab）：不再嵌入 vendored 的
+ * 三页的页头都是同一排：**「刷新账号」（重扫本机账号）+「添加账号」（浏览器登录）**，
+ * 措辞、顺序与禁用规则逐字一致 —— 三个供应商的账号管理因此收在各自的配置页里，
+ * 不再需要一个单独的「账号」查看页（那一页连同它的两列组件已删除）。
+ *
+ * workbuddy 标签页同样**本包自写**（PoolConfigTab）：不再嵌入 vendored 的
  * PoolCard，而是对齐 Trae 配置页这套模块样式直接实现区域切换 / 分配策略 /
  * 模型勾选 / 账号启停 / 保留积分 / 移出池子 / 签到 / 冷却重置 / 积分自动化
  * （CN only）。读写走 vendored 已有的路由与设置字段（`distribution` /
@@ -69,7 +71,19 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
    * 无从绑定。QoderModelsPanel 会把这种情况显示成诊断行。
    */
   const qoderSettings = embedded?.qoderSettings ?? null;
-
+  /**
+   * `react-dom` 的 `createPortal`（拿不到就是 null）。
+   *
+   * 输入框下面那张额度卡片要**贴到 body 上**才能不被裁掉：composer 那一行在
+   * 嵌入形态下外面有 `overflow:hidden` 的容器，行内浮层会被切。内置的
+   * ContextMeter 走的就是这条路（fixed + createPortal 到 body）。
+   *
+   * 由 client.js 从 `require('react-dom')` 取到后经 `embedded.createPortal`
+   * 传进来 —— 本文件是纯 ES 模块（单测里只有一个迷你 react 桩），不在这里
+   * import 任何宿主模块。拿不到就退回行内渲染（同样用 fixed 定位），
+   * 功能不受影响，只是嵌入形态下可能被裁。
+   */
+  const createPortal = typeof embedded?.createPortal === 'function' ? embedded.createPortal : null;
 
   /** vendored 账号池的路由前缀（同 vendor/xdpool/lib/index.js 的常量，刻意不改名） */
   const POOL_API = '/plugins/dsh-workbuddy-xdpool';
@@ -206,7 +220,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
 .wbc-spark-bar-on{opacity:.9}
 .wbc-embed{display:flex;flex-direction:column;gap:16px;min-width:0}
 .wbc-note[data-diagnostic="settings-scope"]{color:var(--dsw-alias-label-error,#e5484d)}
-/* —— Trae 配置标签页（TraeConfigTab，与账号页同一套模块样式）—— */
+/* —— Trae 配置标签页（TraeConfigTab，与 WorkBuddy 页同一套模块样式）—— */
 /* 模型行的勾选框等控件，宽度跟着内容走 */
 .wbc-check{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-primary)}
 .wbc-check input{accent-color:var(--dsw-alias-label-primary)}
@@ -241,11 +255,51 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
 .wbc-col-sub{font-size:11px;color:var(--dsw-alias-label-secondary)}
 /* 输入框下方「当前模型额度」小胶囊：与内置 stats 胶囊同高同色，融进那一行 */
 .wotr-credit-pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:10px;border:none;background:transparent;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:1;cursor:pointer;white-space:nowrap}
-.wotr-credit-pill:hover{background:var(--dsw-alias-bg-l2,rgba(127,127,127,.12))}
+.wotr-credit-pill:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12))}
 .wotr-credit-pill[data-busy="1"]{opacity:.6;cursor:progress}
+/* 展开态 = 内置按钮同款的 hover 底色（interactive-bg-hover 在 asar 里真有定义；
+   早先那句 bg-l2 全库检索不到，一直在吃兜底值） */
+.wotr-credit-pill[data-open="1"]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary)}
 .wotr-credit-pill[data-state="warn"]{color:var(--dsw-alias-label-warning,#d97706)}
 .wotr-credit-pill-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .wotr-credit-pill-num{font-variant-numeric:tabular-nums}
+/* —— 点击胶囊展开的「这个平台的全部账号」卡片 ——
+   胶囊本身是 composer 那一行里的 inline-flex，卡片**不能**用行内绝对定位：
+   composer 外面在嵌入形态下有「overflow:hidden」的容器（conversation 包的
+   _embeddedBody），行内浮层会被裁掉。所以卡片走「position:fixed + 端口到
+   body」，与内置的 ContextMeter 同一条路（它也是 fixed + createPortal(body)），
+   z-index 取同档 1100。坐标由组件量出来（见 placeCreditCard），不用 CSS 定位。 */
+.wotr-credit-anchor{position:relative;display:inline-flex;align-items:center}
+.wotr-credit-card{position:fixed;z-index:1100;box-sizing:border-box;width:min(340px,calc(100vw - 24px));max-height:min(60vh,480px);overflow:auto;padding:10px 12px;border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-2));border:.5px solid var(--dsw-alias-border-l1,var(--dsw-alias-border-l2));box-shadow:var(--dsw-elevation-prominent,0 10px 30px rgba(0,0,0,.3));color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.wotr-credit-card-head{display:flex;align-items:center;gap:8px}
+.wotr-credit-card-title{flex:1 1 auto;min-width:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wotr-credit-mini{flex:none;appearance:none;border:.5px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:6px;font-size:11px;line-height:1;padding:4px 8px;cursor:pointer;white-space:nowrap}
+.wotr-credit-mini:hover:enabled{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}
+.wotr-credit-mini:disabled{opacity:.5;cursor:default}
+.wotr-credit-region{margin-top:10px}
+.wotr-credit-region-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:2px}
+.wotr-credit-region-title{font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.wotr-credit-region-sub{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wotr-credit-row{margin-top:6px;padding:8px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;display:flex;flex-direction:column;gap:6px}
+.wotr-credit-row[data-off="1"]{opacity:.55}
+.wotr-credit-row[data-serving="1"]{border-color:var(--dsw-alias-label-primary)}
+.wotr-credit-row-top{display:flex;align-items:baseline;gap:8px;justify-content:space-between}
+.wotr-credit-row-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);font-weight:600}
+.wotr-credit-row-credits{flex:none;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.wotr-credit-row-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.wotr-credit-tags{display:flex;align-items:center;gap:4px;flex-wrap:wrap;min-width:0}
+/* 参与轮换的开关：本页自绘（不引 primitives 的 Switch），配色沿用本文件
+   既有的 token 组合 —— 开 = label-primary 底 + bg-layer-1 滑块，
+   与 .wbc-btn-primary 同一套对比关系，深浅色主题下都不会糊。 */
+.wotr-credit-switch{position:relative;flex:none;width:30px;height:16px;padding:0;border:none;border-radius:8px;background:var(--dsw-alias-bg-layer-3,rgba(127,127,127,.35));cursor:pointer;transition:background .12s ease-out}
+.wotr-credit-switch::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-label-secondary,#888);transition:transform .12s ease-out,background .12s ease-out}
+.wotr-credit-switch[data-on="1"]{background:var(--dsw-alias-label-primary,#4c8dff)}
+.wotr-credit-switch[data-on="1"]::after{transform:translateX(14px);background:var(--dsw-alias-bg-layer-1,#fff)}
+.wotr-credit-switch:disabled{opacity:.5;cursor:default}
+.wotr-credit-foot{margin-top:10px;padding-top:8px;border-top:.5px solid var(--dsw-alias-border-l2);font-size:11px;line-height:16px}
+.wotr-credit-note{margin-top:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary)}
+.wotr-credit-err{margin-top:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-error,#e5484d)}
+.wotr-credit-empty{margin-top:8px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 `;
 
   function ensureCss() {
@@ -567,7 +621,18 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
    * 状态由父级 WotrPage 进页即拉（`status` / `loading` / `error`），
    * 本组件只负责渲染与写入，写完一律 `onRefresh()` 读回确认。
    */
-  function PoolConfigTab({ wbSettings, region, onRegion, status, loading, error, onRefresh, onRescan }) {
+  function PoolConfigTab({
+    wbSettings,
+    region,
+    onRegion,
+    status,
+    loading,
+    error,
+    onRefresh,
+    onRescan,
+    onAddAccount,
+    login,
+  }) {
     const scopeObj = poolScopeOf(wbSettings);
     const writable = poolWritable(scopeObj);
 
@@ -649,14 +714,27 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       return run('distribution', () => writeField('distribution', next), '分配策略已保存');
     };
 
-    // —— 账号启停 ——
+    /**
+     * 账号启停 —— 必须走路由，不能直接写设置。
+     *
+     * `disabledAccountIds` 是国内版与国际版**共用**的一份扁平数组（两个 provider
+     * 注册的是同一个 `settingsNs` + `settingsPath: []`），而这一页只拿得到本区域的
+     * 账号列表。照本区域拼一份完整数组写回去，会把另一个区域里已停用的账号**静默
+     * 重新启用** —— 那份名单只存在于设置文档里，在这个页面上根本看不见，用户不会
+     * 发现自己刚「顺手修好」了另一个区域。
+     *
+     * 路由在服务端对「当前值」做合并（vendor/xdpool/lib/index.js:8120-8124），只动
+     * 传进去的那一个 id，所以跨区域安全；`pool.list()` 不带区域参数时返回两个区域
+     * 的全部账号，国际版的 id 也通得过 `known` 校验。
+     */
     const onToggleDisabled = (accountId, disabled) => {
       if (!writable) return;
-      const current = accounts.filter((a) => a.disabled === true).map((a) => a.id);
-      const next = disabled
-        ? [...new Set([...current, accountId])]
-        : current.filter((id) => id !== accountId);
-      return run(accountId, () => writeField('disabledAccountIds', next), disabled ? '已停用该账号' : '已重新启用该账号');
+      return run(accountId, () =>
+        fetchJson(`${POOL_API}/accounts/disabled`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId, disabled }),
+        }), disabled ? '已停用该账号' : '已重新启用该账号');
     };
 
     // —— 移出池子 / 恢复 ——
@@ -952,13 +1030,51 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
               // 三个配置页的页头按钮**文案固定**：状态变化交给「正在读取…」
               // 那条说明与禁用态表达，按钮自己不改字 —— 否则同一排按钮在
               // 三页里会分别变成「刷新中…/读取中…/登录中…」，看着像三件事。
-              label: '刷新',
+              label: '刷新账号',
               title: '重新扫描本机已登录的 WorkBuddy 账号，并重读账号池状态。',
               disabled: loading,
               onClick: typeof onRescan === 'function' ? onRescan : onRefresh,
             },
+            // 「添加账号」与另两个配置页同款（与 Qoder 页逐字一致）：
+            // WorkBuddy 的登录是在浏览器里完成的，服务端开系统浏览器、
+            // 前端只负责在没打开成功时补开并轮询回调。
+            ...(typeof onAddAccount === 'function'
+              ? [
+                  {
+                    label: '添加账号',
+                    title: '用浏览器登录一个新的 WorkBuddy 账号并入池。',
+                    disabled: login?.pending === true,
+                    onClick: onAddAccount,
+                  },
+                ]
+              : []),
           ],
         }),
+        // 登录进行中：告诉用户去浏览器完成，别以为卡住了。
+        login?.pending === true
+          ? jsxs('div', {
+              className: 'wbc-note',
+              children: [
+                jsx('div', { children: '已在浏览器打开登录页，请在里面完成登录后回到这里。' }),
+                login.opened === false
+                  ? jsxs('div', {
+                      children: [
+                        '浏览器没能自动打开，请手动访问：',
+                        jsx('a', {
+                          href: login.authUrl,
+                          target: '_blank',
+                          rel: 'noreferrer',
+                          children: login.authUrl,
+                        }),
+                      ],
+                    })
+                  : null,
+              ],
+            })
+          : null,
+        login?.error !== undefined && login?.error !== null
+          ? jsx('div', { className: 'wbc-err', children: `添加账号失败：${login.error}` })
+          : null,
         !writable
           ? jsx('div', {
               className: 'wbc-note',
@@ -997,7 +1113,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
           ? jsx(EmptyBox, {
               lines: [
                 '这边还没有检测到已登录的 WorkBuddy 账号。',
-                '请先在 WorkBuddy 桌面版里登录，再点上面的「刷新」。',
+                '请先在 WorkBuddy 桌面版里登录，再点上面的「刷新账号」；或用「添加账号」在浏览器里登录一个新账号。',
               ],
             })
           : null,
@@ -1428,7 +1544,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   /**
    * Trae 配置标签页 —— **本包自写**，替代上游 dsh-connect-trae 的浏览器卡片。
    *
-   * 结构与账号页中列同一套模块（列头 / 统计行 / 账号卡 / 空态都走共用组件），
+   * 与 WorkBuddy / Qoder 两页同一套模块（列头 / 统计行 / 账号卡 / 空态都走共用组件），
    * 外加一块模型勾选区。功能与上游卡片逐项对齐：
    *
    *   - 供应商开关（`regions.<region>.enabled`，opt-out，关掉后该区域的模型
@@ -1441,7 +1557,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
    * 所有设置写入都经 writeTraeField 读回确认；作用域缺失/只读时控件禁用并
    * 给出诊断行（与 PoolConfigTab 同款提示），**绝不静默回弹**。
    */
-  function TraeConfigTab({ scopeSlot }) {
+  function TraeConfigTab({ scopeSlot, onAddAccount, login, onRescan, reloadToken, rescanError }) {
     // scopeSlot 是 client.js 包好的 {get,subscribe} 活句柄；这里在渲染期直接
     // 读句柄当前值，设置写入后 loadUsage / 后续渲染自然取到新快照。
     const scope = typeof scopeSlot?.get === 'function' ? scopeSlot.get() : scopeSlot;
@@ -1495,7 +1611,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
 
     useEffect(() => {
       loadUsage(region);
-    }, [loadUsage, settingsRev]);
+    }, [loadUsage, settingsRev, reloadToken]);
 
     const savedModels = asArray(usage?.models);
     const savedEnabledIds = asArray(usage?.enabledModelIds);
@@ -1930,13 +2046,54 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
           ],
           actions: [
             {
-              label: '刷新',
-              title: '重读 Trae 账号、余额与号池状态。',
+              // 「刷新账号」= 重新扫本机 Trae 凭据（POST accounts/refresh）后再读回。
+              // 与 WorkBuddy / Qoder 两页同义：它们也都是「扫账号」而不只是刷读数
+              // —— 三页同一排按钮做同一件事，措辞与位置都对齐。
+              // 父级没给 `onRescan` 时退回只重读读数（本页独立渲染时的降级）。
+              label: '刷新账号',
+              title: '重新检测本机 Trae 账号，并重读余额与号池状态。',
               disabled: usageLoading,
-              onClick: () => loadUsage(),
+              // 把自己的区域交给父级：重扫要落在**当前正在看的这一边**。
+              onClick: typeof onRescan === 'function' ? () => onRescan(region) : () => loadUsage(),
             },
+            // 「添加账号」与另两个配置页同款（与 Qoder 页逐字一致）。
+            ...(typeof onAddAccount === 'function'
+              ? [
+                  {
+                    label: '添加账号',
+                    title: '用浏览器登录一个新的 Trae 账号并入池。',
+                    disabled: login?.pending === true,
+                    onClick: onAddAccount,
+                  },
+                ]
+              : []),
           ],
         }),
+        // 登录进行中：Trae 是官方授权页 + 自动回调，告诉用户去浏览器完成即可。
+        login?.pending === true
+          ? jsxs('div', {
+              className: 'wbc-note',
+              children: [
+                jsx('div', { children: '已在浏览器打开官方授权页，登录后自动回到这里。' }),
+                login.opened === false
+                  ? jsxs('div', {
+                      children: [
+                        '浏览器没能自动打开，请手动访问：',
+                        jsx('a', {
+                          href: login.authUrl,
+                          target: '_blank',
+                          rel: 'noreferrer',
+                          children: login.authUrl,
+                        }),
+                      ],
+                    })
+                  : null,
+              ],
+            })
+          : null,
+        login?.error !== undefined && login?.error !== null
+          ? jsx('div', { className: 'wbc-err', children: `添加账号失败：${login.error}` })
+          : null,
         regionOn === false
           ? jsx('div', {
               className: 'wbc-note',
@@ -1953,6 +2110,10 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
           : null,
         usageError !== null
           ? jsx('div', { className: 'wbc-err', children: `读取失败：${usageError}` })
+          : null,
+        // 「刷新账号」这一步自己的失败（重扫凭据目录），与读数失败分开说。
+        rescanError !== null && rescanError !== undefined
+          ? jsx('div', { className: 'wbc-err', children: `刷新账号失败：${rescanError}` })
           : null,
         writeError !== null
           ? jsx('div', { className: 'wbc-err', children: `保存失败：${writeError}` })
@@ -1980,7 +2141,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
           ? jsx(EmptyBox, {
               lines: [
                 `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
-                '请在 Trae 客户端里登录，或用「账号」页中列的「添加账号」在浏览器里登录。',
+                '请在 Trae 客户端里登录，或用本页页头的「添加账号」在浏览器里登录。',
               ],
             })
           : null,
@@ -2246,7 +2407,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
    * 卡片字段与操作按钮的位置也和 Trae 侧对不齐，并排一眼就能看出是两套东西。
    *
    * 这些组件刻意做成「无状态、只吃 props」：状态仍归 WotrPage 里各自那一份，
-   * 三列的独立性（见 AccountsTab 注释）不受影响。
+   * 两列的独立性不受影响（它们是两个各自独立的账号池）。
    */
 
   /** 列头：标题 + 区域切换 + 右侧操作按钮。三列共用。 */
@@ -3023,830 +3184,6 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   }
   //#endregion
 
-  //#region 账号页（左列：WorkBuddy）
-  /**
-   * 左列：WorkBuddy 账号。
-   *
-   * 只返回**列**（`wbc-col`），不套 `wbc-body` —— 外层由 AccountsTab 排成三列。
-   * 骨架与中列 Trae **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块），
-   * 只是数据字段与操作按钮的实际内容不同。
-   */
-  function WorkBuddyAccountsPanel({
-    region,
-    onRegion,
-    status,
-    loading,
-    error,
-    onRescan,
-    onCheckin,
-    busyId,
-    onAddAccount,
-    onSelect,
-    login,
-    distribution,
-    distributionBusy,
-    distributionError,
-    distributionWritable,
-    onDistribution,
-  }) {
-    const accounts = asArray(status?.accounts);
-    const cooling = accounts.filter((a) => a.cooling === true).length;
-    const usable = accounts.filter((a) => a.cooling !== true && a.disabled !== true).length;
-    const totalCredits = accounts.reduce(
-      (sum, a) => sum + (typeof a.credits?.total === 'number' ? a.credits.total : 0),
-      0,
-    );
-
-    return jsxs('div', {
-      className: 'wbc-col',
-      children: [
-        jsx(ColumnHead, {
-          title: 'WorkBuddy',
-          tabs: [
-            { id: 'cn', label: '国内版' },
-            { id: 'global', label: '国际版' },
-          ],
-          activeTab: region,
-          onTab: onRegion,
-          actions: [
-            { label: loading ? '检测中…' : '重新检测', disabled: loading, onClick: onRescan },
-            ...(typeof onAddAccount === 'function'
-              ? [
-                  {
-                    label: login?.pending === true ? '登录中…' : '添加账号',
-                    disabled: login?.pending === true,
-                    onClick: onAddAccount,
-                  },
-                ]
-              : []),
-          ],
-        }),
-        // 登录进行中的提示：告诉用户去浏览器完成，别以为卡住了
-        login?.pending === true
-          ? jsxs('div', {
-              className: 'wbc-note',
-              children: [
-                jsx('div', { children: '已在浏览器打开登录页，请在里面完成登录后回到这里。' }),
-                login.opened === false
-                  ? jsxs('div', {
-                      children: [
-                        '浏览器没能自动打开，请手动访问：',
-                        jsx('a', {
-                          href: login.authUrl,
-                          target: '_blank',
-                          rel: 'noreferrer',
-                          children: login.authUrl,
-                        }),
-                      ],
-                    })
-                  : null,
-              ],
-            })
-          : null,
-        error !== null
-          ? jsx('div', { className: 'wbc-err', children: `读取失败：${error}` })
-          : null,
-        login?.error !== undefined && login?.error !== null
-          ? jsx('div', { className: 'wbc-err', children: `添加账号失败：${login.error}` })
-          : null,
-        status === null && loading
-          ? jsx('div', { className: 'wbc-note', children: '正在读取 WorkBuddy 账号…' })
-          : null,
-        status === null
-          ? null
-          : jsx(StatsRow, {
-              items: [
-                { label: '账号', value: fmtNum(accounts.length), sub: '个已登录' },
-                { label: '正常', value: fmtNum(usable), sub: '可轮换' },
-                { label: '冷却中', value: fmtNum(cooling), sub: '被限流' },
-                { label: '总积分', value: fmtNum(totalCredits), sub: '合计' },
-              ],
-            }),
-        // 分配策略切换（与配置页、Qoder 列同一套 wbc-bar 排布）。
-        //
-        // 只在池里有账号时显示：没有账号可分配时切换策略是个空操作，
-        // 摆在那里只会让人以为它坏了。
-        accounts.length > 0
-          ? jsxs('div', {
-              className: 'wbc-bar',
-              children: [
-                jsx('span', { className: 'wbc-col-title', children: '账号使用方式' }),
-                jsx('div', { className: 'wbc-spacer' }),
-                ...POOL_DISTRIBUTIONS.map((d) =>
-                  jsx(
-                    'button',
-                    {
-                      type: 'button',
-                      className:
-                        d.id === (distribution ?? 'priority') ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                      disabled: distributionBusy === true || distributionWritable === false,
-                      title: d.hint,
-                      onClick: () => onDistribution(d.id),
-                      children: d.label,
-                    },
-                    d.id,
-                  ),
-                ),
-              ],
-            })
-          : null,
-        // 作用域不可写时**主动**说明，而不是等用户点了才报错：一个按下去
-        // 什么都不发生的按钮，和「保存成功但值弹回去」一样难排查。
-        accounts.length > 0 && distributionWritable === false
-          ? jsx('div', { className: 'wbc-err', children: '设置作用域不可写，无法保存分配策略' })
-          : null,
-        // 必须说清作用范围：这一列的列头有「国内版 / 国际版」切换，而
-        // WorkBuddy 的分配策略是**池级单键**（applyConfigFromSource 只写一次
-        // 顶层 distribution，region 仅在取用时过滤账号）。不写这句，用户会
-        // 合理地以为策略跟着上面的区域走 —— 那是个查不出来的错误预期。
-        accounts.length > 0
-          ? jsx('div', {
-              className: 'wbc-col-sub',
-              children: '整个池共用一套策略，不随上面的区域切换。',
-            })
-          : null,
-        distributionError !== undefined && distributionError !== null
-          ? jsx('div', { className: 'wbc-err', children: `分配策略保存失败：${distributionError}` })
-          : null,
-        accounts.length === 0
-          ? jsx(EmptyBox, {
-              lines: [
-                '这边还没有检测到已登录的 WorkBuddy 账号。',
-                '可以点上面的「添加账号」在浏览器里登录一个，也可以先在 WorkBuddy 桌面版里登录再点「重新检测」。',
-              ],
-            })
-          : jsx('div', {
-              className: 'wbc-cards',
-              children: accounts.map((a) => {
-                // 「当前账号」= 本区域请求固定使用的那个（`selectedAccountId`
-                // 由宿主的池状态返回）。它是**按区域**的：切到国际版 tab 时
-                // 看到的是国际版自己的选中项。
-                //
-                // 没有固定项时退到 `activeAccountId`（上次真的服务过请求的那个）
-                // —— 与「XD Pool」配置页同一条判据，两处的标签与压暗规则才会
-                // 一致。两个都拿不到就**不压暗任何卡**：「不知道是谁」不等于
-                // 「都不是它」。
-                const selectedId =
-                  typeof status?.selectedAccountId === 'string' ? status.selectedAccountId : '';
-                const activeId =
-                  typeof status?.activeAccountId === 'string' ? status.activeAccountId : '';
-                /** 被用户**固定**的那个（按钮显示「取消固定」） */
-                const isSelected = selectedId !== '' && a.id === selectedId;
-                /** 实际在服务的那个：固定项优先，否则是上次真的服务过请求的 */
-                const currentId = selectedId !== '' ? selectedId : activeId;
-                const isCurrent = currentId !== '' && a.id === currentId;
-                return jsx(
-                  AccountCard,
-                  {
-                    name: a.nickname || a.label || a.id,
-                    dim:
-                      a.cooling === true ||
-                      a.disabled === true ||
-                      (currentId !== '' && isCurrent !== true),
-                    tags: [
-                      isCurrent
-                        ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
-                        : { text: '备用', cls: 'wbc-tag' },
-                      a.cooling ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' } : null,
-                      a.disabled ? { text: '已停用', cls: 'wbc-tag' } : null,
-                    ],
-                    rows: [
-                      { k: '额度', v: fmtNum(a.credits?.total) },
-                      {
-                        k: '签到',
-                        v:
-                          a.checkin === undefined
-                            ? a.checkinError
-                              ? '不可用'
-                              : '–'
-                            : a.checkin.todayCheckedIn
-                              ? `今日已签 · 连签 ${a.checkin.streakDays ?? 0} 天`
-                              : `未签到 · 连签 ${a.checkin.streakDays ?? 0} 天`,
-                      },
-                      a.expiresAt
-                        ? { k: '令牌到期', v: fmtTime(Date.parse(a.expiresAt)) }
-                        : null,
-                    ],
-                    action: {
-                      label: busyId === a.id ? '签到中…' : '签到领取',
-                      disabled: busyId === a.id || a.cooling === true,
-                      onClick: () => onCheckin(a.id),
-                    },
-                    // 切换「当前账号」：请求固定用它；再次点击 = 取消固定，
-                    // 回到号池轮换。排布与 Qoder / Trae 三列保持一致。
-                    extra: [
-                      jsxs(
-                        'div',
-                        {
-                          className: 'wbc-bar',
-                          children: [
-                            jsx('div', { className: 'wbc-spacer' }),
-                            jsx('button', {
-                              type: 'button',
-                              className: isSelected ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                              disabled: typeof onSelect !== 'function' || busyId === a.id,
-                              onClick: () => onSelect(isSelected ? null : a.id),
-                              children: isSelected ? '取消固定' : '设为当前',
-                            }),
-                          ],
-                        },
-                        'select',
-                      ),
-                    ],
-                  },
-                  a.id,
-                  );
-              }),
-            }),
-      ],
-    });
-  }
-  //#endregion
-
-  //#region 积分页
-  /**
-   * 积分页：三家池各自的「账号 → 余额」快照。
-   *
-   * ## 为什么不能只显示一个「当前总积分」
-   *
-   * WorkBuddy 与 Trae 都是**多账号池**，而每一轮请求只落在其中一个账号上。
-   * 于是「所有账号之和」是个谁也对不上的数字：池子里 3 个账号各 1000 分，
-   * 合计 3000 看着很宽裕，但这一轮真正在扣的那个可能只剩 20。
-   *
-   * 所以每家都按「**被调用的账号**（高亮）+ 池里其它账号」两个层次显示：先答
-   * 「这次扣的是谁、还剩多少」，再给全池合计当参考。判据由各自的池提供
-   * （WorkBuddy `activeAccountId`、Trae `pool.lastServedId`、Qoder `serving`），
-   * 与本插件额度胶囊用的是同一套口径。
-   */
-  function CreditsTab({ status, summary, loading, traeStatus, qoderStatus }) {
-    const accounts = asArray(status?.accounts);
-    const rows = asArray(summary?.accounts);
-    // WorkBuddy：`activeAccountId` 就是「最近服务的账号」（vendored 池用
-    // lastServedId 兜底），没有它时才退回「固定选中的那个」。
-    const wbServing = pickServingAccount(accounts, {
-      lastServedId: status?.activeAccountId,
-      selectedAccountId: status?.selectedAccountId,
-    });
-    const wbServingCredits = accountCreditsOf(wbServing);
-    const liveTotal = accounts.reduce(
-      (sum, a) => sum + (typeof a.credits?.total === 'number' ? a.credits.total : 0),
-      0,
-    );
-
-    /**
-     * 一家的卡片组：被调用的账号排最前，并高亮。
-     *
-     * `extraOf` 用来给某个账号补一段专属内容（WorkBuddy 的积分包明细就走它）——
-     * 三家的卡片结构因此只有一份实现，不会出现「WorkBuddy 加了字段、另外两家
-     * 忘了加」这类不一致。
-     */
-    const renderGroup = (title, note, list, servingId, keyOf, extraOf) =>
-      jsxs('div', {
-        className: 'wbc-col',
-        children: [
-          jsx('div', { className: 'wbc-col-title', children: title }),
-          note === null || note === undefined ? null : jsx('div', { className: 'wbc-note', children: note }),
-          asArray(list).length === 0
-            ? jsx('div', { className: 'wbc-note', children: '暂无账号数据。' })
-            : jsx('div', {
-                className: 'wbc-cards',
-                children: asArray(list)
-                  // 被调用的账号排最前：它是这张页面上唯一「正在花钱」的账号。
-                  .slice()
-                  .sort((a, b) => (keyOf(a) === servingId ? -1 : 0) - (keyOf(b) === servingId ? -1 : 0))
-                  .map((a) =>
-                    jsxs(
-                      'div',
-                      {
-                        className: 'wbc-card',
-                        children: [
-                          jsxs('div', {
-                            className: 'wbc-card-head',
-                            children: [
-                              jsx('span', {
-                                className: 'wbc-name',
-                                // Trae 的账号行只有 `accountName`（没有 nickname/label），
-                                // 漏掉它整张卡的名字就变成一串裸 id。
-                                children: a.nickname || a.label || a.name || a.accountName || a.id,
-                              }),
-                              keyOf(a) === servingId
-                                ? jsx('span', { className: 'wbc-tag wbc-tag-on', children: '本次调用' })
-                                : null,
-                            ],
-                          }),
-                          jsxs('div', {
-                            className: 'wbc-kv',
-                            children: [
-                              jsx('span', { className: 'wbc-k', children: '余额' }),
-                              jsx('span', {
-                                className: 'wbc-v',
-                                // 读不到就给「–」：显示成 0 会让人以为账号空了。
-                                children: fmtCreditOrDash(accountCreditsOf(a)),
-                              }),
-                            ],
-                          }),
-                          ...(typeof extraOf === 'function' ? asArray(extraOf(a)).filter((x) => x !== null) : []),
-                          a.creditsError ? jsx('div', { className: 'wbc-err', children: a.creditsError }) : null,
-                        ],
-                      },
-                      String(a.id),
-                    ),
-                  ),
-              }),
-        ],
-      });
-
-    /**
-     * WorkBuddy 的积分包明细。
-     *
-     * 另外两家没有这个结构（Trae 只有总额、Qoder 只有三池合计），所以它挂在
-     * WorkBuddy 这一组的 `extraOf` 上；**没有明细时不再补一句「无积分包明细」**——
-     * 每个账号下面都挂一行「无…」只是噪声，卡片上「余额」那行已经说明了问题。
-     */
-    const wbPackagesOf = (a) => {
-      const packs = asArray(a.credits?.packages).filter((p) => (p.size ?? 0) > 0);
-      if (packs.length === 0) return [];
-      return [
-        jsx('div', {
-          className: 'wbc-packs',
-          children: packs.slice(0, 6).map((p, i) =>
-            jsxs(
-              'div',
-              {
-                className: 'wbc-pack',
-                children: [
-                  jsx('span', { className: 'wbc-pack-name', children: p.packageName ?? '–' }),
-                  jsx('span', {
-                    className: 'wbc-pack-val',
-                    children: `${fmtNum(p.remain)} / ${fmtNum(p.size)}`,
-                  }),
-                ],
-              },
-              `${p.packageName ?? 'p'}-${i}`,
-            ),
-          ),
-        }),
-      ];
-    };
-
-    const traeAccounts = asArray(traeStatus?.accounts);
-    const qoderAccounts = asArray(qoderStatus?.accounts);
-    const qoderServing = qoderStatus?.serving ?? null;
-
-    return jsxs('div', {
-      className: 'wbc-body',
-      children: [
-        jsxs('div', {
-          className: 'wbc-cards',
-          children: [
-            jsxs('div', {
-              className: 'wbc-sum',
-              children: [
-                jsx('div', { className: 'wbc-sum-label', children: '本次调用账号的额度' }),
-                jsx('div', {
-                  className: 'wbc-sum-value',
-                  children: fmtCreditOrDash(wbServingCredits),
-                }),
-                jsx('div', {
-                  className: 'wbc-sum-sub',
-                  children: `${wbServing?.nickname || wbServing?.label || '账号未知'} · WorkBuddy 本区域`,
-                }),
-              ],
-            }),
-            jsxs('div', {
-              className: 'wbc-sum',
-              children: [
-                jsx('div', { className: 'wbc-sum-label', children: '当前总积分' }),
-                jsx('div', { className: 'wbc-sum-value', children: fmtNum(liveTotal) }),
-                jsx('div', { className: 'wbc-sum-sub', children: `${accounts.length} 个账号（本区域合计）` }),
-              ],
-            }),
-            jsxs('div', {
-              className: 'wbc-sum',
-              children: [
-                jsx('div', { className: 'wbc-sum-label', children: '采样记录' }),
-                jsx('div', { className: 'wbc-sum-value', children: fmtNum(summary?.totalSamples ?? 0) }),
-                jsx('div', { className: 'wbc-sum-sub', children: '条积分快照' }),
-              ],
-            }),
-            jsxs('div', {
-              className: 'wbc-sum',
-              children: [
-                jsx('div', { className: 'wbc-sum-label', children: '历史跨度' }),
-                jsx('div', {
-                  className: 'wbc-sum-value',
-                  children: loading ? '…' : `${summary?.dailyTrend?.length ?? 0} 天`,
-                }),
-                jsx('div', { className: 'wbc-sum-sub', children: '按天统计' }),
-              ],
-            }),
-          ],
-        }),
-        renderGroup(
-          'WorkBuddy 账号',
-          '「本次调用」是最近真正服务了请求的账号；每个账号下面是它的积分包明细。',
-          accounts,
-          wbServing?.id,
-          (a) => a.id,
-          wbPackagesOf,
-        ),
-        renderGroup(
-          'Trae 账号（当前区域）',
-          'Trae 的余额按区域分开统计，这里显示当前选中区域的账号；切区域请到「Trae 配置」页。',
-          traeAccounts,
-          pickServingAccount(traeAccounts, {
-            lastServedId: traeStatus?.pool?.lastServedId,
-            selectedAccountId: traeStatus?.pool?.selectedAccountId,
-          })?.id,
-          (a) => a.id,
-        ),
-        renderGroup(
-          'Qoder 账号',
-          '「本次调用」是最近真正服务了请求的 Qoder 账号；轮换模式下每轮可能不同。',
-          qoderAccounts,
-          typeof qoderServing?.accountId === 'string' ? qoderServing.accountId : undefined,
-          (a) => a.id,
-        ),
-        rows.length === 0
-          ? null
-          : jsx('div', {
-              className: 'wbc-note',
-              children: `历史采样覆盖 ${rows.length} 个账号（含历史记录里的账号）。`,
-            }),
-      ],
-    });
-  }
-  //#endregion
-
-  //#region 使用记录页
-  function HistoryTab({ summary, loading }) {
-    const trend = asArray(summary?.dailyTrend);
-    const rows = asArray(summary?.accounts);
-    const maxAbs = trend.reduce((m, d) => Math.max(m, Math.abs(d.delta)), 0) || 1;
-
-    return jsxs('div', {
-      className: 'wbc-body',
-      children: [
-        jsxs('div', {
-          className: 'wbc-head',
-          children: [
-            jsx('div', { className: 'wbc-title', children: '每日净变化' }),
-            jsx('div', {
-              className: 'wbc-desc',
-              children: '同一天内最后观测值减去最初观测值；正数是当天入账，负数是当天消耗。',
-            }),
-          ],
-        }),
-        trend.length === 0
-          ? jsx('div', {
-              className: 'wbc-empty',
-              children: loading ? '正在读取…' : '还没有采样记录。打开本页时会自动采集一次当前额度。',
-            })
-          : jsxs('div', {
-              className: 'wbc-table-wrap',
-              children: [
-                jsxs('div', { className: 'wbc-spark', style: { padding: '12px' } ,
-                  children: trend.slice(-40).map((d, i) =>
-                    jsx('div', {
-                      className: 'wbc-spark-bar wbc-spark-bar-on',
-                      style: { height: `${Math.max(2, (Math.abs(d.delta) / maxAbs) * 36)}px` },
-                      title: `${d.day}: ${d.delta >= 0 ? '+' : ''}${d.delta}`,
-                    }, `${d.day}-${i}`),
-                  ),
-                }),
-                jsxs('table', {
-                  className: 'wbc-table',
-                  children: [
-                    jsx('thead', {
-                      children: jsxs('tr', {
-                        children: [
-                          jsx('th', { children: '日期' }),
-                          jsx('th', { className: 'wbc-num', children: '净变化' }),
-                        ],
-                      }),
-                    }),
-                    jsx('tbody', {
-                      children: trend
-                        .slice()
-                        .reverse()
-                        .map((d) =>
-                          jsxs(
-                            'tr',
-                            {
-                              children: [
-                                jsx('td', { children: d.day }),
-                                jsx('td', {
-                                  className: d.delta > 0 ? 'wbc-num wbc-pos' : d.delta < 0 ? 'wbc-num wbc-neg' : 'wbc-num',
-                                  children: `${d.delta >= 0 ? '+' : ''}${fmtNum(d.delta)}`,
-                                }),
-                              ],
-                            },
-                            d.day,
-                          ),
-                        ),
-                    }),
-                  ],
-                }),
-              ],
-            }),
-        jsxs('div', {
-          className: 'wbc-head',
-          children: [
-            jsx('div', { className: 'wbc-title', children: '账号明细' }),
-            jsx('div', {
-              className: 'wbc-desc',
-              children: '首次观测与最新观测的对比。',
-            }),
-          ],
-        }),
-        rows.length === 0
-          ? jsx('div', { className: 'wbc-empty', children: '暂无记录。' })
-          : jsx('div', {
-              className: 'wbc-table-wrap',
-              children: jsxs('table', {
-                className: 'wbc-table',
-                children: [
-                  jsx('thead', {
-                    children: jsxs('tr', {
-                      children: [
-                        jsx('th', { children: '账号' }),
-                        jsx('th', { className: 'wbc-num', children: '首次' }),
-                        jsx('th', { className: 'wbc-num', children: '最新' }),
-                        jsx('th', { className: 'wbc-num', children: '变化' }),
-                        jsx('th', { children: '最近观测' }),
-                      ],
-                    }),
-                  }),
-                  jsx('tbody', {
-                    children: rows.map((r) =>
-                      jsxs(
-                        'tr',
-                        {
-                          children: [
-                            jsx('td', { children: r.nickname || r.uid }),
-                            jsx('td', { className: 'wbc-num', children: fmtNum(r.firstCredit) }),
-                            jsx('td', { className: 'wbc-num', children: fmtNum(r.credit) }),
-                            jsx('td', {
-                              className: r.delta > 0 ? 'wbc-num wbc-pos' : r.delta < 0 ? 'wbc-num wbc-neg' : 'wbc-num',
-                              children: `${r.delta >= 0 ? '+' : ''}${fmtNum(r.delta)}`,
-                            }),
-                            jsx('td', { title: fmtTime(r.lastTs), children: fmtRelative(r.lastTs) }),
-                          ],
-                        },
-                        r.uid,
-                      ),
-                    ),
-                  }),
-                ],
-              }),
-            }),
-      ],
-    });
-  }
-  //#endregion
-
-  //#region 账号页（中列：Trae）
-  /**
-   * 中列：Trae 账号。
-   *
-   * 骨架与左列 WorkBuddy **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块）；
-   * 卡片底部的按钮只出现在**当前绑定**的那张卡上 —— 签到路由是按区域结算当前账号的
-   * （`POST /checkin?region=…`），没有「给任意账号签到」的接口，所以不给备用账号
-   * 摆一个按不动的按钮。
-   *
-   * 数据来自 lib/trae.js 已有的三条路由（合并前就存在，路径未改）：
-   *   GET  /plugins/dsh-connect-trae/usage?region=cn|ai
-   *        区域文档：status(signed-in/signed-out)、accounts[]、credits、checkin
-   *   POST /plugins/dsh-connect-trae/accounts/refresh?region=…
-   *        重新扫描本机 Trae 登录
-   *   POST /plugins/dsh-connect-trae/checkin?region=…
-   *        对当前绑定账号领取每日签到
-   *
-   * 只读为主：账号绑定与模型勾选在 Trae 配置标签页里改，本列不重复那套控件。
-   * 切换区域时**两个区域各拉一次**也很贵（credits 是实时计费调用），
-   * 所以只在真正切到某个区域时才拉它。
-   */
-  function TraeAccountsPanel({
-    region,
-    onRegion,
-    status,
-    credits,
-    loading,
-    error,
-    onRescan,
-    onCheckin,
-    busy,
-    onAddAccount,
-    login,
-    distribution,
-    distributionBusy,
-    distributionError,
-    distributionWritable,
-    onDistribution,
-  }) {
-    const accounts = asArray(status?.accounts);
-    const selected = accounts.find((a) => a.selected === true) ?? null;
-    const current = status?.accountName ?? selected?.accountName ?? null;
-    const signedIn = status?.status === 'signed-in';
-
-    return jsxs('div', {
-      className: 'wbc-col',
-      children: [
-        jsx(ColumnHead, {
-          title: 'Trae',
-          tabs: TRAE_REGIONS,
-          activeTab: region,
-          onTab: onRegion,
-          actions: [
-            { label: loading ? '检测中…' : '重新检测', disabled: loading, onClick: onRescan },
-            ...(typeof onAddAccount === 'function'
-              ? [
-                  {
-                    label: login?.pending === true ? '登录中…' : '添加账号',
-                    disabled: login?.pending === true,
-                    onClick: onAddAccount,
-                  },
-                ]
-              : []),
-          ],
-        }),
-        login?.pending === true
-          ? jsxs('div', {
-              className: 'wbc-note',
-              children: [
-                jsx('div', { children: '已在浏览器打开官方授权页，登录后自动回到这里。' }),
-                login.opened === false
-                  ? jsxs('div', {
-                      children: [
-                        '浏览器没能自动打开，请手动访问：',
-                        jsx('a', { href: login.authUrl, target: '_blank', rel: 'noreferrer', children: login.authUrl }),
-                      ],
-                    })
-                  : null,
-              ],
-            })
-          : null,
-        error !== null
-          ? jsx('div', { className: 'wbc-err', children: `读取失败：${error}` })
-          : null,
-        login?.error !== undefined && login?.error !== null
-          ? jsx('div', { className: 'wbc-err', children: `添加账号失败：${login.error}` })
-          : null,
-        status === null && loading
-          ? jsx('div', { className: 'wbc-note', children: '正在读取 Trae 账号…' })
-          : null,
-        status !== null && !signedIn
-          ? jsx(EmptyBox, {
-              lines: [
-                `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
-                '请在 Trae 客户端里登录，然后点上面的「重新检测」。',
-                status?.message !== void 0 ? `（${String(status.message)}）` : null,
-              ],
-            })
-          : null,
-        signedIn
-          ? jsx(StatsRow, {
-              items: [
-                { label: '当前账号', value: current ?? '–', sub: `已检测到 ${accounts.length} 个登录`, small: true },
-                { label: '通用余额', value: fmtNum(credits?.generalAvailable), sub: 'general' },
-                { label: '工作余额', value: fmtNum(credits?.workAvailable), sub: 'work' },
-                {
-                  label: '签到',
-                  value:
-                    status.checkin?.checkedIn === true
-                      ? '今日已签到'
-                      : status.checkin?.enabled === false
-                        ? '无签到活动'
-                        : '可签到',
-                  sub: status.checkin?.credits !== void 0 ? `+${fmtNum(status.checkin.credits)} 积分` : null,
-                  small: true,
-                },
-              ],
-            })
-          : null,
-        // 分配策略切换（与配置页、Qoder 列同一套 wbc-bar 排布）。
-        // Trae 的 distribution 存在 `regions.<region>.distribution` 里，
-        // 所以这里显示/写入的都是**当前区域**那一份，切区域会跟着换。
-        accounts.length > 0
-          ? jsxs('div', {
-              className: 'wbc-bar',
-              children: [
-                jsx('span', { className: 'wbc-col-title', children: '账号使用方式' }),
-                jsx('div', { className: 'wbc-spacer' }),
-                ...POOL_DISTRIBUTIONS.map((d) =>
-                  jsx(
-                    'button',
-                    {
-                      type: 'button',
-                      className:
-                        d.id === (distribution ?? 'priority') ? 'wbc-btn wbc-btn-primary' : 'wbc-btn',
-                      disabled: distributionBusy === true || distributionWritable === false,
-                      title: d.hint,
-                      onClick: () => onDistribution(d.id),
-                      children: d.label,
-                    },
-                    d.id,
-                  ),
-                ),
-              ],
-            })
-          : null,
-        // 同左列：不可写时主动说明，别给一个按不动的假控件。
-        accounts.length > 0 && distributionWritable === false
-          ? jsx('div', { className: 'wbc-err', children: '设置作用域不可写，无法保存分配策略' })
-          : null,
-        // 与左列相反：Trae 这份策略是**按区域**存的，说清楚免得用户以为
-        // 改了国内版国际版也一起变。
-        accounts.length > 0
-          ? jsx('div', {
-              className: 'wbc-col-sub',
-              children: '只作用于当前区域，国内版与国际版各自保存。',
-            })
-          : null,
-        distributionError !== undefined && distributionError !== null
-          ? jsx('div', { className: 'wbc-err', children: `分配策略保存失败：${distributionError}` })
-          : null,
-        status !== null && status.creditsError !== void 0
-          ? jsx('div', { className: 'wbc-err', children: `余额读取失败：${status.creditsError}` })
-          : null,
-        accounts.length > 0
-          ? jsx('div', {
-              className: 'wbc-cards',
-              children: accounts.map((a) => {
-                /**
-                 * 每张卡显示**它自己**的余额。
-                 *
-                 * `/usage` 现在逐账号附上 `credits`（见 lib/trae.js 的
-                 * `traeWebUsage`：每个账号用一个一次性客户端读一次，不改选中账号），
-                 * 所以备用账号也能显示额度，不必先切过去。当前绑定账号在没有
-                 * 逐账号额度时（旧缓存文档 / 国际版没有这套接口）回退到顶层
-                 * `credits`；都读不到就交给 `fmtNum` 显示 –，不编造数字。
-                 */
-                const own = a.credits ?? (a.selected === true ? credits : void 0);
-                return jsx(
-                  AccountCard,
-                  {
-                    name: a.accountName ?? a.id ?? '(未命名)',
-                    dim: a.selected !== true,
-                    tags: [
-                      a.selected === true
-                        ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
-                        : { text: '备用', cls: 'wbc-tag' },
-                      a.edition !== void 0 ? { text: String(a.edition), cls: 'wbc-tag' } : null,
-                    ],
-                    // 与左列 WorkBuddy 同款字段：额度 / 可用 / 令牌到期 / 区域。
-                    rows: [
-                      { k: '额度', v: fmtNum(own?.total) },
-                      { k: '可用', v: fmtNum(own?.available) },
-                      a.tokenExpiresAtMs !== void 0
-                        ? { k: '令牌到期', v: fmtTime(a.tokenExpiresAtMs) }
-                        : null,
-                      { k: '区域', v: a.region === 'ai' ? '国际版' : '国内版' },
-                    ],
-                    // 只有当前绑定账号能签到（路由按区域结算当前账号）
-                    action:
-                      a.selected === true && signedIn
-                        ? {
-                            label: busy ? '签到中…' : '签到',
-                            disabled: loading || busy,
-                            onClick: onCheckin,
-                          }
-                        : null,
-                  },
-                  String(a.id ?? a.accountName),
-                );
-              }),
-            })
-          : null,
-      ],
-    });
-  }
-  //#endregion
-
-  //#region 账号页（三列）
-  /**
-   * 「账号」页：三列，同一套模块样式。
-   *
-   * 三列而不是两列，是因为 Qoder 也是一个**账号池** —— 把它藏在独立标签页里
-   * 会让「账号都在哪」这件事分成两处看。三列共用 `wbc-cols` 的
-   * `auto-fit minmax(300px,1fr)` 网格，窄屏自动折行，不需要额外的响应式分支。
-   *
-   * Qoder 列直接复用 `QoderPoolPanel` 本体（它自己就是 `wbc-col`），
-   * 而不是另写一个精简版：两处显示**必须**完全一致，否则「账号页看到的余额」
-   * 与「独立页看到的余额」会出现两套口径。
-   */
-  function AccountsTab({ wb, trae, qoder }) {
-    return jsx('div', {
-      className: 'wbc-cols',
-      children: [
-        jsx(WorkBuddyAccountsPanel, wb),
-        jsx(TraeAccountsPanel, trae),
-        jsx(QoderPoolPanel, qoder),
-      ],
-    });
-  }
-  //#endregion
-
   //#region Qoder 号池页
   /**
    * Qoder CN 号池面板。
@@ -3864,10 +3201,11 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
      * 平铺模式：根节点不再自带 `wbc-col`（12px 间距），而是 `display:contents`
      * 让各分区直接成为页面 `wbc-body` 的 flex 子项。
      *
-     * 为什么需要：本面板在「Qoder 配置」页是**整页内容**，在「账号」页是其中
-     * 一列。作为整页内容时它必须与 WorkBuddy / Trae 两个配置页同距（16px）——
-     * 套一层 `wbc-col` 会让 Qoder 页的分区间距变成 12px，三个页面对比着看
-     * 就是「这一页挤一点」。
+     * 为什么需要：本面板在「qoder」页是**整页内容**，必须与 WorkBuddy / Trae
+     * 两个配置页同距（16px）—— 套一层 `wbc-col` 会让 Qoder 页的分区间距变成
+     * 12px，三个页面对比着看就是「这一页挤一点」。
+     * （面板原先还挂在「账号」页第三列，那时才需要非平铺的 `wbc-col` 形态；
+     * 那一页已删除，`flat` 现在恒为真，保留这个开关是为了不改变组件的既有契约。）
      */
     flat,
     status,
@@ -4299,6 +3637,56 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   };
 
   /**
+   * 「一个平台」= 哪些区域。
+   *
+   * 胶囊上那个数字（以及它的 title）永远只讲**当前 provider 的那一个区域**：
+   * provider id 是五个、区域也是五个，两者一一对应。
+   *
+   * 但用户嘴里的「这个平台的账号」不是五个、是**三个** —— WorkBuddy 的国内版
+   * 与国际版是两个独立的池（两套凭据、两份停用名单、两个 settings 槽），
+   * 在设置页里也各占一个区域标签；用户看它们是「同一个平台的两种版本」。
+   * 所以点开胶囊时，卡片列的是**这个平台的全部区域**，并在行上标出区域，
+   * 而不是只列当前 provider 那一个池 —— 否则「WorkBuddy 的账号」在切到国际版
+   * 模型时会突然少一半，看起来像账号丢了。
+   *
+   * ⚠️ 这里列的是**同一个平台的账号**，不是「所有平台的账号」：Trae 的账号不会
+   * 出现在 WorkBuddy 的卡片里。跨平台汇总需要同时打三家的接口，成本与误操作
+   * 风险都高得多，而且与「这次调用扣了谁」无关。
+   */
+  const CREDIT_FAMILIES = {
+    wb: {
+      label: 'WorkBuddy',
+      regions: [
+        { id: 'cn', label: '国内版' },
+        { id: 'global', label: '国际版' },
+      ],
+    },
+    trae: {
+      label: 'Trae',
+      regions: [
+        { id: 'cn', label: '国内版' },
+        { id: 'ai', label: '国际版' },
+      ],
+    },
+    // Qoder 只有一个池，区域标签留空（卡片不画区域分组标题）
+    qoder: { label: 'Qoder', regions: [{ id: '', label: '' }] },
+  };
+
+  /** 区域 → 该区域的 provider id（点「刷新」时要顺带刷胶囊那个数字） */
+  function creditProviderOf(family, region) {
+    for (const [provider, src] of Object.entries(CREDIT_SOURCES)) {
+      if (src.kind === family && src.region === region) return provider;
+    }
+    return undefined;
+  }
+
+  /** 区域的中文标签（取不到时回落到区域 id） */
+  function creditRegionLabel(family, region) {
+    const found = asArray(CREDIT_FAMILIES[family]?.regions).find((r) => r.id === region);
+    return found?.label ?? region;
+  }
+
+  /**
    * 自动刷新间隔：**30 秒**，与上游自己刷同一个接口的节奏一致。
    *
    * `vendor/xdpool/lib/client.js` 的 `POLL_INTERVAL_MS = 3e4` —— 那张卡片就是
@@ -4342,6 +3730,19 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   /** 数字（可能为 undefined）→ 展示串；读不到时给「–」而不是 0。 */
   function fmtCreditOrDash(value) {
     return typeof value === 'number' && Number.isFinite(value) ? fmtNum(value) : '–';
+  }
+
+  /**
+   * 只要时分秒的时钟串（卡片页脚「数据取自 …」用）。
+   *
+   * 不用 fmtTime：那个带年月日，在浮层里一行放不下，而卡片上的数据只可能是
+   * 刚刚取的（最老也就几十秒），带上日期反而更难读。
+   */
+  function fmtClockTime(ts) {
+    if (typeof ts !== 'number' || ts <= 0) return '';
+    const d = new Date(ts);
+    const p = (x) => String(x).padStart(2, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
   /**
@@ -4477,15 +3878,26 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   /**
    * 从一个账号行里取出「这个账号还剩多少」。
    *
-   * 三种池的字段名不同（WorkBuddy `credits.total`、Trae `credits.total` /
-   * `credits.available`、Qoder 直接是数字），这里统一成一个数字或 undefined。
+   * 三种池的字段名不同，**而且同一个名字在三家不是一个意思**，所以顺序按平台定
+   * （`family` 为 undefined 时按 WorkBuddy 那套老顺序，兼容既有调用点）：
+   *   - WorkBuddy：`credits.total` 就是各家权益包剩余之和（上游 `fetchCredits`
+   *     算好的），它的 credits 对象里根本没有 `available` 这个键；
+   *   - Trae：`credits.total` 是**发放总量**，`available = total - consumed` 才是
+   *     剩余；而对话请求真正扣的是**通用池** `generalAvailable` —— 与 Trae 配置页
+   *     「通用余额」同一口径。早先按 `total` 显示，于是「剩余 3,050」的账号其实
+   *     只剩 796（3050 是发放量），用户按这个数字去删账号是会被误导的；
+   *   - Qoder：直接是数字，上面第一个分支就返回了。
    * **拿不到就返回 undefined**，不要回退成 0：把「读不到」显示成「没有余额」
    * 会让人去删一个本来健康的账号。
    */
-  function accountCreditsOf(row) {
+  function accountCreditsOf(row, family) {
     const c = row?.credits;
     if (typeof c === 'number' && Number.isFinite(c)) return c;
-    for (const key of ['total', 'available', 'generalAvailable']) {
+    const keys =
+      family === 'trae'
+        ? ['generalAvailable', 'available', 'total']
+        : ['total', 'available', 'generalAvailable'];
+    for (const key of keys) {
       const v = c?.[key];
       if (typeof v === 'number' && Number.isFinite(v)) return v;
     }
@@ -4535,23 +3947,23 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
    *     「这个池总共还有多少」，与「这一轮扣了谁」是两个问题，所以不能抢
    *     胶囊上那个数字的位置。
    */
-  function summarizeServingCredits(accounts, hints = {}) {
+  function summarizeServingCredits(accounts, hints = {}, family) {
     const rows = asArray(accounts).filter((a) => a !== null && typeof a === 'object');
     const account = pickServingAccount(rows, hints);
     let fullTotal;
     for (const row of rows) {
-      const v = accountCreditsOf(row);
+      const v = accountCreditsOf(row, family);
       if (typeof v === 'number') fullTotal = (fullTotal ?? 0) + v;
     }
     return {
-      total: account === undefined ? undefined : accountCreditsOf(account),
+      total: account === undefined ? undefined : accountCreditsOf(account, family),
       account:
         account === undefined
           ? undefined
           : {
               id: account.id,
               name: shortAccountName(account.nickname ?? account.label ?? account.name ?? ''),
-              credits: accountCreditsOf(account),
+              credits: accountCreditsOf(account, family),
             },
       accounts: rows.length,
       fullTotal,
@@ -4570,11 +3982,15 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       // WorkBuddy 的 `/status` 已经明确给出「最近服务的账号」：`activeAccountId`
       // 由 vendored 池的 `lastServedId()` 兜底（`selectedAccountId` 为 null 时
       // 它就是上次真正跑过请求的那个），所以这里直接用，不再自己猜。
-      return summarizeServingCredits(data?.accounts, {
-        accountId: undefined,
-        lastServedId: data?.activeAccountId,
-        selectedAccountId: data?.selectedAccountId,
-      });
+      return summarizeServingCredits(
+        data?.accounts,
+        {
+          accountId: undefined,
+          lastServedId: data?.activeAccountId,
+          selectedAccountId: data?.selectedAccountId,
+        },
+        'wb',
+      );
     }
     if (source.kind === 'qoder') {
       const data = await fetchJson(`${SELF_API}/qoder/pool`);
@@ -4617,10 +4033,20 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     // Trae 同口径：`pool.lastServedId` 是「刚服务过请求的账号」，`credits` 是
     // 逐账号的余额快照。区域级的 `data.credits`（generalAvailable + workAvailable）
     // 是**整片区域**的合计，与被调用的账号不是一回事 —— 只留作 title 里的参考。
-    const summary = summarizeServingCredits(data?.accounts, {
-      lastServedId: data?.pool?.lastServedId,
-      selectedAccountId: data?.pool?.selectedAccountId ?? data?.selectedAccountId,
-    });
+    // 与卡片同一套「当前账号」判据（见 traeCreditRows），免得两处显示不一致。
+    const summary = summarizeServingCredits(
+      data?.accounts,
+      {
+        lastServedId: data?.pool?.lastServedId,
+        selectedAccountId: firstIdOf(
+          data?.pool?.selectedAccountId,
+          data?.selectedAccountId,
+          data?.accountId,
+          asArray(data?.accounts).find((a) => a?.selected === true)?.id,
+        ),
+      },
+      'trae',
+    );
     summary.fullTotal =
       typeof data?.credits?.generalAvailable === 'number'
         ? data.credits.generalAvailable +
@@ -4672,6 +4098,389 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     return rec;
   }
 
+  //#region 卡片数据层：整个平台的账号行
+  //
+  // 胶囊上那颗数字只回答「这一轮扣了谁、还剩多少」。点开之后要回答的是另一个
+  // 问题：「这个平台的账号各剩多少、谁在轮换里、我想换成谁」—— 所以要按
+  // **平台**取数（WorkBuddy / Trae 各两个区域，Qoder 一个池），而不是按 provider。
+  //
+  // 成本：WorkBuddy 的 `/status` 与 Trae 的 `/usage` 都会对池里**每个账号**
+  // 发起一次真实的上游计费查询，所以这份缓存比胶囊那份更保守：
+  //   - 只在「打开卡片（且已过期）」「点刷新」「写完一处改动」时取；
+  //   - **不挂任何定时器** —— 卡片开着也不会自己反复打上游；
+  //   - 与胶囊共用 30 秒新鲜窗口与「在途即新鲜」判定（isCreditFresh）。
+
+  /** 平台 → 账号行缓存（key 是平台，不是 provider） */
+  const creditRowsCache = new Map();
+
+  function readCreditRowsCache(family) {
+    return creditRowsCache.get(family);
+  }
+
+  /** 取第一个非空字符串（各家的「当前账号」字段名与层级都不一样） */
+  function firstIdOf(...values) {
+    for (const value of values) {
+      if (typeof value === 'string' && value !== '') return value;
+    }
+    return '';
+  }
+
+  /**
+   * 一行账号的统一形状。
+   *
+   * 三家的字段名差得很远（WorkBuddy 用 `nickname`、Trae 用 `accountName`、
+   * Qoder 用 `label`），卡片只认这一份。
+   *
+   * `pinned` 与 `serving` 是**两个不同的问题**，绝不合成一个：
+   *   - `pinned`  —— 用户显式固定的那一个（`selectedAccountIds` /
+   *                  `accounts.<region>` / `selectedAccountId`）；
+   *   - `serving` —— 这一轮**真的**扣了谁（`lastServedId` / `activeAccountId` /
+   *                  `/qoder/pool` 的 `serving`）。
+   * 固定住的那个也可能因为限流、冷却、余额不足被让位。两个都显示出来，
+   * 用户才不会把「我选的」和「实际用的」混成一个问题。
+   */
+  function creditRowOf(family, region, raw) {
+    const id = typeof raw?.id === 'string' ? raw.id : '';
+    const name = typeof raw?.name === 'string' ? raw.name.trim() : '';
+    return {
+      // key 带上区域：同一份凭据可能在国内/国际各登录一次，id 未必唯一
+      key: `${family}:${region}:${id}`,
+      family,
+      region,
+      regionLabel: creditRegionLabel(family, region),
+      id,
+      name: shortAccountName(name) || name || id,
+      fullName: name || id,
+      credits:
+        typeof raw?.credits === 'number' && Number.isFinite(raw.credits) ? raw.credits : undefined,
+      disabled: raw?.disabled === true,
+      cooling: raw?.cooling === true,
+      expired: raw?.expired === true,
+      pinned: raw?.pinned === true,
+      serving: raw?.serving === true,
+      reserve: typeof raw?.reserve === 'number' && raw.reserve > 0 ? raw.reserve : 0,
+      error: typeof raw?.error === 'string' ? raw.error : '',
+    };
+  }
+
+  /** WorkBuddy 的 `/status`（一个区域一个池）→ 行 */
+  function wbCreditRows(data, region) {
+    const pinned = firstIdOf(data?.selectedAccountId);
+    const serving = firstIdOf(data?.activeAccountId);
+    return asArray(data?.accounts)
+      .filter((a) => a !== null && typeof a === 'object')
+      .map((a) =>
+        creditRowOf('wb', region, {
+          id: a.id,
+          name: a.nickname ?? a.label ?? '',
+          credits: accountCreditsOf(a),
+          disabled: a.disabled,
+          cooling: a.cooling,
+          pinned: pinned !== '' && a.id === pinned,
+          serving: serving !== '' && a.id === serving,
+          reserve: a.creditReserve,
+          error: a.creditsError,
+        }),
+      );
+  }
+
+  /**
+   * Trae 的 `/usage`（一个区域一个池）→ 行。
+   *
+   * 两份数组要**按 id 合并**：顶层 `accounts` 带的是刚逐账号读到的余额明细
+   * （`creditsOfAccount`；国际版没有这套接口，读出来是 undefined），
+   * `pool.accounts` 带的是池的运行态（停用 / 冷却 / 保留 / 记账余额）。
+   * 只读其中一份都会缺东西 —— 余额与停用状态恰好分在两边。
+   */
+  function traeCreditRows(data, region) {
+    const poolRows = asArray(data?.pool?.accounts).filter((a) => a !== null && typeof a === 'object');
+    const topRows = asArray(data?.accounts).filter((a) => a !== null && typeof a === 'object');
+    const topById = new Map();
+    for (const a of topRows) if (typeof a.id === 'string') topById.set(a.id, a);
+    const poolById = new Map();
+    for (const a of poolRows) if (typeof a.id === 'string') poolById.set(a.id, a);
+
+    // 「当前账号」在 Trae 的 /usage 里有四个来源，按可信度回退：pool 段（有就用）、
+    // 顶层 selectedAccountId（老形状）、顶层 accountId（当前绑定的那个 —— 真机上
+    // 只有它和逐账号的 selected 标记存在），最后才是逐账号的 selected。
+    const pinned = firstIdOf(
+      data?.pool?.selectedAccountId,
+      data?.account?.accountId,
+      data?.selectedAccountId,
+      data?.accountId,
+      topRows.find((a) => a.selected === true)?.id,
+    );
+    const serving = firstIdOf(data?.pool?.lastServedId);
+
+    const ids = [];
+    for (const a of [...poolRows, ...topRows]) {
+      if (typeof a.id === 'string' && a.id !== '' && !ids.includes(a.id)) ids.push(a.id);
+    }
+    return ids.map((id) => {
+      const poolRow = poolById.get(id);
+      const topRow = topById.get(id);
+      // 顶层那份是刚读的，池里那份是记账值 —— 有新的就用新的，读不到才回退
+      const fresh = accountCreditsOf(topRow, 'trae');
+      return creditRowOf('trae', region, {
+        id,
+        name: topRow?.accountName ?? topRow?.label ?? poolRow?.label ?? '',
+        credits: fresh === undefined ? accountCreditsOf(poolRow, 'trae') : fresh,
+        disabled: poolRow?.disabled,
+        cooling: poolRow?.cooling,
+        pinned: id === pinned,
+        serving: id === serving,
+        reserve: poolRow?.creditReserve,
+        error: '',
+      });
+    });
+  }
+
+  /** Qoder 的 `/qoder/pool`（只有一个池）→ 行 */
+  function qoderCreditRows(data) {
+    const serving = data?.serving;
+    const servingId = firstIdOf(serving?.accountId);
+    const pinned = firstIdOf(data?.selectedAccountId, data?.effectiveSelectedAccountId);
+    return asArray(data?.accounts)
+      .filter((a) => a !== null && typeof a === 'object')
+      .map((a) => {
+        const isServing = typeof a.id === 'string' && a.id !== '' && a.id === servingId;
+        return creditRowOf('qoder', '', {
+          id: a.id,
+          name: a.label ?? '',
+          // 被调用的那一个用 `serving.credits`：那是这一次真去读的结果；
+          // `accounts[].credits` 是宿主缓存（3 分钟窗口），可能已经是旧值。
+          credits: isServing
+            ? (accountCreditsOf(serving, 'qoder') ?? accountCreditsOf(a, 'qoder'))
+            : accountCreditsOf(a, 'qoder'),
+          disabled: a.disabled,
+          cooling: a.cooling,
+          expired: a.expired,
+          pinned: typeof a.id === 'string' && a.id !== '' && a.id === pinned,
+          serving: isServing,
+          reserve: a.creditReserve,
+          error: isServing ? serving?.error : '',
+        });
+      });
+  }
+
+  /** 取一个区域的行（一个池一次状态读取；Qoder 忽略 region） */
+  async function fetchRowsOfRegion(family, region) {
+    if (family === 'wb') {
+      return wbCreditRows(await fetchJson(`${POOL_API}/status?region=${region}`), region);
+    }
+    if (family === 'qoder') return qoderCreditRows(await fetchJson(`${SELF_API}/qoder/pool`));
+    return traeCreditRows(await fetchJson(`${TRAE_API}/usage?region=${region}`), region);
+  }
+
+  /**
+   * 取「这个平台的全部账号」。
+   *
+   * 两个区域并行取，各自失败互不连累：一边的登录过期不该让另一边的行凭空消失
+   * （那看起来像账号丢了）。失败原因按区域收进 `regionErrors`，由卡片如实显示。
+   */
+  async function fetchRowsOfFamily(family) {
+    const regions = asArray(CREDIT_FAMILIES[family]?.regions);
+    const settled = await Promise.all(
+      regions.map(async ({ id }) => {
+        try {
+          return { region: id, rows: await fetchRowsOfRegion(family, id) };
+        } catch (e) {
+          return { region: id, rows: [], error: e?.message ?? String(e) };
+        }
+      }),
+    );
+    const rows = [];
+    const regionErrors = {};
+    for (const entry of settled) {
+      for (const row of asArray(entry.rows)) rows.push(row);
+      if (typeof entry.error === 'string' && entry.error !== '') {
+        regionErrors[entry.region] = entry.error;
+      }
+    }
+    return { rows, regionErrors };
+  }
+
+  /**
+   * 取（或复用）平台账号行。`force` 用于点「刷新」与写完之后的确认。
+   *
+   * 与 requestCredits 同一套规矩：在途复用、新鲜窗口内直接返回、失败保留上一次
+   * 的行（并挂上错误），**绝不抛** —— 卡片是 composer 旁边的浮层，抛错会连累
+   * 输入框那一行。
+   */
+  function requestCreditRows(family, force = false) {
+    const existing = creditRowsCache.get(family);
+    if (existing?.pending !== undefined) return existing;
+    if (existing !== undefined && !force && isCreditFresh(existing)) return existing;
+    const rec = {
+      atMs: existing?.atMs ?? 0,
+      pending: undefined,
+      rows: existing?.rows ?? [],
+      regionErrors: existing?.regionErrors ?? {},
+      error: undefined,
+    };
+    rec.pending = fetchRowsOfFamily(family)
+      .then((r) => {
+        rec.rows = r.rows;
+        rec.regionErrors = r.regionErrors;
+        rec.error = undefined;
+      })
+      .catch((e) => {
+        rec.error = e?.message ?? String(e);
+      })
+      .finally(() => {
+        rec.pending = undefined;
+        rec.atMs = Date.now();
+      });
+    creditRowsCache.set(family, rec);
+    return rec;
+  }
+
+  /**
+   * 就地改缓存里的行（写完之后的即时反馈）。
+   *
+   * 刻意**不**为了这一次改动再打一遍状态接口 —— 那个接口每个账号都会触发一次
+   * 计费调用。写路径本身已经做过读回确认（见 setAccountDisabledRemote /
+   * selectAccountRemote），所以就地改动是有依据的；下一次打开卡片或点「刷新」
+   * 会用真实快照把它对齐。
+   */
+  function patchCreditRows(family, match, patch) {
+    const rec = creditRowsCache.get(family);
+    if (rec === undefined) return;
+    rec.rows = asArray(rec.rows).map((row) => {
+      if (!match(row)) return row;
+      const next = typeof patch === 'function' ? patch(row) : patch;
+      return next === undefined || next === null ? row : { ...row, ...next };
+    });
+  }
+
+  /** 停用名单的加减：**只动这一个 id**，其余原样带过 */
+  function mergeDisabledIds(ids, accountId, disabled) {
+    const current = asArray(ids).filter((id) => typeof id === 'string' && id !== '');
+    return disabled
+      ? [...new Set([...current, accountId])]
+      : current.filter((id) => id !== accountId);
+  }
+
+  /** 两份停用名单是否等价（读回确认用；顺序无关） */
+  function sameIdSet(a, b) {
+    const left = asArray(a).filter((id) => typeof id === 'string' && id !== '');
+    const right = asArray(b).filter((id) => typeof id === 'string' && id !== '');
+    if (left.length !== right.length) return false;
+    const set = new Set(left);
+    return right.every((id) => set.has(id));
+  }
+
+  /** 该平台设置作用域（拿不到就是 null，调用方按只读处理） */
+  function creditScopeOf(family) {
+    return poolScopeOf(family === 'qoder' ? qoderSettings : traeSettings);
+  }
+
+  /**
+   * 让一个账号参与 / 退出轮换 —— 三家写法不同，语义是同一条。
+   *
+   * WorkBuddy：走路由 `POST /accounts/disabled`。**不要**在这里自己拼
+   * `disabledAccountIds` 写设置：国内版与国际版共用**同一份**设置文档
+   * （两个 provider 用同一个 settingsNs、`settingsPath: []`），只按当前区域的
+   * 行拼出来的列表会把另一个区域的停用项整段抹掉。路由在服务端按整份设置合并
+   * （`setAccountDisabled` 读 `current().disabledAccountIds` 再加减一个 id）。
+   *
+   * Trae / Qoder：没有可用的写路由（Trae 的 `/pool/account` 只改进程内的池，
+   * 下一次设置同步就被覆盖回去），所以写设置字段 —— 但**从当前设置文档里读旧值
+   * 再合并**，而不是从行里拼。
+   */
+  async function setAccountDisabledRemote(family, region, accountId, disabled) {
+    if (typeof accountId !== 'string' || accountId === '') throw new Error('缺少账号 id');
+    const want = disabled === true;
+    if (family === 'wb') {
+      await fetchJson(`${POOL_API}/accounts/disabled`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId, disabled: want }),
+      });
+      return;
+    }
+    const scope = creditScopeOf(family);
+    const who = family === 'qoder' ? 'qoder' : 'trae';
+    if (scope === undefined || scope === null) {
+      throw new Error(`${who}: 拿不到设置作用域，无法保存（配置页同一处也只读）`);
+    }
+    if (!poolWritable(scope)) throw new Error(`${who}: 设置当前不可写`);
+    if (family === 'qoder') {
+      const currentIds = asArray(unwrapVolatileDeep(scope.getSnapshot?.().value)?.disabledAccountIds);
+      const next = mergeDisabledIds(currentIds, accountId, want);
+      await writeSettingsField(
+        scope,
+        'disabledAccountIds',
+        next,
+        (doc) => sameIdSet(doc?.disabledAccountIds, next),
+        'qoder',
+      );
+      return;
+    }
+    const value = scope.getSnapshot?.().value;
+    const next = mergeDisabledIds(traeRegionSlotOf(value, region).disabledAccountIds, accountId, want);
+    const slot = { ...traeRegionSlotOf(value, region), disabledAccountIds: next };
+    await writeTraeField(
+      scope,
+      'regions',
+      nextRegionSlots(regionsMapOf(value), region, slot),
+      (readBack) => sameIdSet(traeRegionSlotOf(readBack, region).disabledAccountIds, next),
+    );
+  }
+
+  /**
+   * 把某个账号设成「当前账号」。
+   *
+   * 与停用同一条原则：写各半**真正读**的那份存储。
+   *   - WorkBuddy：`POST /accounts/select?region=`。`null` = 取消固定、交回轮换 ——
+   *     这是它独有的能力（它的池把「没有当前账号」当正常状态）；
+   *   - Trae：写 `accounts.<region>`（上游客户端 switchAccount 的同一字段）；
+   *   - Qoder：写 `selectedAccountId`。
+   *
+   * Trae / Qoder 不允许清空：池里必须始终有一个当前账号，写空只会悄悄回到
+   * 第一个账号，所以这里显式拒绝。
+   */
+  async function selectAccountRemote(family, region, accountId) {
+    if (family === 'wb') {
+      const wanted = typeof accountId === 'string' && accountId !== '' ? accountId : null;
+      await fetchJson(`${POOL_API}/accounts/select?region=${region}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: wanted }),
+      });
+      return;
+    }
+    if (typeof accountId !== 'string' || accountId === '') {
+      throw new Error('这个池必须始终有一个当前账号，不能清空');
+    }
+    const scope = creditScopeOf(family);
+    const who = family === 'qoder' ? 'qoder' : 'trae';
+    if (scope === undefined || scope === null) {
+      throw new Error(`${who}: 拿不到设置作用域，无法保存（配置页同一处也只读）`);
+    }
+    if (!poolWritable(scope)) throw new Error(`${who}: 设置当前不可写`);
+    if (family === 'qoder') {
+      await writeSettingsField(
+        scope,
+        'selectedAccountId',
+        accountId,
+        (doc) => doc?.selectedAccountId === accountId,
+        'qoder',
+      );
+      return;
+    }
+    const accounts = unwrapVolatileDeep(scope.getSnapshot?.().value)?.accounts ?? {};
+    const next = traeNextAccounts(accounts, region, accountId);
+    await writeTraeField(
+      scope,
+      'accounts',
+      next,
+      (readBack) =>
+        unwrapVolatileDeep(next)[region] === unwrapVolatileDeep(readBack)?.accounts?.[region],
+    );
+  }
+  //#endregion
+
   /**
    * 订阅一个 model directory store 的当前选中项。
    *
@@ -4714,25 +4523,84 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   }
 
   /**
-   * 输入框下方的额度胶囊。
+   * 量出浮层该摆在哪：贴着触发按钮的上沿、水平居中，四周留 12px 边距。
+   *
+   * 为什么自己量而不用 primitives 的 `useAnchoredPosition`：那个 hook 要从
+   * client.js 里 require 进来、再穿过两层参数送进本文件；而本文件是纯 ES 模块，
+   * 单测里只有一个迷你 react 桩，拿不到任何宿主模块。这里只需要
+   * 「贴着按钮上沿」这一种摆法，二十行就够，还不欠测试债。
+   *
+   * 只读 DOM、不写 DOM：量不到（没有 window / 还没挂载）就返回 null，
+   * 由调用方退回「先隐藏」的状态，下一拍再量。
+   */
+  function measureCreditCard(anchor, panel) {
+    if (typeof window === 'undefined') return null;
+    if (anchor === null || anchor === undefined || typeof anchor.getBoundingClientRect !== 'function') {
+      return null;
+    }
+    const rect = anchor.getBoundingClientRect();
+    if (rect === undefined || rect === null) return null;
+    const margin = 12;
+    const width = panel?.offsetWidth > 0 ? panel.offsetWidth : 320;
+    const height = panel?.offsetHeight > 0 ? panel.offsetHeight : 0;
+    const viewWidth = typeof window.innerWidth === 'number' ? window.innerWidth : 0;
+    const viewHeight = typeof window.innerHeight === 'number' ? window.innerHeight : 0;
+    const left = Math.min(
+      Math.max(rect.left + rect.width / 2 - width / 2, margin),
+      Math.max(margin, viewWidth - width - margin),
+    );
+    // 默认往上弹：composer 就贴在窗口底部，往下没有地方；上方真放不下才翻到下面。
+    const above = rect.top - height - 8;
+    const top =
+      above >= margin
+        ? above
+        : Math.min(rect.bottom + 8, Math.max(margin, viewHeight - height - margin));
+    return { left, top };
+  }
+
+  /**
+   * 输入框下方的额度胶囊（点一下展开这个平台的账号卡片）。
    *
    * props 由 slot 契约给出：`sessionId`（scope: session）+ 本包 inject 的
    * `resolveModelDirectory`。任何一环拿不到就返回 null —— 这是「只增不减」
    * 的边界：宁可不显示，也绝不能让 composer 这一行报错。
    *
-   * 刷新策略：**每 30 秒自动刷一次**（见 CREDIT_REFRESH_MS 的成本说明），
-   * 外加切换模型时立刻刷、点击时强制刷。不再需要手动点。
-   * 三个必须守住的细节：
+   * 展开的卡片里是**当前这个平台的全部账号**（不是「所有平台的账号」）：
+   * WorkBuddy 与 Trae 各自的国内版 + 国际版都列出来，Qoder 只有一个池。
+   * 每行带两个控件 —— 「参与轮换」开关与「切换到此账号」，见
+   * setAccountDisabledRemote / selectAccountRemote 的语义说明。
+   *
+   * 刷新策略分两档，因为两档的成本差一个量级：
+   *   - 胶囊那颗数字：**每 30 秒自动刷一次**（见 CREDIT_REFRESH_MS 的成本说明），
+   *     外加切换模型时立刻刷、点击时强制刷；
+   *   - 卡片里的账号行：只在「打开卡片（缓存过期时）」「点刷新」「写完一处
+   *     改动」时取，**没有任何定时器** —— 上游按账号计费，卡片开着不该反复烧。
+   *
+   * 四个必须守住的细节：
    *   1. 定时器只在 provider 属于本插件时才起，切走要清掉；
    *   2. 组件卸载后回调不能再 setState（React 会警告，且可能写到已卸载的树）；
-   *   3. 页面隐藏（切到别的窗口/标签）时暂停 —— 没人看的时候不该继续烧上游调用。
+   *   3. 页面隐藏（切到别的窗口/标签）时暂停 —— 没人看的时候不该继续烧上游调用；
+   *   4. 浮层用 fixed + portal 贴到 body（composer 外面有 overflow:hidden 的
+   *      容器，行内绝对定位会被裁掉），拿不到 portal 时退回行内。
    */
   function ComposerCreditsPill({ sessionId, resolveModelDirectory }) {
     const current = useCurrentModel(resolveModelDirectory, sessionId);
     const provider = current?.provider ?? '';
     const source = CREDIT_SOURCES[provider];
+    const family = source?.kind;
 
     const [tick, setTick] = useState(0);
+    /** 卡片开没开 */
+    const [open, setOpen] = useState(false);
+    /** 卡片坐标；null = 还没量到（首帧先隐藏，量到再显示） */
+    const [pos, setPos] = useState(null);
+    /** 正在写的那一行（key）；写的过程中把这一行的控件禁掉，防连点 */
+    const [busyRow, setBusyRow] = useState('');
+    const [writeError, setWriteError] = useState('');
+    /** 上一次写操作的提示（「已停用 X」这类） */
+    const [note, setNote] = useState('');
+    const anchorRef = useRef(null);
+    const panelRef = useRef(null);
 
     useEffect(() => {
       if (source === undefined) return undefined;
@@ -4802,6 +4670,104 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [provider]);
 
+    /**
+     * 打开卡片时取这个平台的账号行。
+     *
+     * 只在「开」这一拍取一次，而且新鲜窗口内直接复用（见 requestCreditRows）。
+     * 关掉卡片不取消在途请求 —— 让它跑完，下次打开就是现成的。
+     */
+    useEffect(() => {
+      if (open !== true || family === undefined) return undefined;
+      let alive = true;
+      const pending = requestCreditRows(family, false).pending;
+      pending?.then(() => {
+        if (alive) setTick((n) => n + 1);
+      });
+      return () => {
+        alive = false;
+      };
+      // tick 只用于强制重渲染，不进依赖
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [open, family]);
+
+    /**
+     * 把卡片贴到按钮上沿。
+     *
+     * 依赖里带上 tick：卡片的高度会随数据到位而变（先「读取中…」再长出若干行），
+     * 数据一到就重新量一次，否则浮层会朝着旧高度摆。
+     */
+    useEffect(() => {
+      if (open !== true) {
+        setPos(null);
+        return undefined;
+      }
+      const place = () => setPos(measureCreditCard(anchorRef.current, panelRef.current));
+      place();
+      if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+        return undefined;
+      }
+      // capture: true —— 滚动可能发生在任意祖先容器上（composer 的滚动容器不是
+      // window），冒泡阶段收不到，捕获阶段才能拦到。
+      window.addEventListener('scroll', place, true);
+      window.addEventListener('resize', place);
+      // 面板内容长出来（数据到了）之后高度会变，再贴一次
+      let observer = null;
+      if (typeof ResizeObserver === 'function' && panelRef.current !== null) {
+        try {
+          observer = new ResizeObserver(place);
+          observer.observe(panelRef.current);
+        } catch {
+          observer = null;
+        }
+      }
+      return () => {
+        window.removeEventListener('scroll', place, true);
+        window.removeEventListener('resize', place);
+        try {
+          observer?.disconnect?.();
+        } catch {
+          /* 断不掉也不影响 */
+        }
+      };
+    }, [open, tick]);
+
+    /**
+     * 点外面 / 按 Esc 关掉。
+     *
+     * 用捕获阶段的 pointerdown 而不是 click：click 会被卡片内部的按钮吃掉，
+     * 而且「按下就别等抬起」的手感更接近原生浮层。触发按钮自己不算外面 ——
+     * 不然点它会先关再开，看起来像闪一下。
+     */
+    useEffect(() => {
+      if (open !== true) return undefined;
+      if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+        return undefined;
+      }
+      const hit = (node, target) => {
+        if (node === null || node === undefined || target === null || target === undefined) {
+          return false;
+        }
+        if (typeof Node !== 'undefined' && target instanceof Node && typeof node.contains === 'function') {
+          return node.contains(target);
+        }
+        return false;
+      };
+      const onPointerDown = (event) => {
+        if (hit(anchorRef.current, event?.target)) return;
+        if (hit(panelRef.current, event?.target)) return;
+        setOpen(false);
+      };
+      const onKeyDown = (event) => {
+        if (event?.key === 'Escape') setOpen(false);
+      };
+      document.addEventListener('pointerdown', onPointerDown, true);
+      document.addEventListener('keydown', onKeyDown);
+      return () => {
+        document.removeEventListener('pointerdown', onPointerDown, true);
+        document.removeEventListener('keydown', onKeyDown);
+      };
+    }, [open]);
+
     if (source === undefined) return null;
     const rec = readCreditCache(provider);
     const total = rec?.total;
@@ -4825,31 +4791,345 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
           (typeof rec?.accounts === 'number' && rec.accounts > 0 ? ` · ${rec.accounts} 个账号` : '') +
           (rec?.source === 'next' ? ' · 本进程还没发过请求，这是下一个会用的账号' : '') +
           (rec?.error ? ` · 上次刷新失败：${rec.error}` : '') +
-          ` · 每 ${CREDIT_REFRESH_MS / 1000} 秒自动刷新（点击立即刷新）`;
+          ` · 每 ${CREDIT_REFRESH_MS / 1000} 秒自动刷新（点击展开${source.label}的账号）`;
 
-    return jsx('button', {
-      type: 'button',
-      className: 'wotr-credit-pill',
-      'data-busy': stale ? '0' : rec?.pending !== undefined ? '1' : '0',
-      'data-state': typeof total === 'number' && total <= 0 ? 'warn' : 'ok',
-      title,
-      onClick: () => {
-        // 点击 = 立即刷新，绕开新鲜度判定（在途时仍复用，不叠请求）
-        const r = requestCredits(provider, source, true);
-        r.pending?.then(() => setTick((n) => n + 1));
+    //#region 卡片的数据与动作
+
+    const rowsRec = family === undefined ? undefined : readCreditRowsCache(family);
+    const rows = asArray(rowsRec?.rows);
+    const familyLabel = family === undefined ? source.label : CREDIT_FAMILIES[family].label;
+    const groups =
+      family === undefined
+        ? []
+        : asArray(CREDIT_FAMILIES[family].regions).map(({ id, label }) => ({
+            region: id,
+            label,
+            rows: rows.filter((row) => row.region === id),
+            error: rowsRec?.regionErrors?.[id],
+          }));
+
+    /** 立即刷一次胶囊那颗数字（在途时复用，不叠请求） */
+    const refreshHeadline = () => {
+      const r = requestCredits(provider, source, true);
+      r.pending?.then(() => setTick((n) => n + 1));
+      setTick((n) => n + 1);
+    };
+
+    /**
+     * 点开 / 收起。
+     *
+     * 点开时顺手把胶囊那颗数字刷一次：用户点它就是因为想看数，而且这一发在
+     * 30 秒窗口内本来也要发（只是提前了），不额外增加上游调用。
+     * 卡片自己的账号行则由上面那个 effect 决定要不要取。
+     */
+    const onTrigger = () => {
+      if (open === true) {
+        setOpen(false);
+        setWriteError('');
+        setNote('');
+        return;
+      }
+      setOpen(true);
+      setWriteError('');
+      setNote('');
+      refreshHeadline();
+    };
+
+    /** 「刷新」：卡片的行 + 胶囊的数字一起强刷（用户显式要求，绕过新鲜窗口） */
+    const onRefreshAll = () => {
+      setWriteError('');
+      setNote('');
+      const r = requestCreditRows(family, true);
+      r.pending?.then(() => setTick((n) => n + 1));
+      refreshHeadline();
+    };
+
+    /** 停用 / 启用某一行 */
+    const onToggleRow = async (row) => {
+      const next = row.disabled !== true;
+      setBusyRow(row.key);
+      setWriteError('');
+      setNote('');
+      try {
+        await setAccountDisabledRemote(row.family, row.region, row.id, next);
+        patchCreditRows(row.family, (r) => r.key === row.key, { disabled: next });
+        // 停掉的正好是「这一轮在用的那个」→ 胶囊上的主语马上就会变，补一发
+        if (next === true && row.serving === true && row.region === source.region) {
+          refreshHeadline();
+        }
+        setNote(next ? `已停用 ${row.name}，它不再参与轮换` : `已重新启用 ${row.name}`);
+      } catch (e) {
+        setWriteError(e?.message ?? String(e));
+      } finally {
+        setBusyRow('');
         setTick((n) => n + 1);
-      },
+      }
+    };
+
+    /** 切换到此账号 / 取消固定 */
+    const onSelectRow = async (row) => {
+      // WorkBuddy 独有的「取消固定」：它的池把「没有当前账号」当正常状态，
+      // 点正在使用的那一个就是交回轮换。Trae / Qoder 必须始终有一个当前账号。
+      const unpin = row.family === 'wb' && row.pinned === true;
+      setBusyRow(row.key);
+      setWriteError('');
+      setNote('');
+      try {
+        await selectAccountRemote(row.family, row.region, unpin ? null : row.id);
+        patchCreditRows(row.family, (r) => r.region === row.region, (r) => ({
+          pinned: unpin !== true && r.key === row.key,
+        }));
+        // 「当前账号」换了，胶囊上那个数字的主语也就换了
+        if (row.region === source.region) refreshHeadline();
+        setNote(unpin ? '已取消固定，回到号池轮换' : `已把 ${row.name} 设为当前账号，请求优先用它`);
+      } catch (e) {
+        setWriteError(e?.message ?? String(e));
+      } finally {
+        setBusyRow('');
+        setTick((n) => n + 1);
+      }
+    };
+    //#endregion
+
+    //#region 卡片渲染
+
+    /** 一行上的标签（当前使用 / 已固定 / 本次调用 / 已停用 / 冷却中 / 保留 N） */
+    const rowTags = (row) => {
+      const tags = [];
+      const push = (kind, text) => tags.push({ kind, text });
+      // 「已固定」与「本次调用」是两件事，都要说：固定住的那个也可能被让位
+      if (row.pinned === true) push('on', row.family === 'wb' ? '已固定' : '当前使用');
+      if (row.serving === true) push(row.pinned === true ? 'muted' : 'on', '本次调用');
+      if (row.disabled === true) push('warn', '已停用');
+      if (row.cooling === true) push('warn', '冷却中');
+      if (row.expired === true) push('warn', '凭据已过期');
+      if (row.reserve > 0) push('muted', `保留 ${fmtNum(row.reserve)}`);
+      if (row.error !== '') push('warn', `额度读不到：${row.error}`);
+      return tags.map((tag, i) =>
+        jsx(
+          'span',
+          {
+            className:
+              'wbc-tag' +
+              (tag.kind === 'on' ? ' wbc-tag-on' : tag.kind === 'warn' ? ' wbc-tag-warn' : ''),
+            children: tag.text,
+          },
+          `t${i}`,
+        ),
+      );
+    };
+
+    /** 一行：名字 + 积分 + 标签 + 两个控件 */
+    const rowNode = (row) => {
+      const busy = busyRow === row.key;
+      const unpin = row.family === 'wb' && row.pinned === true;
+      const label = unpin ? '取消固定' : '切换到此账号';
+      /**
+       * 已经是「当前账号」的那一行还要不要给切换按钮？
+       *
+       *   - WorkBuddy：要，但文案换成「取消固定」—— 它的池把「未固定」当正常状态
+       *     （`selectedAccountId` 为 null = 按分配策略自动轮换），固定住之后必须留
+       *     一条退回轮换的路；
+       *   - Trae / Qoder：不给。这两家的池**永远有一个当前账号**（清空只会悄悄回到
+       *     第一个），「切换到这个已经是当前的账号」是个纯 no-op 按钮 —— 两个配置页
+       *     也都是这么做的（当前那张卡上没有这颗按钮），照抄同一套语义。
+       */
+      const hideSelect = unpin === false && row.pinned === true;
+      const selectTitle = unpin
+        ? '取消固定，交回号池按分配策略轮换'
+        : row.disabled === true
+          ? '这个账号已停用：切换后请求仍会回退到轮换里的其它账号'
+          : `让 ${row.fullName} 成为「当前账号」，请求优先用它`;
+      return jsxs(
+        'div',
+        {
+          className: 'wotr-credit-row',
+          'data-off': row.disabled === true ? '1' : '0',
+          'data-serving': row.serving === true ? '1' : '0',
+          children: [
+            jsxs('div', {
+              className: 'wotr-credit-row-top',
+              children: [
+                jsx('span', { className: 'wotr-credit-row-name', title: row.fullName, children: row.name }),
+                jsx('span', {
+                  className: 'wotr-credit-row-credits',
+                  title: row.error !== '' ? row.error : `${row.fullName} 当前积分`,
+                  children: `${fmtCreditOrDash(row.credits)} 积分`,
+                }),
+              ],
+            }),
+            jsxs('div', {
+              className: 'wotr-credit-row-foot',
+              children: [
+                jsx('span', { className: 'wotr-credit-tags', children: rowTags(row) }),
+                hideSelect
+                  ? null
+                  : jsx('button', {
+                      type: 'button',
+                      className: 'wotr-credit-mini',
+                      disabled: busy,
+                      title: selectTitle,
+                      onClick: () => {
+                        void onSelectRow(row);
+                      },
+                      children: label,
+                    }),
+                jsx('button', {
+                  type: 'button',
+                  role: 'switch',
+                  className: 'wotr-credit-switch',
+                  'aria-checked': row.disabled === true ? 'false' : 'true',
+                  'aria-label': `${row.name} 参与轮换`,
+                  'data-on': row.disabled === true ? '0' : '1',
+                  disabled: busy,
+                  title:
+                    row.disabled === true
+                      ? `让 ${row.fullName} 重新参与轮换`
+                      : `把 ${row.fullName} 移出轮换（不再用它，随时可以再打开）`,
+                  onClick: () => {
+                    void onToggleRow(row);
+                  },
+                }),
+              ],
+            }),
+          ],
+        },
+        row.key,
+      );
+    };
+
+    const errorLines = [];
+    if (typeof rowsRec?.error === 'string' && rowsRec.error !== '') errorLines.push(rowsRec.error);
+    for (const group of groups) {
+      if (typeof group.error === 'string' && group.error !== '') {
+        errorLines.push(`${group.label || '这个区域'}读不到：${group.error}`);
+      }
+    }
+    if (writeError !== '') errorLines.push(writeError);
+
+    const atText = fmtClockTime(rowsRec?.atMs);
+
+    const card =
+      open !== true
+        ? null
+        : jsxs(
+            'div',
+            {
+              ref: panelRef,
+              className: 'wotr-credit-card',
+              role: 'dialog',
+              'aria-label': `${familyLabel}账号与积分`,
+              // 还没量到就先隐藏：必须先渲染出来才量得到高度
+              style:
+                pos === null
+                  ? { visibility: 'hidden', left: '0px', top: '0px' }
+                  : { left: `${pos.left}px`, top: `${pos.top}px` },
+              onClick: (event) => event?.stopPropagation?.(),
+              children: [
+                jsxs('div', {
+                  className: 'wotr-credit-card-head',
+                  children: [
+                    jsx('span', {
+                      className: 'wotr-credit-card-title',
+                      children: `${familyLabel} · ${rows.length} 个账号`,
+                    }),
+                    jsx('button', {
+                      type: 'button',
+                      className: 'wotr-credit-mini',
+                      disabled: rowsRec?.pending !== undefined,
+                      title: '重新读一次这个平台的账号与积分（上游按账号计费）',
+                      onClick: onRefreshAll,
+                      children: rowsRec?.pending !== undefined ? '读取中…' : '刷新',
+                    }),
+                  ],
+                }),
+                ...groups.map((group) => {
+                  const serving = group.rows.find((row) => row.serving === true);
+                  return jsxs(
+                    'div',
+                    {
+                      className: 'wotr-credit-region',
+                      children: [
+                        groups.length > 1
+                          ? jsxs('div', {
+                              className: 'wotr-credit-region-head',
+                              children: [
+                                jsx('span', {
+                                  className: 'wotr-credit-region-title',
+                                  children: group.label || '账号',
+                                }),
+                                jsx('span', {
+                                  className: 'wotr-credit-region-sub',
+                                  children:
+                                    `${group.rows.length} 个` +
+                                    (serving === undefined ? '' : ` · 本轮用 ${serving.name}`),
+                                }),
+                              ],
+                            })
+                          : null,
+                        ...group.rows.map(rowNode),
+                        group.rows.length === 0 && typeof group.error !== 'string'
+                          ? jsx('div', { className: 'wotr-credit-empty', children: '这个区域没有账号' })
+                          : null,
+                      ],
+                    },
+                    `g:${group.region}`,
+                  );
+                }),
+                rows.length === 0 && rowsRec?.pending === undefined && errorLines.length === 0
+                  ? jsx('div', {
+                      className: 'wotr-credit-empty',
+                      children: `${familyLabel} 暂时没有可用账号`,
+                    })
+                  : null,
+                errorLines.length > 0
+                  ? jsx('div', { className: 'wotr-credit-err', children: errorLines.join('；') })
+                  : null,
+                note !== ''
+                  ? jsx('div', { className: 'wotr-credit-note', children: note })
+                  : null,
+                jsx('div', {
+                  className: 'wotr-credit-foot',
+                  children:
+                    (atText === '' ? '正在读取…' : `数据取自 ${atText}`) +
+                    ' · 打开卡片时取一次，不轮询（上游按账号计费）',
+                }),
+              ],
+            },
+          );
+
+    return jsx('span', {
+      className: 'wotr-credit-anchor',
       children: [
-        jsx('span', { className: 'wotr-credit-pill-dot' }),
-        jsx('span', {
-          className: 'wotr-credit-pill-num',
-          // 账号名放在数字前面：用户第一眼要能回答「这个余额是谁的」。
-          // 名字拿不到时给个占位，而不是把数字孤零零放出来。
-          children:
-            total === undefined
-              ? `积分 –${account?.name ? ` · ${account.name}` : ''}`
-              : `积分 ${fmtNum(total)}${account?.name ? ` · ${account.name}` : ''}`,
+        jsxs('button', {
+          type: 'button',
+          ref: anchorRef,
+          className: 'wotr-credit-pill',
+          'data-busy': stale ? '0' : rec?.pending !== undefined ? '1' : '0',
+          'data-state': typeof total === 'number' && total <= 0 ? 'warn' : 'ok',
+          'data-open': open === true ? '1' : '0',
+          'aria-expanded': open === true ? 'true' : 'false',
+          'aria-haspopup': 'dialog',
+          title,
+          onClick: onTrigger,
+          children: [
+            jsx('span', { className: 'wotr-credit-pill-dot' }),
+            jsx('span', {
+              className: 'wotr-credit-pill-num',
+              // 账号名放在数字前面：用户第一眼要能回答「这个余额是谁的」。
+              // 名字拿不到时给个占位，而不是把数字孤零零放出来。
+              children:
+                total === undefined
+                  ? `积分 –${account?.name ? ` · ${account.name}` : ''}`
+                  : `积分 ${fmtNum(total)}${account?.name ? ` · ${account.name}` : ''}`,
+            }),
+          ],
         }),
+        // 有 portal 就贴到 body（composer 外面有 overflow:hidden 的容器，行内会被裁）；
+        // 拿不到就退回行内 —— 定位仍是 fixed，只是嵌入形态下可能被裁。
+        createPortal !== null && card !== null && typeof document !== 'undefined'
+          ? createPortal(card, document.body)
+          : card,
       ],
     });
   }
@@ -4862,21 +5142,13 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     const [tab, setTab] = useState('pool-config');
     const [region, setRegion] = useState('cn');
     const [status, setStatus] = useState(null);
-    const [summary, setSummary] = useState(null);
     const [loading, setLoading] = useState(true);
-    const [summaryLoading, setSummaryLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [busyId, setBusyId] = useState(null);
 
-    // —— Trae 半边自己的状态（与 WorkBuddy 完全独立）——
-    // 区域用 ai/cn，与 WorkBuddy 的 cn/global 是两套命名，刻意分开两个 state，
-    // 免得切 WorkBuddy 的区域时把 Trae 的也带偏。
-    const [traeRegion, setTraeRegion] = useState('cn');
-    const [traeStatus, setTraeStatus] = useState(null);
-    const [traeLoading, setTraeLoading] = useState(false);
-    const [traeError, setTraeError] = useState(null);
-    const [traeBusy, setTraeBusy] = useState(false);
-
+    // —— Trae 半边的状态（与 WorkBuddy 完全独立）——
+    // 区域（ai/cn）的 state 归 TraeConfigTab 自己所有 —— 它同时驱动读数、模型
+    // 勾选与「向 DSH 提供该供应商」开关，放在父级只会多一份需要同步的副本。
+    // 这里只剩登录会话（traeLogin）与「请面板重读」的信号。
     /**
      * 「浏览器登录添加账号」的进行状态。
      *
@@ -4908,33 +5180,15 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     /** 自动刷新在途标记。用 ref 而非 state：它只用于去重，不该触发重渲染。 */
     const qoderCreditsInFlight = useRef(false);
     /**
-     * 账号页两列的分配策略：写入中的标记与错误。
-     *
-     * 策略值本身**不存 state** —— 它就在 `status.distribution`（WorkBuddy，
-     * 顶层键）与 `traeStatus.pool.distribution`（Trae，按区域）里，写完刷新
-     * 状态自然就读回新值。再存一份本地副本就会出现「本地已改、上游没落地」
-     * 的假象，正是本项目反复避免的那类 bug。
-     *
-     * 声明位置：这几个 hook 必须排在第 15 个 hook（qoderStatus）**之后** ——
-     * test/console-render.test.mjs 的 mini-react 用一个共享游标按源码顺序发
-     * hook 槽位，用例只按下标预设了 0/1/9/15，插在它们前面会把预设值喂错槽位。
-     */
-    const [wbDistributionBusy, setWbDistributionBusy] = useState(false);
-    const [wbDistributionError, setWbDistributionError] = useState(null);
-    const [traeDistributionBusy, setTraeDistributionBusy] = useState(false);
-    const [traeDistributionError, setTraeDistributionError] = useState(null);
-    /**
      * Qoder 数据是否处于「可见」状态。
      *
-     * 面板同时挂在**两个 tab** 下：「账号」页的第三列与独立的「Qoder 号池」
-     * 标签页。懒加载与自动刷新都以它为判据 —— 只写 `tab === 'qoder'` 会让
-     * 从「账号」页进来时那一列永远是空的、余额永远停在「读取中…」。
+     * 面板只挂在「qoder」这一个标签页下。懒加载与自动刷新都以它为判据 ——
+     * 早先它还挂在「账号」页第三列，只写 `tab === 'qoder'` 会让从那一页进来时
+     * 整列空白、余额永远停在「读取中…」；「账号」页已删除，现在只有一个出口。
      * 放在状态声明之后、所有 effect 之前：effect 依赖它，顺序反了就是
      * 「used before defined」。
      */
-    // 「积分」页也要它：那一页会显示 Qoder 账号的余额与被调用的那个账号，
-    // 漏掉这一项的表现是「积分页里 Qoder 那一段永远是空的」。
-    const qoderVisible = tab === 'qoder' || tab === 'accounts' || tab === 'wb-credits';
+    const qoderVisible = tab === 'qoder';
 
     const loadStatus = useCallback(async () => {
       setLoading(true);
@@ -4951,40 +5205,10 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       }
     }, [region]);
 
-    const loadSummary = useCallback(async () => {
-      setSummaryLoading(true);
-      try {
-        const data = await fetchJson(`${SELF_API}/history-summary`);
-        setSummary(data);
-      } catch {
-        /* 历史记录读不到不影响其它 tab */
-      } finally {
-        setSummaryLoading(false);
-      }
-    }, []);
-
-    // 首次进页 + 切换区域时拉取；同时把当前状态回写一份采样
+    // 首次进页 + 切换区域时拉取
     useEffect(() => {
       loadStatus();
     }, [loadStatus]);
-
-    useEffect(() => {
-      loadSummary();
-    }, [loadSummary]);
-
-    // 拿到最新 status 后落一次采样，让「使用记录」持续增长。
-    // 放在这里而不是定时器：只在用户真的打开本页时采集，不做后台轮询。
-    useEffect(() => {
-      if (status === null || !Array.isArray(status.accounts)) return;
-      fetch(`${SELF_API}/sample`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region }),
-      })
-        .then(() => loadSummary())
-        .catch(() => {});
-    }, [status, region, loadSummary]);
 
     const onRescan = useCallback(async () => {
       setLoading(true);
@@ -4998,210 +5222,42 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       }
     }, [loadStatus]);
 
-    const onCheckin = useCallback(
-      async (accountId) => {
-        setBusyId(accountId);
-        try {
-          await fetchJson(`${POOL_API}/checkin`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accountId }),
-          });
-          await loadStatus();
-        } catch (e) {
-          setError(e?.message ?? String(e));
-        } finally {
-          setBusyId(null);
-        }
-      },
-      [loadStatus],
-    );
+    /**
+     * Trae 侧的「重读」信号。
+     *
+     * Trae 配置页（TraeConfigTab）**自己**拉 `/usage`（它只在这一页里渲染，
+     * 没必要让父级再存一份 —— 早先父级那条 `traeStatus` 数据通路只服务于已删除的
+     * 「账号」页中列）。但有两件事发生在父级、需要让那一页重读：
+     *   1. 浏览器登录成功后（新账号的凭据刚落到磁盘）；
+     *   2. 点「刷新账号」（POST accounts/refresh 重新扫凭据目录）。
+     *
+     * 用一个自增的 token 通知它，而不是把数据搬回父级：面板只多认这一个依赖，
+     * 数据仍然只有一份、只有一处拉。
+     */
+    const [traeReloadToken, setTraeReloadToken] = useState(0);
+    /** 「刷新账号」这一步自己的错误。与面板内部的 `usageError` 分开：那个是读数失败，这个是重扫失败。 */
+    const [traeRescanError, setTraeRescanError] = useState(null);
 
     /**
-     * 切换 WorkBuddy 的「当前账号」。
+     * 「刷新账号」：先让服务端重扫凭据目录，再请面板重读。
      *
-     * 区域是必须的：国内版与国际版是两个独立 provider，各自固定自己的账号
-     * （服务端按 `?region=` 写进 `selectedAccountIds` 的对应键）。
+     * 区域**由面板传进来**，不能用页面级的 `traeRegion` —— 区域切换的 state
+     * 归 TraeConfigTab 自己所有（它同时驱动读数、模型勾选与「向 DSH 提供该
+     * 供应商」开关）。父级那份 `traeRegion` 自从「账号」页删除后就再没人写过，
+     * 照它重扫会在看国际版时去扫国内版。
      *
-     * `accountId: null` = 取消固定，回到号池轮换。
+     * 两步缺一不可 —— 只重读 `/usage` 拿到的是同一份旧账号列表，
+     * 而只扫不读则界面不会更新。
      */
-    const onSelectAccount = useCallback(
-      async (accountId) => {
-        setBusyId('select');
-        setError(null);
-        try {
-          await fetchJson(`${POOL_API}/accounts/select?region=${region}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accountId }),
-          });
-          await loadStatus();
-        } catch (e) {
-          setError(e?.message ?? String(e));
-        } finally {
-          setBusyId(null);
-        }
-      },
-      [loadStatus, region],
-    );
-
-    /**
-     * 拉取 Trae 一个区域的账号文档。
-     *
-     * 只在真正切到 Trae 标签页、或切换区域时调用：`/usage` 里的 credits 是
-     * 一次实时计费读，进页就无脑拉两边会白花两次配额。
-     */
-    const loadTrae = useCallback(async (which) => {
-      const target = which ?? traeRegion;
-      setTraeLoading(true);
-      setTraeError(null);
+    const onTraeRescan = useCallback(async (which) => {
+      setTraeRescanError(null);
       try {
-        const data = await fetchJson(`${TRAE_API}/usage?region=${target}`);
-        setTraeStatus(data);
+        await fetchJson(`${TRAE_API}/accounts/refresh?region=${which}`, { method: 'POST' });
       } catch (e) {
-        setTraeError(e?.message ?? String(e));
-        setTraeStatus(null);
-      } finally {
-        setTraeLoading(false);
+        setTraeRescanError(e?.message ?? String(e));
       }
-    }, [traeRegion]);
-
-    /**
-     * 第一次切到「账号」标签页时才拉 Trae。
-     *
-     * 用 ref 记住「已经拉过」，这样在标签页之间来回切
-     * 不会反复触发实时计费读；切 Trae 自己的区域走 onTraeRegion。
-     *
-     * 为什么仍然懒加载：WorkBuddy 那半的状态进页就拉（便宜），
-     * 而 Trae 的 `/usage` 里的 credits 是一次**实时计费调用**。
-     * 账号页现在是三列并排，但没打开它之前不该花这笔钱。
-     *
-     * 位置要求：本 effect 必须排在 `loadTrae` 的 `const` 定义**之后**。
-     * 早先它写在前面的 useRef/useEffect 区块里，依赖数组 `[tab, loadTrae]`
-     * 会在 `loadTrae` 初始化前就读它，抛
-     * "Cannot access 'loadTrae' before initialization" —— 这是渲染期抛错，
-     * 表现为设置面板白屏（渲染测试正是因此 30 项全灭）。
-     */
-    const traeLoaded = useRef(false);
-    useEffect(() => {
-      if (tab !== 'accounts' || traeLoaded.current) return;
-      traeLoaded.current = true;
-      loadTrae();
-    }, [tab, loadTrae]);
-
-    const onTraeRegion = useCallback(
-      (next) => {
-        setTraeRegion(next);
-        loadTrae(next);
-      },
-      [loadTrae],
-    );
-
-    const onTraeRescan = useCallback(async () => {
-      setTraeLoading(true);
-      setTraeError(null);
-      try {
-        await fetchJson(`${TRAE_API}/accounts/refresh?region=${traeRegion}`, { method: 'POST' });
-        await loadTrae();
-      } catch (e) {
-        setTraeError(e?.message ?? String(e));
-        setTraeLoading(false);
-      }
-    }, [traeRegion, loadTrae]);
-
-    const onTraeCheckin = useCallback(async () => {
-      setTraeBusy(true);
-      setTraeError(null);
-      try {
-        await fetchJson(`${TRAE_API}/checkin?region=${traeRegion}`, { method: 'POST' });
-        await loadTrae();
-      } catch (e) {
-        setTraeError(e?.message ?? String(e));
-      } finally {
-        setTraeBusy(false);
-      }
-    }, [traeRegion, loadTrae]);
-
-    /**
-     * 账号页两列的分配策略写入。
-     *
-     * 与配置页**复用同一条写入路径**，不另起一套：
-     *
-     *   - WorkBuddy：`distribution` 是**顶层**设置键，直接 `set` 一次即可。
-     *     宿主在 `loader/volatile-update` → `applyConfigFromSource` 里把它推进
-     *     活着的池（`core.pool.applyConfig({ distribution })`），所以写完刷新
-     *     `/status` 就能读回新值。
-     *   - Trae：策略存在 `regions.<region>.distribution` 槽里，只改目标区域的
-     *     槽、其余槽原样带过（`nextRegionSlots`），写完读回确认落地。
-     *
-     * 两个写入都必须检查 `set()` 的返回值并读回：`set()` resolve 了不等于
-     * 写进去了 —— 这是本项目踩过的坑（上游报「保存成功」而值悄悄弹回）。
-     *
-     * 另外，两列的 settings 作用域是否可写要**在渲染期**读出来（与
-     * PoolConfigTab 同款）：不可写时按钮直接置灰并给出说明，而不是等用户
-     * 点了才报错。这两个都是普通 const，不是 hook，不影响 hook 槽位。
-     */
-    const wbDistributionWritable = poolWritable(poolScopeOf(wbSettings));
-    const traeDistributionWritable = poolWritable(poolScopeOf(traeSettings));
-
-    const onWbDistribution = useCallback(
-      async (next) => {
-        const scopeObj = poolScopeOf(wbSettings);
-        if (scopeObj === null || scopeObj === undefined) {
-          setWbDistributionError('设置作用域不可用，无法保存');
-          return;
-        }
-        if (!poolWritable(scopeObj)) {
-          setWbDistributionError('设置作用域不可写，无法保存');
-          return;
-        }
-        setWbDistributionBusy(true);
-        setWbDistributionError(null);
-        try {
-          if ((await scopeObj.set('distribution', next)) === false) {
-            throw new Error(`设置字段 "distribution" 被宿主拒绝`);
-          }
-          await loadStatus();
-        } catch (e) {
-          setWbDistributionError(e?.message ?? String(e));
-        } finally {
-          setWbDistributionBusy(false);
-        }
-      },
-      [wbSettings, loadStatus],
-    );
-
-    const onTraeDistribution = useCallback(
-      async (next) => {
-        const scopeObj = poolScopeOf(traeSettings);
-        if (scopeObj === null || scopeObj === undefined) {
-          setTraeDistributionError('设置作用域不可用，无法保存');
-          return;
-        }
-        if (!poolWritable(scopeObj)) {
-          setTraeDistributionError('设置作用域不可写，无法保存');
-          return;
-        }
-        setTraeDistributionBusy(true);
-        setTraeDistributionError(null);
-        try {
-          const value = scopeObj.getSnapshot().value;
-          const slot = { ...traeRegionSlotOf(value, traeRegion), distribution: next };
-          await writeTraeField(
-            scopeObj,
-            'regions',
-            nextRegionSlots(regionsMapOf(value), traeRegion, slot),
-            (readBack) => traeRegionSlotOf(readBack, traeRegion).distribution === next,
-          );
-          await loadTrae();
-        } catch (e) {
-          setTraeDistributionError(e?.message ?? String(e));
-        } finally {
-          setTraeDistributionBusy(false);
-        }
-      },
-      [traeSettings, traeRegion, loadTrae],
-    );
+      setTraeReloadToken((v) => v + 1);
+    }, []);
 
     /**
      * 打开一次「浏览器登录」来添加一个 WorkBuddy 账号。
@@ -5340,8 +5396,9 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
           if (st?.status === 'done') {
             setTraeLogin(null);
             // 凭据已写入 .trae-auth.<region>.<accountId>.json，让 Trae 侧重读。
-            // 号池每次读状态都会重扫凭据目录，所以新账号会立刻出现在号池区。
-            await loadTrae();
+            // 走与「刷新账号」同一个信号：面板自己拉 `/usage`，父级只负责戳一下
+            // （它每次都重扫凭据目录，所以新账号会立刻出现在账号区）。
+            setTraeReloadToken((v) => v + 1);
             return;
           }
           if (st?.status === 'failed') {
@@ -5362,8 +5419,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       } catch (e) {
         setTraeLogin({ error: e?.message ?? String(e) });
       }
-    }, [loadTrae]);
-
+    }, []);
 
     // —— Qoder 号池：读取 / 登录 / 池操作 ——
 
@@ -5668,10 +5724,10 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     }, [loadQoder]);
 
     /**
-     * 自动刷新积分：进「Qoder 号池」或「账号」页就开始，离开就停。
+     * 自动刷新积分：进「qoder」页就开始，离开就停。
      *
-     * 只在**这两个 tab 可见时**跑（依赖 `qoderVisible`），因为额度数据只在这
-     * 两处显示；切到别的 tab 还继续打上游调用是纯浪费。回到这页会立刻补一次，
+     * 只在**这一页可见时**跑（依赖 `qoderVisible`），因为额度数据只在这里
+     * 显示；切到别的 tab 还继续打上游调用是纯浪费。回到这页会立刻补一次，
      * 不必等下一拍（`refreshQoderCredits` 自身会跳过隐藏状态）。
      */
     useEffect(() => {
@@ -5768,10 +5824,11 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     }, [loadQoder]);
 
     /**
-     * 第一次切到「Qoder」标签页或「账号」页时才拉号池。
+     * 第一次切到「qoder」标签页时才拉号池。
      *
      * 与 Trae 侧同样的懒加载理由：`/qoder/pool` 每次都会重扫凭据目录，
-     * 没必要在打开设置面板时就跑一遍。
+     * 没必要在打开设置面板时就跑一遍。（面板原本还挂在「账号」页第三列，
+     * 那一页已删除，现在只有这一个出口。）
      */
     const qoderLoaded = useRef(false);
     useEffect(() => {
@@ -5785,9 +5842,9 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     /**
      * Qoder 面板的 props。
      *
-     * 抽成一个对象是因为面板要在**两个 tab 下渲染**（账号页第三列 + 独立
-     * 标签页）。复制两份 props 迟早会漏改一处 —— 比如加了新的回调只接到
-     * 其中一边，表现为「同一个面板在两个地方行为不一样」。
+     * 面板只在「qoder」标签页下渲染，但仍抽成一个对象集中收口：这些回调与数据
+     * 来自 WotrPage 的多个 state，散在调用点上写容易漏 —— 加了新的回调只接到
+     * 一处、表现为「面板上有按钮但点了没用」。
      */
     const qoderPanelProps = {
       status: qoderStatus,
@@ -5816,12 +5873,9 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     };
 
     const tabs = [
-      { id: 'pool-config', label: 'XD Pool' },
-      { id: 'trae-config', label: 'Trae 配置' },
-      { id: 'accounts', label: '账号' },
-      { id: 'qoder', label: 'Qoder 配置' },
-      { id: 'wb-credits', label: '积分' },
-      { id: 'wb-history', label: '使用记录' },
+      { id: 'pool-config', label: 'workbuddy' },
+      { id: 'trae-config', label: 'trae' },
+      { id: 'qoder', label: 'qoder' },
     ];
 
     return jsxs('div', {
@@ -5834,7 +5888,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
             jsx('div', {
               className: 'wbc-desc',
               children:
-                '配置并查看 WorkBuddy 账号池、Trae 接入与 Qoder 号池：模型勾选、分配策略、账号与额度、积分与使用记录。WorkBuddy 与 Trae 可以直接在浏览器里登录添加（「账号」页左、中两列的「添加账号」）；Qoder 桌面端每个安装只保存一份登录，扫不出多个账号，请在「Qoder 配置」页用「添加账号」逐个登录入池。',
+                '配置并查看 WorkBuddy 账号池、Trae 接入与 Qoder 号池：模型勾选、分配策略、账号与额度。三页都带「刷新账号」与「添加账号」：WorkBuddy 与 Trae 可以直接在浏览器里登录添加；Qoder 桌面端每个安装只保存一份登录，扫不出多个账号，请在「qoder」页用「添加账号」逐个登录入池。',
             }),
           ],
         }),
@@ -5863,57 +5917,28 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
               error,
               onRefresh: loadStatus,
               onRescan,
+              // 「添加账号」：与另两个配置页同款（登录入口原先只在「账号」页左列，
+              // 那一页已删除，这里补上）。
+              onAddAccount,
+              login,
             })
           : null,
         tab === 'trae-config'
-          ? jsx(TraeConfigTab, { scopeSlot: traeSettings })
-          : null,
-        tab === 'accounts'
-          ? jsx(AccountsTab, {
-              wb: {
-                region,
-                onRegion: setRegion,
-                status,
-                loading,
-                error,
-                onRescan,
-                onCheckin,
-                busyId,
-                onAddAccount,
-                onSelect: onSelectAccount,
-                login,
-                // 分配策略：读 `status.distribution`（顶层键），写入走 wbSettings
-                distribution: status?.distribution,
-                distributionBusy: wbDistributionBusy,
-                distributionError: wbDistributionError,
-                distributionWritable: wbDistributionWritable,
-                onDistribution: onWbDistribution,
-              },
-              trae: {
-                region: traeRegion,
-                onRegion: onTraeRegion,
-                status: traeStatus,
-                credits: traeStatus?.credits,
-                loading: traeLoading,
-                error: traeError,
-                onRescan: onTraeRescan,
-                onCheckin: onTraeCheckin,
-                busy: traeBusy,
-                onAddAccount: onTraeAddAccount,
-                login: traeLogin,
-                // 分配策略：读 `pool.distribution`（按区域），写入走 traeSettings
-                distribution: traeStatus?.pool?.distribution,
-                distributionBusy: traeDistributionBusy,
-                distributionError: traeDistributionError,
-                distributionWritable: traeDistributionWritable,
-                onDistribution: onTraeDistribution,
-              },
-              qoder: qoderPanelProps,
+          ? jsx(TraeConfigTab, {
+              scopeSlot: traeSettings,
+              // Trae 侧同理：登录入口原先只在「账号」页中列。
+              onAddAccount: onTraeAddAccount,
+              login: traeLogin,
+              // 重新扫本机凭据（不只是重读读数）——「刷新账号」的语义。
+              onRescan: onTraeRescan,
+              // 登录成功 / 重扫之后请面板重读一次，以及那一步自己的错误。
+              reloadToken: traeReloadToken,
+              rescanError: traeRescanError,
             })
           : null,
         tab === 'qoder'
           ? jsxs('div', {
-              // 与「XD Pool」「Trae 配置」两页同一个布局：单列、自上而下
+              // 与「workbuddy」「trae」两页同一个布局：单列、自上而下
               // 「页头 → 状态 → 统计 → 账号 → 模型」。先前这里是并排两列
               // （号池 | 模型），一页里出现两个同级标题，且同一件事在左列、
               // 右列的间距与位置与另两页都对不上。
@@ -5923,12 +5948,6 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
                 jsx(QoderModelsPanel, { scopeSlot: qoderSettings, flat: true }),
               ],
             })
-          : null,
-        tab === 'wb-credits'
-          ? jsx(CreditsTab, { status, summary, loading, traeStatus, qoderStatus })
-          : null,
-        tab === 'wb-history'
-          ? jsx(HistoryTab, { summary, loading: summaryLoading })
           : null,
       ],
     });

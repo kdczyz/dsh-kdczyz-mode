@@ -288,10 +288,10 @@ fi
 
 echo
 echo "完成。**下一步必须重启 DSH**（退出后重新打开），改动才会生效。"
-echo "重启后应看到：设置 → WOTR 一个入口、六个标签页（XD Pool / Trae 配置 / 账号[三列：WorkBuddy+Trae+Qoder] / Qoder 配置[单列：先号池后模型，与另两个配置页同一套骨架] / 积分 / 使用记录）；"
+echo "重启后应看到：设置 → WOTR 一个入口、三个标签页（workbuddy / trae / qoder[单列：先号池后模型，与另两个配置页同一套骨架]），以及 composer 输入框下面那颗可点击展开的积分胶囊；"
 echo "模型选择器里 workbuddy-xdpool / workbuddy-xdpool-global / trae / trae-global / qoder 五个 provider 都在。"
-echo "（Qoder 已接通推理：登录入口在「账号」页第三列或「Qoder 配置」页页头，"
-echo "  对话走本机 loopback shim → COSY 签名 → 上游；积分余额进这两页后每 30 秒自动刷新。"
+echo "（Qoder 已接通推理：登录入口在「qoder」页页头的「添加账号」，"
+echo "  对话走本机 loopback shim → COSY 签名 → 上游；积分余额进该页后每 30 秒自动刷新。"
 echo "  模型区与 WorkBuddy / Trae 同款：每张卡只有「启用」一个勾选，图片能力（上游 is_vl）"
 echo "  与上下文窗口（上游 max_input_tokens）**跟随上游目录**，卡片上只显示不选择；"
 echo "  「从 Qoder 刷新」= 拉取即落盘（全部启用 + 图片/上下文按上游写回，无需再点保存），"

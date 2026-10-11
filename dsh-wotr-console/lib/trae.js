@@ -1067,6 +1067,13 @@ function normalizeTraeCredential(raw, edition, source) {
 	const refreshToken = optionalString(value["refreshToken"]);
 	const userRegion = userRegionOf(value["userRegion"]);
 	const accountName = optionalString((typeof value["account"] === "object" && value["account"] !== null && !Array.isArray(value["account"]) ? value["account"] : void 0)?.["username"]);
+	/**
+	* 本账号自己的设备身份（见 {@link TraeDeviceRegistry}）。
+	*
+	* 从磁盘读回来的凭据必须带着它，否则每次重启都会重新派生一个 —— 上游会把
+	* 同一个账号看成一串不同设备，签到那条「一台设备一天一次」的门禁就白绕了。
+	*/
+	const deviceId = optionalString(value["deviceId"]);
 	return {
 		accessToken,
 		...refreshToken === void 0 ? {} : { refreshToken },
@@ -1076,6 +1083,7 @@ function normalizeTraeCredential(raw, edition, source) {
 		...userRegion === void 0 ? {} : { userRegion },
 		expiresAtMs,
 		...refreshExpiresAtMs === void 0 ? {} : { refreshExpiresAtMs },
+		...deviceId === void 0 ? {} : { deviceId },
 		edition,
 		source
 	};
@@ -1083,6 +1091,104 @@ function normalizeTraeCredential(raw, edition, source) {
 function traeAccountId(credential) {
 	const stable = `${credential.edition}\0${credential.userId || credential.accountName || "unknown"}`;
 	return createHash("sha256").update(stable).digest("hex").slice(0, 24);
+}
+/**
+* One stable device identity PER ACCOUNT, so several logins can check in from
+* one machine.
+*
+* The upstream settles a check-in against the device named in `x-device-id`,
+* not against the account: a second account on the SAME id is answered
+* `code: 9095` ("this device already checked in today"). Measured on this
+* machine 2026-10-12 — the account that had not checked in answered
+* `9095` on the real id and `code: 0` on a substitute id, while `x-machine-id`
+* made no difference at all.
+*
+* So the desktop identity cannot be shared: it would cap the whole pool at one
+* payout per machine per day. Each account gets its own id instead, with the
+* shape the official client actually sends — see {@link deviceCenterId} for the
+* 16-digit `icube-dc` form this copies (15 digits, same width and same
+* leading-nonzero rule as the reference check-in script's `gen_device_id`).
+*
+* DERIVED, not random — and that is the whole point. A random id is only usable
+* if it is remembered: the reference script generates one with `secrets` and
+* notes it must be persisted for good, which makes "the write and the later read
+* both succeed" a correctness precondition. Lose that precondition quietly and
+* the account changes device on every restart — upstream then sees a stranger's
+* machine every day, the risk lands on the account, and nothing reports it.
+* Deriving from the accountId has no such precondition: the same accountId
+* yields the same id arithmetically, whether or not any cache, credential file,
+* or registry survived. Persistence is kept on top as pure insurance, never as
+* the thing correctness rests on.
+*
+* Caveat, and the reason this lives in its own module rather than being folded
+* into identity resolution: an account's id is NOT the desktop install's id
+* anymore. The upstream sees the plugin's accounts as several devices that
+* happen to share a machine. That is the whole point, but it does mean a
+* `x-device-id` seen in Trae's own logs will not match the one this plugin
+* sends for the same account.
+*/
+function accountDeviceId(accountId) {
+	const digest = createHash("sha256").update(`trae-device\0${accountId}`).digest();
+	return String(1e14 + digest.readUInt32BE(0) % 9e14);
+}
+/**
+* Persisted `accountId → deviceId` map.
+*
+* The credential file of an account carries its id once written, so this map is
+* the fallback for the accounts that have no writable file of their own — the
+* desktop install's login above all. Without it those accounts would be handed a
+* fresh id on every restart, which upstream reads as a new machine every day.
+*
+* Merge-on-read, like the credential store: a missing or corrupt file must never
+* be a reason to lose a mapping that another copy still remembers.
+*/
+const TRAE_DEVICE_REGISTRY_FILENAME = "trae-devices.json";
+let traeDeviceRegistry;
+async function traeDeviceRegistryPath() {
+	return join(resolveDshHome(), TRAE_DEVICE_REGISTRY_FILENAME);
+}
+async function loadTraeDeviceRegistry() {
+	if (traeDeviceRegistry !== void 0) return traeDeviceRegistry;
+	const map = /* @__PURE__ */ new Map();
+	try {
+		const parsed = JSON.parse(await readFile(await traeDeviceRegistryPath(), "utf8"));
+		const accounts = parsed?.["accounts"];
+		if (typeof accounts === "object" && accounts !== null && !Array.isArray(accounts)) for (const [key, value] of Object.entries(accounts)) {
+			const id = optionalString(value);
+			if (key !== "" && id !== void 0) map.set(key, id);
+		}
+	} catch {}
+	traeDeviceRegistry = map;
+	return map;
+}
+/**
+* The device id for one account: the mapping it already has, else a freshly
+* derived one that is remembered on disk before it is handed out.
+*
+* A failed write is deliberately NOT fatal — the derived id is stable for this
+* process and for every later run that reads the same accountId, so the worst
+* case is one extra id on disk rather than a broken check-in.
+*/
+async function traeDeviceIdFor(accountId) {
+	if (accountId === void 0 || accountId === "") return void 0;
+	const registry = await loadTraeDeviceRegistry();
+	const known = registry.get(accountId);
+	if (known !== void 0) return known;
+	const deviceId = accountDeviceId(accountId);
+	registry.set(accountId, deviceId);
+	try {
+		const path = await traeDeviceRegistryPath();
+		await withFileLock(path, async () => {
+			await writeFileAtomic(path, `${JSON.stringify({
+				version: 1,
+				accounts: Object.fromEntries(registry)
+			}, null, 2)}\n`, {
+				mode: 384,
+				dirMode: 448
+			});
+		});
+	} catch {}
+	return deviceId;
 }
 function parseOwn(text) {
 	try {
@@ -1099,7 +1205,16 @@ function parseOwn(text) {
 			userRegion: stored["userRegion"],
 			account: stored["accountName"] === void 0 ? void 0 : { username: stored["accountName"] },
 			expiredAt: stored["expiresAtMs"],
-			refreshExpiredAt: stored["refreshExpiresAtMs"]
+			refreshExpiredAt: stored["refreshExpiresAtMs"],
+			/**
+			* Must be carried across, like every other field here: this function
+			* rebuilds the credential from an explicit list, so anything missing from
+			* it is silently dropped on read. Forgetting this one turned
+			* `rememberDeviceId`'s write into a no-op — the id came back undefined on
+			* the very next read, so the account was re-issued a fresh device every
+			* time and the machine-wide gate came right back.
+			*/
+			deviceId: stored["deviceId"]
 		}, edition, "dsh");
 	} catch {
 		return;
@@ -1235,6 +1350,7 @@ var TraeCredentialStore = class {
 			region: regionOfCredential(credential),
 			source: credential.source,
 			tokenExpiresAtMs: credential.expiresAtMs,
+			deviceId: credential.deviceId,
 			selected: selectedExists ? traeAccountId(credential) === this.accountId : credential === defaultSelected
 		}));
 	}
@@ -1261,6 +1377,65 @@ var TraeCredentialStore = class {
 	async credentialOf(accountId) {
 		if (accountId === "") return void 0;
 		return (await this.readAll()).find((credential) => traeAccountId(credential) === accountId);
+	}
+	/**
+	* The `x-device-id` this account should be presented under.
+	*
+	* Per account, never per machine — see {@link accountDeviceId} for why the
+	* desktop identity cannot be shared between logins. Resolution order:
+	*
+	*   1. the credential's own `deviceId`, which the check-in path writes back
+	*      on first use (the credential file is the portable copy: it survives a
+	*      `$DSH_HOME` move together with the token it belongs to);
+	*   2. {@link traeDeviceIdFor}, the persisted account→device map, which is
+	*      what covers accounts with no writable file of their own — the desktop
+	*      install's login above all.
+	*
+	* Returns undefined for an unknown account rather than inventing an id, so a
+	* typo in `accountId` fails the request instead of spending a stranger's
+	* device identity on it.
+	*/
+	async deviceIdOf(accountId) {
+		if (accountId === "") return void 0;
+		const credential = await this.credentialOf(accountId);
+		if (credential === void 0) return void 0;
+		if (credential.deviceId !== void 0) return credential.deviceId;
+		const deviceId = await traeDeviceIdFor(accountId);
+		if (deviceId === void 0) return void 0;
+		await this.rememberDeviceId(accountId, deviceId);
+		return deviceId;
+	}
+	/**
+	* Write a freshly derived device id into one account's own credential file.
+	*
+	* Best-effort by design: the id is already persisted in the account→device
+	* map, so a read-only `$DSH_HOME` (or a desktop-only account, which never had
+	* a writable file here) must not turn a working check-in into a failed one.
+	* Nothing is merged blindly either — the credential is re-read under the file
+	* lock so a concurrent token refresh, written by {@link refreshNow}, is not
+	* rolled back by this add-on write.
+	*/
+	async rememberDeviceId(accountId, deviceId) {
+		const path = this.ownAuthPath(accountId);
+		try {
+			await withFileLock(path, async () => {
+				let stored;
+				try {
+					stored = parseOwn(await readFile(path, "utf8"));
+				} catch {}
+				if (stored === void 0 || stored.deviceId !== void 0) return;
+				await writeFileAtomic(path, `${JSON.stringify({
+					version: OWN_VERSION,
+					credential: {
+						...stored,
+						deviceId
+					}
+				}, null, 2)}\n`, {
+					mode: 384,
+					dirMode: 448
+				});
+			});
+		} catch {}
 	}
 	async resolve() {
 		const credential = await this.current();
@@ -1877,7 +2052,24 @@ function nonEmpty(value) {
 function deviceCenterId(storage) {
 	const prefix = "iCubeAuthInfo://icube-dc:";
 	const ids = Object.keys(storage).filter((key) => key.startsWith(prefix)).map((key) => key.slice(25)).filter(Boolean);
-	return ids.length === 1 ? ids[0] : void 0;
+	if (ids.length === 1) return ids[0];
+	/**
+	* 多于一个 `icube-dc` 键是新版客户端的常态：本机 `TRAE SOLO CN` 同时留有
+	* `2833884447254011`（纯数字）与 `aha-e4b8d545e2fb07ee4cd01c966d4264ab`
+	* （`has_device_id_updated_to_aha` 写下的迁移名）。
+	*
+	* 此前这里在「键数 !== 1」时返回 undefined，于是 `deviceId` 静默回落到
+	* `telemetry.devDeviceId` 这个 UUID —— 而**签到链路按 x-device-id 认设备**：
+	* 用 UUID 打 claim 一律答 `9074`（「当前参与用户太多」只是它给用户的说法），
+	* 换成官方实际发送的那个纯数字 id 立刻 `code: 0`（2026-10-12 实测）。status
+	* 查询对两种 id 都答 200，所以这个错值只在真正领取时暴露。
+	*
+	* 选择规则取**官方客户端自己的行为**（同机日志 2026-10-10：它带的 X-Device-Id
+	* 请求头是 `2833884447254011`）：纯数字者优先；没有纯数字候选时取首个，保持
+	* 单键场景与旧安装的行为不变。
+	*/
+	const numeric = ids.filter((id) => /^\d+$/.test(id));
+	return numeric[0] ?? ids[0];
 }
 /** Read stable identity from Trae-owned files without generating impersonated IDs. */
 async function readTraeIdentity(candidate, options = {}) {
@@ -5814,7 +6006,21 @@ function apply(ctx, config) {
 			liveDirectory: [],
 			usageClient: new TraeUsageClient({
 				credential: () => store.resolve(),
-				deviceId: async () => (await identity()).deviceId
+				/**
+				* The BOUND account's own device id, not the machine's.
+				*
+				* A shared id would cap the whole pool at one payout per machine per
+				* day, which is exactly what the check-in route is trying to avoid
+				* (see {@link accountDeviceId}). Chat rides on this client too, so
+				* both halves speak under the same device — a login that signs one
+				* way and chats another is the kind of inconsistency that gets
+				* flagged.
+				*/
+				deviceId: async () => {
+					const bound = await store.current();
+					if (bound === void 0) return (await identity()).deviceId;
+					return await store.deviceIdOf(traeAccountId(bound)) ?? (await identity()).deviceId;
+				}
 			}),
 			/**
 			* Credit balance of one named account, WITHOUT rebinding the store
@@ -5830,7 +6036,15 @@ function apply(ctx, config) {
 			creditsOfAccount: async (accountId) => {
 				const credential = await store.credentialOf(accountId);
 				if (credential === void 0) return void 0;
-				return toCredits(await new TraeUsageClient({ credential: async () => credential }).snapshot());
+				/**
+				* Its OWN device id: reading one account's balance must never spend
+				* (or reveal) another account's device identity.
+				*/
+				const deviceId = await store.deviceIdOf(accountId);
+				return toCredits(await new TraeUsageClient({
+					credential: async () => credential,
+					...deviceId === void 0 ? {} : { deviceId: async () => deviceId }
+				}).snapshot());
 			},
 			/**
 			* A throwaway upstream client for ONE named account, used by the
@@ -5840,19 +6054,23 @@ function apply(ctx, config) {
 			* `usageClient` reads `store.resolve()` (the BOUND account), and
 			* `selectAccount` would both race concurrent chat requests and persist a
 			* switch the user never made — which is exactly what signing a backup
-			* account's card must NOT do. The device header is passed on purpose:
-			* the claim is device-scoped upstream, so a machine that already spent
-			* today's check-in has to be reported as such rather than silently
-			* looking like a fresh machine.
+			* account's card must NOT do.
+			*
+			* The device header is that ACCOUNT's id (`store.deviceIdOf`), not the
+			* machine's: the upstream gates the payout on `x-device-id`, so sharing
+			* one id across the pool would pay exactly one login per machine per day.
+			* Kept per account, every login in the pool can collect its own (measured
+			* 2026-10-12: same machine, second account, substitute id → `code: 0`).
 			*
 			* `undefined` means "no usable credential for that id here".
 			*/
 			clientOfAccount: async (accountId) => {
 				const credential = await store.credentialOf(accountId);
 				if (credential === void 0) return void 0;
+				const deviceId = await store.deviceIdOf(accountId);
 				return new TraeUsageClient({
 					credential: async () => credential,
-					deviceId: async () => (await identity()).deviceId
+					...deviceId === void 0 ? {} : { deviceId: async () => deviceId }
 				});
 			},
 			discoverModels: async (signal) => {

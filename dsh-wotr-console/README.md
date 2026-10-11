@@ -51,20 +51,17 @@ Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`
 
 | 入口 | 管什么 |
 |---|---|
-| **WOTR 管理** 管理页 | 六个标签页：三个**配置**（XD Pool / Trae 配置 / Qoder 配置）+ 三个**查看/管理**（账号 / 积分 / 使用记录） |
+| **WOTR 管理** 管理页 | 三个标签页，都是**配置**页：workbuddy / trae / qoder，各自带「刷新账号」与「添加账号」 |
 
 管理页的 tab：
 
 | Tab | 内容 |
 |---|---|
-| XD Pool | WorkBuddy 池配置：**「账号」区**（分配策略、清除冷却、每账号「参与轮换 / 保留额度 / 移出池子」）+ **「模型」区**（「从 WorkBuddy 刷新」拉实时目录并自动全启用、Max 模式、逐模型启用勾选、底部保存条）+ 该页独有的「已移出账号池」「积分自动化」两个分区 |
-| Trae 配置 | Trae 配置：供应商开关（页头）、区域切换、「账号」区（分配策略 / 清除冷却 / 参与轮换 / 保留额度）、「模型」区（勾选与「一键测试启用模型」、**「从 Trae 刷新」**） |
-| 账号 | **三列，同一套模块样式**：WorkBuddy、Trae、Qoder。每列都是「列头（标题+区域切换+操作）」+「4 张统计小卡」+**「账号使用方式」分配策略**+「账号卡（名称+状态标签+KV 明细+操作按钮）」。窄屏按 `auto-fit minmax(300px,1fr)` 自动折行 |
-| Qoder 配置 | **单列**（与另两个配置页同一条骨架）：页头（刷新 / 添加账号）→ 四格统计 → **「账号」区**（浏览器设备流登录逐个入池、状态/令牌到期/冷却/限流次数/**积分余额，每 30 秒自动刷新**、清除冷却、参与轮换、保留额度、移出池子）→ **「模型」区**（`QoderModelsPanel`：逐模型启用勾选 + **「从 Qoder 刷新」**，图片与上下文跟随上游，见下文「Qoder 模型」）。账号区与「账号」页第三列是**同一个面板**（`QoderPoolPanel`） |
-| 积分 | 当前总积分、每账号额度与积分包明细 |
-| 使用记录 | 每日净变化 + 按账号的首次/最新对比（本地落盘数据） |
+| workbuddy | WorkBuddy 池配置：**「账号」区**（分配策略、清除冷却、每账号「参与轮换 / 保留额度 / 移出池子」）+ **「模型」区**（「从 WorkBuddy 刷新」拉实时目录并自动全启用、Max 模式、逐模型启用勾选、底部保存条）+ 该页独有的「已移出账号池」「积分自动化」两个分区 |
+| trae | Trae 配置：供应商开关（页头）、区域切换、「账号」区（分配策略 / 清除冷却 / 参与轮换 / 保留额度）、「模型」区（勾选与「一键测试启用模型」、**「从 Trae 刷新」**） |
+| qoder | **单列**（与另两个配置页同一条骨架）：页头（刷新 / 添加账号）→ 四格统计 → **「账号」区**（浏览器设备流登录逐个入池、状态/令牌到期/冷却/限流次数/**积分余额，每 30 秒自动刷新**、清除冷却、参与轮换、保留额度、移出池子）→ **「模型」区**（`QoderModelsPanel`：逐模型启用勾选 + **「从 Qoder 刷新」**，图片与上下文跟随上游，见下文「Qoder 模型」）。账号区就是 `QoderPoolPanel` 本体 |
 
-> **「从 WorkBuddy 刷新」（XD Pool 模型区）**：与 Trae 页的「从 Trae 刷新」同款
+> **「从 WorkBuddy 刷新」（workbuddy 模型区）**：与 Trae 页的「从 Trae 刷新」同款
 > 「拉取即落盘」。服务端 `POST /plugins/dsh-wotr-console/wb/models/refresh?region=`
 > （`lib/index.js`）经 `currentApi()` 拉一次上游实时目录并更新内存 catalog ——
 > vendor 的启动种子只在插件加载时拉一次，WorkBuddy 之后新上的模型要靠它才能
@@ -86,7 +83,7 @@ Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`
 > 「从 Qoder 刷新」也改成拉取即落盘。图片与上下文在模型卡上照旧看得见 ——
 > 名字后面的「图片」标记、meta 里的「上下文 180K」（上游 `max_input_tokens`）。
 
-> **三个配置页（XD Pool / Trae 配置 / Qoder 配置）共用同一套骨架与控件。** 它们由
+> **三个配置页（workbuddy / trae / qoder）共用同一套骨架与控件。** 它们由
 > `console.mjs` 的 `PoolConfigTab` / `TraeConfigTab` / `QoderPoolPanel` +
 > `QoderModelsPanel` 各自实现，但自上而下是同一个形状：
 >
@@ -98,11 +95,16 @@ Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`
 > | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子）。**卡上的标签词汇、压暗规则、余额读法三页逐字同款**：首标签只有「当前使用 / 备用」（当前那张亮着，其余压暗；宿主没给「当前是谁」时一张都不压暗）；状态标签是「冷却中 / 已停用 / 已保留·暂停 / 限流 N 次」——**限流次数是标签，不是常驻的「触发限流 0 次」行**；余额统一走 `accountCreditsOf`（WorkBuddy 的 `credits` 是 `{total, packages…}` **对象**，曾经直接 `fmtNum` 渲染成「通用余额 –」，而数字就在响应体里）。三页的**卡片底部都是「切换账号」**，且**当前使用的那张都不给「切换到此账号」**（它已经是当前了）：Trae / Qoder 的那一行里并排两颗按钮 ——「切换到此账号」+「签到」（**签到是每张卡都有**，含当前使用那张），WorkBuddy 因为还要放「取消固定」，同样是并排按钮 —— 位置相同、措辞相同，另外 WorkBuddy 的「取消固定」（`accountId: null`）把路由交回分配策略 |
 > | 「模型」区 | `Section` 收尾 + `wbc-cols` 网格的 `ModelCard`（勾选 / 元信息 / 附加控件 / 测试徽章）+ 底部 sticky 保存条 `wbc-model-actions` |
 >
-> 三页**功能集**不同（Trae 页头有供应商开关；XD Pool 多「已移出账号池」「积分自动化」两个分区；Qoder 页头有「添加账号」、账号卡多「令牌到期 / 余额」行），
+> 三页**功能集**不同（Trae 页头有供应商开关；workbuddy 多「已移出账号池」「积分自动化」两个分区；Qoder 页头有「添加账号」、账号卡多「令牌到期 / 余额」行），
 > 签到也是这一层差异：**三家的签到都按账号**（每张登录着的卡都能签自己那个账号），
-> 区别在上游：XD Pool 自己认 `accountId`；Trae 的 `checkin_credits/claim` **没有这个参数** —— 那一边靠「换一份凭证」实现（路由收 `accountId`，用 `clientOfAccount` 造一次性 client 走同一条流程，
-> `creditsOfAccount` 那条不重绑 store 的老路子），所以按下备用卡的「签到」签的是那个账号，Trae 正在服务的账号一动不动；Trae 另有一道**设备**门禁（`did_checked_in` / `code: 9095`：一台机器一天只签一次），
+> 区别在上游：workbuddy 自己认 `accountId`；Trae 的 `checkin_credits/claim` **没有这个参数** —— 那一边靠「换一份凭证」实现（路由收 `accountId`，用 `clientOfAccount` 造一次性 client 走同一条流程，
+> `creditsOfAccount` 那条不重绑 store 的老路子），所以按下备用卡的「签到」签的是那个账号，Trae 正在服务的账号一动不动；Trae 另有一道**设备**门禁（`did_checked_in` / `code: 9095`），
 > 界面因此把「这个账号今天已经签过了」与「本机今天已经签过了」分开说 —— 混成一句会让用户以为新账号拿到了钱，而它一分没拿；
+> 而**这道门禁是按 `x-device-id` 认设备的，所以每个账号领一个自己的设备身份**（`TraeCredentialStore#deviceIdOf`）：
+> 上游把签到结算到设备上，全池共用一个 id 就等于整台机器一天只可能有一次入账 ——
+> 备用卡按下去换来的会是 `9095`「当前设备今日已经签到」。各自持一个 id 之后，同机每个登录都能签到自己那份
+> （2026-10-12 实测：同一个未签账号，真机 id 答 `9095`、换成派生 id 立刻 `code: 0`，而 `x-machine-id` 完全不影响结果）；
+> 代价是**账号的设备身份不再是桌面安装那个 id**，Trae 自己日志里的 `X-Device-Id` 与本插件发的对不上，这是刻意的；
 > **Qoder 的签到在活动线上**（`GET /sash/api/v1/me/campaigns` → `POST …/{campaignId}/claim`，见下文「每日签到（活动线）」一节）：
 > 凭据按 `accountId` 取那一份，整个流程**不碰 `selectedAccountId`**（不切号），
 > 而且上游的领取是**幂等**的 —— 对已领活动再 POST 回 200 + `replayed: true` 而余额一分不变，
@@ -113,20 +115,20 @@ Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`
 > 只能显式断言（而且整页文本断言不够 —— 卡上贴错的标签，整页搜词照样通过，得按卡片取文本）。
 >
 > 补充两点实现细节：`Section`（分区）与 `CardActions`（卡片操作）也是共用模块里的
-> 原语，新增分区/卡片控件请直接用它们，别在页面里另起一套；「Qoder 配置」页的两个
+> 原语，新增分区/卡片控件请直接用它们，别在页面里另起一套；「qoder」页的两个
 > 面板用 `flat` 平铺（`.wbc-flat{display:contents}`）直接成为页面 `wbc-body` 的子项，
 > 这样它与另两页的分区间距一致（16px），而同一个 `QoderPoolPanel` 在「账号」页第三列
 > 里仍是自带 `wbc-col` 的一列（12px）。
 >
-> XD Pool 的 vendored 客户端（`vendor/xdpool/lib/client.js`）仍被内联执行，但只用于
+> workbuddy 的 vendored 客户端（`vendor/xdpool/lib/client.js`）仍被内联执行，但只用于
 > 两件事：注册它那份 locale 文案，以及解析它原本绑定的 settings 作用域 ——
 > 配置界面本身已由本包自写，不再嵌入上游的 `PoolCard`。
 >
-> Trae 配置 tab 同样是**本包自写**：不嵌入上游 dsh-connect-trae 的浏览器卡片
+> trae tab 同样是**本包自写**：不嵌入上游 dsh-connect-trae 的浏览器卡片
 > （`vendor/trae` 已移除），读写走 `lib/trae.js` 已有的路由与 `regions` / `accounts`
 > 设置字段。它的 settings 作用域由 `client.js` 的 `resolveTraeSettings()` 解析后传入。
 
-打开本页默认停在 **XD Pool**。
+打开本页默认停在 **workbuddy**。
 
 ## 目录结构
 
@@ -138,7 +140,7 @@ dsh-wotr-console/
 │   ├── index.js               WorkBuddy 半边（provider 注册 + 管理页接口）
 │   ├── trae.js                Trae 半边（上游 lib/index.js 并入；号池为新增）
 │   ├── client.js              浏览器端唯一 bundle（两块内联 + 卡片截获层）
-│   ├── console.mjs            六标签页管理页源码（唯一事实来源）
+│   ├── console.mjs            三标签页管理页 + 胶囊卡片源码（唯一事实来源）
 │   ├── qoder-auth.mjs         Qoder CN 设备流登录（PKCE + 轮询取 token + 逐账号落盘）
 │   ├── qoder-pool.mjs         Qoder CN 号池（凭据扫描 / 取号 / 冷却 / 停用 / 保留额度）
 │   ├── qoder-credits.mjs      Qoder CN 积分额度（quota/usage 三池解析 + 逐账号刷新）
@@ -173,15 +175,15 @@ dsh-wotr-console/
 并保留 profile 里已保存的 Trae 设置。
 
 客户端 bundle 仍然只有**一个**：entry B 用的是子路径 specifier（含 `/`），
-client-modules 不会为它建客户端条目，所以六个标签页只加载一次。
+client-modules 不会为它建客户端条目，所以三个标签页只加载一次。
 
-## 设置入口：一个页面、六个标签页
+## 设置入口：一个页面、三个标签页
 
 两个 vendored 客户端原本各自把设置卡片注册成**独立入口**：
 
 | vendored | 原本的入口 | 现在 |
 |---|---|---|
-| `vendor/xdpool` | `settings.section` id=`workbuddy-xdpool`（设置面板一整个页面，order 440） | 截获为 WOTR 页的 **XD Pool** 标签页 |
+| `vendor/xdpool` | `settings.section` id=`workbuddy-xdpool`（设置面板一整个页面，order 440） | 截获为 WOTR 页的 **workbuddy** 标签页 |
 
 做法在 `lib/client.js` 的 `captureCards()`：转发 vendored `apply` 时套一层
 **替身 ctx**，只把目标槽位的 `register` 拦下来，记下组件本体与它原本会收到的
@@ -191,10 +193,10 @@ props（`opts.inject()` 求值一次，`settingsScope` 是同一对象引用）�
 - 上游源码**一行未改**，日后仍可逐字节对照升级；
 - 个别失效的 effect 按标签丢弃（见下）。
 
-### Trae 配置 tab：本包自写
+### trae tab：本包自写
 
 上游 `dsh-connect-trae` 的浏览器半边（`vendor/trae/client.js`）**已整体移除**，
-Trae 配置页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 XD Pool 页共用同一套
+trae 页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 workbuddy 页共用同一套
 模块样式（`ColumnHead` / `StatsRow` / `AccountCard` / `ModelCard`）实现：供应商开关、
 账号绑定、模型勾选与测试、号池管理。
 
@@ -222,7 +224,7 @@ Trae 配置页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 XD
 `SlotRegistry.inject`）订阅槽位的 declaration epoch，**声明到了才在 effect 里跑 cb**。
 所以 `apply` 刚返回时通常一张卡片都还没拿到。
 
-早先按快照传值，后果是「WOTR 页正常、六个标签页都在，但三个配置标签页显示
+早先按快照传值，后果是「WOTR 页正常、三个标签页都在，但配置组件显示
 **配置组件未能载入**」—— 注册项全部正确，不报任何错。
 
 现在对外暴露的是句柄：
@@ -242,11 +244,63 @@ Trae 配置页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 XD
 > 句柄先返回 `null`、随后才变成有卡片并触发 `subscribe`，
 > 断言页面确实补渲染出了卡片本体。
 
-> **必须丢弃的 effect**：`installNavIcon` 会给「XD Pool」那条设置导航行画图标，
+> **必须丢弃的 effect**：`installNavIcon` 会给「workbuddy」那条设置导航行画图标，
 > 方式是往 `document.body` 挂一个 `MutationObserver`（childList + subtree +
 > characterData），每次 DOM 变动全页扫一遍找那条行。合并后那条行已不存在，
 > 它匹配不到任何目标却仍常驻监听整个应用 DOM —— 纯粹的开销。
 > 所以 `captureCards` 按标签（`settings nav icon`）把该 effect 丢掉了。
+
+## composer 的积分胶囊（点开 = 这个平台的全部账号）
+
+输入框下面那颗胶囊（槽位 `conversation.composer.dock`）从「只显示一个数字」
+变成了**按钮**：点开是一张卡片，列出**当前模型所属那一个反代平台**的全部账号。
+用户的原话是「是单独反代平台的所有账号，不是所有账号」—— 所以卡片按
+`provider → 平台` 分组，而不是把五个 provider 的账号混在一张表里：
+
+| 平台（provider） | 卡片里列什么 | 组标题副文本 |
+|---|---|---|
+| WorkBuddy（`workbuddy-xdpool` / `-global`） | 国内版 + 国际版**两个区域** | `国内版 2 个 · 本轮用 1412` |
+| Trae（`trae` / `trae-global`） | 国内版（cn）+ 国际版（ai）**两个区域** | `国内版 2 个` |
+| Qoder（`qoder`） | 单个号池（没有区域概念 → **不画组标题**） | — |
+
+`CREDIT_FAMILIES` 是这张表在代码里的样子；胶囊自己的数字仍然只讲**当前 provider
+那个区域里正在服务的那一个账号**（WorkBuddy 用 `activeAccountId`、Trae 用
+`lastServedId` 退回「当前账号」、Qoder 用 `serving.accountId`），与卡片是两个口径。
+
+每一行有两个控件，对应用户要的两件不同的事：
+
+| 控件 | 干什么 | 打到哪 |
+|---|---|---|
+| **「参与轮换」开关** | 把这个账号移出 / 放回轮换 | WorkBuddy：`POST /plugins/dsh-workbuddy-xdpool/accounts/disabled`（服务端合并）；Trae / Qoder：设置 `regions` / `disabledAccountIds`，**读-改-写合并** |
+| **「切换到此账号」** | 下一次请求优先用它 | WorkBuddy：`POST …/accounts/select?region=cn\|global`；Trae：`POST /pool/account?region=` **且必须补一次 `accounts` 设置写**；Qoder：写 `selectedAccountId` |
+
+已经是「当前账号」的那一行：WorkBuddy 把按钮换成「**取消固定**」（`{accountId:null}`，
+交回轮换）；Trae / Qoder **不给按钮** —— 这两家的池永远有一个当前账号，
+「切换到这个已经是当前的账号」是纯 no-op（两个配置页也是这么做的）。
+
+### 四个「做反了也不会报错」的坑
+
+| 坑 | 后果 | 现在的做法 |
+|---|---|---|
+| Trae 的 `credits.total` 是**发放总量**，不是余额 | 真机上把 3,050（发放）当成余额显示，而账号只剩 796.88 | `accountCreditsOf(row, family)` 按平台取字段：Trae 取 `generalAvailable → available → total`，WorkBuddy / Qoder 取 `total → …`（Qoder 就是裸数字） |
+| WorkBuddy 的 `disabledAccountIds` 是**两个区域共用的一份扁平数组**（两个 provider 注册同一个 `settingsNs` + `settingsPath: []`） | 配置页只看得见本区域的账号，照本区域拼一份完整名单写回设置，会把**另一个区域**已停用的账号静默重新启用 | 启停只走 `/accounts/disabled` 路由（服务端对 `current().disabledAccountIds` 合并）；单测里除了断言「请求发出去了」，还断言**没有**顺手写那份设置 —— 只断言前者的话，「路由 + 顺手再写一次」也能全绿 |
+| 卡片开着的时候轮询额度 | 上游按账号计费（Trae 的 `/usage` 是一次实时计费读），卡片开着不动也在持续花钱 | 只在**打开卡片 / 手动刷新 / 写完一次启停或切换之后**取一次；`CREDIT_REFRESH_MS = 30000` 只作用于胶囊那颗数字。单测里钉着「展开卡片不新增任何 interval」 |
+| 行里的名字直接用上游昵称 | Qoder / Trae 的 label 是 uuid，卡片被撑破 | `shortAccountName()` 截到 8 个字符 + `…`，完整值放 `title` |
+
+### 浮层为什么是 portal + fixed
+
+胶囊本身在 composer 那一行里是 `inline-flex`，而嵌入形态下 composer 外层有
+`overflow:hidden` 的容器（`.ST7X_W_embeddedBody`）—— 行内绝对定位的卡片会被裁掉。
+所以卡片走 `createPortal(card, document.body)` + `position: fixed`，
+`z-index: 1100`，与内置的 `ContextMeter` 同一条路；坐标由
+`measureCreditCard(anchor, panel)` 量出来（贴着胶囊上沿弹出，顶到视口就翻到下方）。
+拿不到 `react-dom` 时（`lib/client.js` 里 `require('react-dom')` 的 try/catch）
+退回行内渲染并打一条 `console.error` —— 卡片会难看，但不至于整个设置面板崩掉。
+
+点外面或按 Esc 关闭：捕获阶段的 `pointerdown`（click 会被卡片里的按钮吃掉，
+而且「按下即关」更接近原生浮层），命中判定同时看**胶囊**与**卡片**两个 ref ——
+卡片已经 portal 到 body，不在胶囊的 DOM 子树里，只判断胶囊的话，
+在卡片里点任何东西都会立刻把它关掉。
 
 ## 构建（改了源码必须跑）
 
@@ -264,7 +318,7 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 427 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）
+node test/console-render.test.mjs   # 444 项：真正渲染三个 tab（三个配置页的同一套骨架与页头按钮、Qoder 单列）与 **composer 胶囊展开的账号卡片**，空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）、卡片的启停/切换两条写路径与「展开卡片不新增任何定时器」
 node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
 node test/trae-checkin-route.test.mjs # 36 项：Trae 签到路由（指定账号走 clientOfAccount 且绝不碰绑定账号、设备门禁 9095 与「账号已签」分开、未知账号 404、方法/区域/来源/坏 JSON 边界）
@@ -360,7 +414,7 @@ node test/qoder-shim.test.mjs       # 52 项：loopback shim（loopback/bearer/C
 > 反向验证过：把条件改回 `tab === 'qoder'` → 4 条全红，且打过的 URL 列表里
 > 一条 Qoder 请求都没有。
 
-## Trae 号池（按 XD Pool 的做法）
+## Trae 号池（按 workbuddy 的做法）
 
 WorkBuddy 侧一直是**多账号池**（`WorkBuddyAccountPool`）：本机所有登录构成池子，
 被限流或额度耗尽就冷却换号。Trae 侧原本不是 —— 每区域只**绑定一个**账号
@@ -581,7 +635,7 @@ Qoder 面板（`QoderPoolPanel`）同时渲染在**两个 tab** 下：「账号�
 
 全部带本机 Origin 校验（非 loopback 返回 `403 origin-not-trusted`）。
 
-### Qoder 模型（「Qoder 配置」页的「模型」区）
+### Qoder 模型（「qoder」页的「模型」区）
 
 这一区与 WorkBuddy / Trae 的模型列**逐条同款**：每张卡只有一个「启用」勾选，图片
 能力与上下文窗口都跟随上游目录，没有任何手动开关。三个字段仍会被写入，但值由
@@ -997,5 +1051,5 @@ data:{"headers":{...},"body":"{\"choices\":[...]}","statusCodeValue":200,"status
 
 - 改动落在 `node_modules` 里，**插件升级会被覆盖**。
 - 依赖各客户端的**私有接口**，官方改协议可能失效。
-- 管理页的使用记录**只在打开页面时采集**（刻意不做后台轮询），
-  所以每日净变化在「当天只在消耗后才打开过」时会显示为 0 而非负数。
+- 「积分」与「使用记录」两个标签页已移除：采集接口（`/plugins/dsh-wotr-console/sample`
+  与 `/history-summary`）仍在服务端保留，但管理页不再读取，落盘历史因此不再增长。

@@ -5,7 +5,7 @@
 
 | 插件 | 状态 | 作用 |
 |---|---|---|
-| **`dsh-wotr-console@1.1.0`** | **合并版 · 已部署** | WorkBuddy 模型池 + Trae 接入 + Qoder 号池，三个独立 provider 家族，共用一张六标签页管理页（三个配置 + 三个查看，账号页三列） |
+| **`dsh-wotr-console@1.1.0`** | **合并版 · 已部署** | WorkBuddy 模型池 + Trae 接入 + Qoder 号池，三个独立 provider 家族，共用一张三标签页管理页（三个配置页，各带「刷新账号 / 添加账号」） |
 | `dsh-workbuddy-console@2.0.48` | 归档（已被合并版取代） | 合并前的 WorkBuddy 单插件 |
 | `dsh-connect-trae@3.0.0` | 归档（已被合并版取代） | 合并前的 Trae 单插件，原版未改动 |
 
@@ -22,7 +22,7 @@
 > - 合并过程中修掉一个真实缺陷：`console.mjs` 的 `useEffect` 依赖数组在
 >   `loadTrae` 的 `const` 定义之前引用它（TDZ），渲染期抛错 → 设置面板白屏。
 > - WorkBuddy 的独立 Web 控制台（`/wb-console`）此前已移除，形态对齐 Trae —— 只注册 LLM provider。
-> - DSH 原生管理页（设置面板内）**扩展为六标签页**：XD Pool / Trae 配置 / Qoder 配置 / 账号 / 积分 / 使用记录 —— 三边的**配置**也并了进来；「账号」页**三列**分列 WorkBuddy、Trae 与 Qoder，设置里不再有独立的池页面、Trae 卡片与单独的 Trae / Qoder 账号页。
+> - DSH 原生管理页（设置面板内）**为三标签页**：workbuddy / trae / qoder —— 三边的**配置**并了进来；每页页头都带「刷新账号」与「添加账号」，账号管理就近落在各自的配置页里。设置里不再有独立的池页面、Trae 卡片或单独的账号页。
 > - 仓库根新增 `package.json`（**安装壳**）：让 DSH 插件管理页能直接从这个 GitHub 地址安装。
 >   详见下面「零、安装」。
 
@@ -84,7 +84,7 @@ winget install --id Git.Git -e --source winget
 | `main` / `exports["."]` | `./dsh-wotr-console/lib/index.js` | WorkBuddy 半边入口 |
 | `exports["./trae"]` | `./dsh-wotr-console/lib/trae.js` | Trae 半边入口（第二个 Loader entry） |
 | `exports["./qoder"]` | `./dsh-wotr-console/lib/qoder.js` | Qoder 半边入口（第三个 Loader entry） |
-| `exports["./client"]` | `./dsh-wotr-console/lib/client.js` | 浏览器端 bundle（六标签页） |
+| `exports["./client"]` | `./dsh-wotr-console/lib/client.js` | 浏览器端 bundle（三标签页） |
 | `dsh.bundle.patch` | `./dsh-wotr-console/cordis.patch.yml` | **组合包声明**，管理页据此识别 |
 | `dsh.client` | `platform: web` + inject 列表 | 客户端注入目标 |
 
@@ -135,14 +135,14 @@ dsh-workbuddy-mode/
 │   ├── lib/wb-auth.mjs              WorkBuddy 登录协议（客户端 OAuth 轮询换 token）
 │   ├── lib/trae-auth.mjs            Trae 登录协议（ExchangeToken + 设备绑定）
 │   ├── lib/client.js                浏览器端唯一 bundle（三块内联 + settings 作用域解析）
-│   ├── lib/console.mjs              六标签页管理页源码（唯一事实来源）
+│   ├── lib/console.mjs              三标签页管理页源码（唯一事实来源）
 │   ├── lib/credit-store.mjs         积分与历史记录的落盘存储
 │   ├── cordis.patch.yml             三个 Loader entry（勿改 id，见文件内注释）
 │   ├── scripts/gen-console-inline.mjs 把 console.mjs 内联进 client.js（支持 --check）
 │   ├── scripts/gen-xdpool-client.mjs  把 vendor/xdpool/lib/client.js 内联进 client.js
 │   ├── test/credit-store.test.mjs   数据层单测（14 项）
 │   ├── test/client-apply.test.mjs   仿浏览器调用 apply 的单测（34 项，防启动失败）
-│   ├── test/console-render.test.mjs 真正渲染六个 tab（含账号页三列与活句柄）的单测（防白屏）
+│   ├── test/console-render.test.mjs 真正渲染三个 tab（三个配置页 + 活句柄 + 胶囊卡片）的单测（防白屏）
 │   ├── test/wb-auth.test.mjs        WorkBuddy 登录协议单测（64 项）
 │   ├── test/trae-auth.test.mjs      Trae 登录协议单测（71 项）
 │   ├── test/trae-pool.test.mjs      Trae 账号池与凭据落盘单测（46 项）
@@ -230,7 +230,7 @@ cd dsh-workbuddy-mode            # 改成你实际克隆下来的目录
 
 合并版是一次**替换**（不是原地更新），脚本依次做：
 
-1. **源码门禁** —— 校验 `client.js` 内联块与 `console.mjs` 同步；在仓库内的插件目录挂一层宿主内包软链（裸 Node 跑单测用，见「零、安装」）；再跑 **24 套单测**；任一失败即停，不把坏版本推上去（失败会复跑一次并把失败的断言打出来）。
+1. **源码门禁** —— 校验 `client.js` 内联块与 `console.mjs` 同步；在仓库内的插件目录挂一层宿主内包软链（裸 Node 跑单测用，见「零、安装」）；再跑 **24 套单测 + host-assembly**（`npm test` 一条链跑完 25 套）；任一失败即停，不把坏版本推上去（失败会复跑一次并把失败的断言打出来）。
 2. **备份** profile 的 `package.json` / `cordis.patch.yml` / `pnpm-lock.yaml` 与两个旧包到 `~/.dsh/wotr-merge-backup/<时间戳>/`。
 3. `rsync --delete` 同步 `dsh-wotr-console/`。
 4. 改 profile `package.json`：依赖换成 `link:` 指向本仓库，`bundles` 里两个旧包换成新包。
@@ -249,14 +249,14 @@ cd ~/.dsh/profiles/desktop && "$NODE" "$PNPM" install     # 应显示 Packages: 
 
 **部署后必须重启 DSH**（退出后重新打开）：这些是 ES module，热重载不会重新加载代码。
 
-**配置方式**：重启后 → **设置 → WOTR**（一个入口，六个标签页）：
+**配置方式**：重启后 → **设置 → WOTR**（一个入口，三个标签页）：
 
-- **`XD Pool`** 标签页 —— WorkBuddy 侧配置：管理账号池、勾选模型、设置分配策略
-- **`Trae 配置`** 标签页 —— Trae 侧配置：区域开关、刷新账号与 Token、模型勾选与测试
-- **`Qoder 配置`** 标签页 —— Qoder 侧配置：设备码登录、号池与每日签到
-- **`账号` / `积分` / `使用记录`** —— 查看页（`账号` 三列分列 WorkBuddy、Trae 与 Qoder，见第六节）
+- **`workbuddy`** 标签页 —— WorkBuddy 侧配置：管理账号池、勾选模型、设置分配策略
+- **`trae`** 标签页 —— Trae 侧配置：区域开关、刷新账号与 Token、模型勾选与测试
+- **`qoder`** 标签页 —— Qoder 侧配置：设备码登录、号池与每日签到、模型勾选
+- 每页页头都有「**刷新账号**」（重扫本机账号）与「**添加账号**」（浏览器登录入池）
 
-> 合并前 `XD Pool` 是设置面板里的独立页、`Trae` 是「设置 → 插件」里的卡片；
+> 合并前 `workbuddy` 是设置面板里的独立页、`Trae` 是「设置 → 插件」里的卡片；
 > 现在三者都并进了 `WOTR 管理`，设置里不再有单独的池页面、Trae 卡片或 Qoder 页面。
 
 **回滚**：把 `~/.dsh/wotr-merge-backup/<时间戳>/` 里的 `package.json`、`cordis.patch.yml`、`pnpm-lock.yaml` 拷回 profile，恢复 `node_modules-*` 两个旧包目录，再 `pnpm install`。
@@ -278,7 +278,7 @@ NODE="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runt
 # 1) 桥接层单测（44 项，含文本重复 bug 的回归）
 cd tools && "$NODE" dsml-test.mjs
 
-# 2) 全部单测 = 部署门禁（24 套 + host-assembly，见「三、部署」）
+# 2) 全部单测 = 部署门禁（24 套 + 装配后的 host-assembly = 25 套，见「三、部署」）
 cd .. && ./tools/apply-wotr.sh --dry-run      # 一次跑完所有套件
 cd dsh-wotr-console                            # 或单独复跑某几套：
 "$NODE" test/credit-store.test.mjs    # 数据层
@@ -319,7 +319,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 
 **最硬的验收方式**：让模型用 `write` 工具写一个文件，然后去磁盘核对内容是否正确——不看模型自己说"已完成"。
 
-**验收管理页**：打开 设置 → WOTR，六个 tab 应各有数据（默认停在 XD Pool；「账号」页的 Trae / Qoder 两列首次进入才拉取）；切到「使用记录」后再看 `daily.jsonl` 是否多了一行今天的记录。
+**验收管理页**：打开 设置 → WOTR，三个 tab（workbuddy / trae / qoder）应各有数据（默认停在 workbuddy）。每页页头都有「刷新账号」与「添加账号」两个按钮。
 
 > **路由前缀有两套，别搞混**：
 > - `/plugins/dsh-workbuddy-xdpool/*`、`/plugins/dsh-connect-trae/*` —— **有意沿用旧名**（都带 `dsh-` 前缀），
@@ -362,60 +362,91 @@ ls ~/.dsh/profiles/desktop/node_modules/
 
 ---
 
-## 六、WOTR 管理页（六个标签页）
+## 六、WOTR 管理页（三个标签页）
 
 **设置 → WOTR** 是唯一入口：配置与查看都在这一页里，设置里不再有单独的池页面或 Trae 卡片。
 
 | 入口 | 管什么 |
 |---|---|
-| `XD Pool` 标签页 | **配置**：WorkBuddy 的模型勾选、账号分配策略、积分自动化 |
-| `Trae 配置` 标签页 | **配置**：Trae 的区域开关、账号与 Token、模型勾选与测试 |
-| `Qoder 配置` 标签页 | **配置**：Qoder 的设备码登录、号池、每日签到与额度刷新 |
-| `账号` 标签页 | **查看**：三列 —— WorkBuddy、Trae、Qoder |
-| `积分` / `使用记录` 标签页 | **查看**：额度明细与历史变化 |
+| `workbuddy` 标签页 | **配置**：WorkBuddy 的模型勾选、账号分配策略、积分自动化 |
+| `trae` 标签页 | **配置**：Trae 的区域开关、账号与 Token、模型勾选与测试 |
+| `qoder` 标签页 | **配置**：Qoder 的设备码登录、号池、每日签到与额度刷新、模型勾选 |
 
-> 这两个配置标签页的组件本体**没有重写**，仍是 vendored 的 `PoolCard` 与
-> `TraeUsageCard`：`lib/client.js` 在转发它们的 apply 时套了一层替身 ctx，
-> 把原本注册成独立入口的卡片截获下来，改由管理页作为标签页渲染。
-> 上游源码一行未改，日后可继续逐字节对照升级。
+> 三个标签页的组件本体都是**本包自写**（`PoolConfigTab` / `TraeConfigTab` /
+> `QoderPoolPanel`），对齐同一套模块样式；vendored 的 `PoolCard` 仍被内联执行，
+> 但只用于提供类型与不参与渲染。每页页头都带「刷新账号」与「添加账号」。
 
-### 六个 tab
+### 三个 tab
 
 | Tab | 内容 | 数据来源 |
 |---|---|---|
-| **XD Pool** | 账号池状态、账号启用/移出、模型勾选与上下文、分配策略、积分自动化 | vendored `/status` |
-| **Trae 配置** | 区域开关、账号与 Token 刷新、模型勾选与测试、输入框读数开关 | Trae 半边 `/usage` 等 |
-| **账号** | **左列 WorkBuddy**：已登录账号、正常/冷却、额度、签到与连签、令牌到期<br>**中列 Trae**：各区域账号、选中状态、可用余额、签到<br>**右列 Qoder**：账号、冷却、余额、签到（按账号，不切号） | vendored `/status`（左）<br>Trae 半边 `/usage`（中）<br>Qoder 半边 `/qoder/pool`（右） |
-| **积分** | 当前总积分、每账号额度与积分包明细 | vendored `/status` |
-| **使用记录** | 每日净变化 + 按账号的首次/最新对比 | 本地 `daily.jsonl` + `credit-samples.jsonl` |
+| **workbuddy** | 账号池状态、账号启用/移出、模型勾选与上下文、分配策略、积分自动化 | vendored `/status` |
+| **trae** | 区域开关、账号与 Token 刷新、模型勾选与测试、输入框读数开关 | Trae 半边 `/usage` 等 |
+| **qoder** | 设备码登录、号池、每日签到与额度刷新、模型勾选 | Qoder 半边 `/qoder/pool` 等 |
 
-> 打开本页默认停在 **XD Pool** 标签页。
+> 「账号」（三列汇总）与「积分」（积分包明细）两个只读标签页已删除：它们的内容
+> 与三个配置页重复，却各自维护一份取数与刷新节奏 —— 同一份 `/usage` 被拉两次、
+> 两处显示的余额还可能不一致。现在每个平台的账号与余额只在**它自己的配置页**
+> 和 composer 那颗胶囊的卡片里出现（见下一节）。
+
+> 打开本页默认停在 **workbuddy** 标签页。
 >
-> 「账号」页是**响应式多列**：`repeat(auto-fit, minmax(300px, 1fr))`。
-> 面板够宽时三列并排（WorkBuddy / Trae / Qoder），窄时自动塌成一列上下排列 ——
-> 不会把卡片挤到没法看。各列有自己的区域切换、重新检测与签到，**互不影响**；
-> 一侧接口坏掉另两侧照常显示（单测里专门覆盖了这一点）。
+> 每页都是**单列自上而下**：页头 → 状态说明 → 统计小卡 → 「账号」区 → 「模型」区。
+> 页头按钮固定为「刷新账号」（重扫本机账号）与「添加账号」（浏览器登录入池）。
 >
-> **三列是同一套模块样式**：列头、统计小卡、账号卡、KV 明细、空态都由
+> 三页共用同一套模块样式：列头、统计小卡、账号卡、KV 明细、空态都由
 > `console.mjs` 里同一组共用组件（`ColumnHead` / `StatsRow` / `AccountCard` /
-> `KV` / `EmptyBox`）渲染，所以并排看不出是三套东西。先前各列各写各的，
-> 结果是左列没有统计行、列头按钮个数也不同。单测里直接比对各列的
-> **元素骨架与 class 集合**来守住这一点（只看文本抓不到 —— 各写各的也能对上文案）。
+> `KV` / `EmptyBox`）渲染。单测里直接比对各页的**元素骨架与 class 集合**
+> 来守住这一点（只看文本抓不到 —— 各写各的也能对上文案）。
 >
-> 三列的**签到都是按账号**的（每张卡签自己那个账号、不切换正在服务的账号）：
+> 签到的粒度是**按账号**（每张卡签自己那个账号、不切换正在服务的账号）：
 > WorkBuddy 上游自己认 `accountId`；Trae 靠「拿那个账号的凭据走同一条流程」；
 > Qoder 走活动线 `me/campaigns → claim`（见 `dsh-wotr-console/README.md`
 > 的「每日签到（活动线）」一节，含 `Cosy-ClientType` 必须是 `10` 这个静默坑）。
->
-> Trae 与 Qoder 两列**首次切入「账号」页时才拉取**（用 `useRef` 记住"已拉过"），
-> 因为 `/usage` 的 credits 是一次实时计费读，进页就无脑拉会白花配额。
-> 左列（WorkBuddy）进页即拉，它便宜。
+
+### composer 的积分胶囊：点一下看**这个平台**的全部账号
+
+输入框下面那颗「积分 1,104 · 1412」胶囊是**按钮**：点开是一张卡片，
+列出**当前模型所属那一个反代平台**的账号 —— 不是「所有平台的账号」：
+
+| 平台 | 卡片里列什么 | 胶囊数字是谁的 |
+|---|---|---|
+| WorkBuddy | **国内版 + 国际版**两个区域，各一行组标题（`国内版 2 个 · 本轮用 1412`） | 当前 provider 那个区域里**正在服务**的账号（`activeAccountId`） |
+| Trae | **国内版（cn）+ 国际版（ai）**两个区域 | 当前区域里 `lastServedId` 那个账号，没有就退回「当前账号」 |
+| Qoder | 单个号池（没有区域概念，所以不画组标题） | `serving.accountId`，没有就用当前账号 |
+
+每一行有**两个控件**（用户明确要的两件不同的事）：
+
+- **「参与轮换」开关** —— 把这个账号移出/放回轮换。WorkBuddy 走
+  `POST /plugins/dsh-workbuddy-xdpool/accounts/disabled`（服务端对当前值做合并）；
+  Trae / Qoder 是设置里那份 `disabledAccountIds`（**读-改-写合并**，不整段覆盖）。
+- **「切换到此账号」按钮** —— 让**下一次请求**优先用它。WorkBuddy 走
+  `POST …/accounts/select?region=cn|global`；Trae 打 `/pool/account?region=` 并且
+  **必须同时写 `accounts` 设置**（那个路由只改内存里的活池，重启就回去了）。
+- 已经是「当前账号」的那一行：WorkBuddy 把按钮换成「**取消固定**」（它的池把
+  「没有当前账号」当正常状态，取消即交回轮换）；Trae / Qoder **不给按钮** ——
+  这两家的池永远有一个当前账号，「切换到这个已经是当前的账号」是纯 no-op。
+
+几个刻意的取舍（都写进了 `console.mjs` 的注释与单测）：
+
+| 取舍 | 为什么 |
+|---|---|
+| **只在这几个时刻取数**：打开卡片、手动「刷新」、写完一次启停/切换之后 | 上游按账号计费的读（Trae 的 `/usage` 是一次实时计费调用）。**卡片开着也不轮询** —— 单测里钉着「展开卡片不新增任何定时器」 |
+| 胶囊自己 30 秒一刷，卡片打开时顺手带一次新的 | 胶囊那颗数字是「我现在能用多少」，长期停在旧值会误导；但**只刷胶囊**，不刷整张卡片 |
+| Trae 行显示 `available/generalAvailable`，**不是** `total` | Trae 的 `credits.total` 是**发放总量**（3,050），`available = total - consumed` 才是剩余（796.88）。真机上曾经把发放总量当余额显示 |
+| 写失败只占一行红字，不清空已显示的行 | 上游 4xx/断网时把卡片清成空态，用户会以为"账号没了" |
+| `disabledAccountIds` 在 WorkBuddy 是**两个区域共用的一份扁平数组** | 配置页只看得见本区域的账号，照本区域拼一份完整名单写回设置，会把**另一个区域**已停用的账号静默重新启用。所以这个开关只能走上面的路由，由服务端合并 |
+
+卡片本体是 `createPortal(…, document.body)` + `position: fixed`（拿不到 `react-dom`
+时退回行内渲染）：composer 外面在嵌入形态下有 `overflow: hidden` 的容器
+（`.ST7X_W_embeddedBody`），行内浮层会被裁掉；内置的 `ContextMeter` 用的也是
+「fixed + 端口到 body + `z-index: 1100`」这条路。
 
 
 ### 「登录账号」
 
-**WorkBuddy 可以直接在浏览器里登录添加**（「账号」页左列「**添加账号**」），
-也可以沿用原来的方式：在桌面版登录后在管理页点「**重新检测**」。
+**WorkBuddy 可以直接在浏览器里登录添加**（workbuddy 页页头「**添加账号**」），
+也可以沿用原来的方式：在桌面版登录后在管理页点「**刷新账号**」。
 
 浏览器登录**不是** OAuth 授权码流程（没有 client_id / redirect_uri / PKCE，
 不需要本地回调服务），而是「服务端发 authUrl → 浏览器登录 → 拿 state 轮询换 token」。
@@ -473,7 +504,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 cd dsh-workbuddy-mode/dsh-wotr-console
 node test/credit-store.test.mjs     # 14 项：积分/历史记录的读写、去重、坏行容错
 node test/client-apply.test.mjs     # 仿浏览器执行 client.js，真正调用 apply
-node test/console-render.test.mjs   # 427 项：真正渲染六个 tab（含账号页三列与活句柄），空数据/坏数据/边界值
+node test/console-render.test.mjs   # 444 项：真正渲染三个 tab 与 composer 胶囊卡片，空数据/坏数据/边界值
 node test/wb-auth.test.mjs          # WorkBuddy 登录（state 轮询）、凭据落盘
 node test/trae-auth.test.mjs        # Trae 登录（PKCE+回环回调，自动回调）、凭据落盘
 ```
@@ -538,8 +569,8 @@ web boot: 1 entry did not activate」）。根因是 `lib/client.js` 的包装�
 | 包数量 | **1 个** | 2 个 |
 | Loader entry | 3 个（指向不同模块，三套独立 Config） | 各 1 个 |
 | 独立 Web 控制台 | ❌ 无 | ❌ 无 |
-| 管理页 | ✅ `WOTR 管理`，六标签页（含三边**配置**，「账号」页三列） | WorkBuddy 三标签页；Trae 无 |
-| 配置入口 | **并入** `WOTR 管理` 的 `XD Pool` / `Trae 配置` 标签页 | `XD Pool` 独立页 + `Trae` 卡片 |
+| 管理页 | ✅ `WOTR 管理`，三标签页（三边**配置**各自带「刷新账号 / 添加账号」） | WorkBuddy 三标签页；Trae 无 |
+| 配置入口 | **并入** `WOTR 管理` 的 `workbuddy` / `trae` 标签页 | `XD Pool` 独立页 + `Trae` 卡片 |
 | provider | `workbuddy-xdpool`、`workbuddy-xdpool-global`、`trae`、`trae-global` | 各占一半 |
 | 注册的 HTTP 路由 | 前缀沿用 `/plugins/dsh-workbuddy-xdpool` 与 `/plugins/dsh-connect-trae` | 同名 |
 | 是否被修改 | WorkBuddy 侧已打补丁；Trae 侧一字未改 | 同 |
@@ -551,7 +582,7 @@ web boot: 1 entry did not activate」）。根因是 `lib/client.js` 的包装�
 - 改动落在 `node_modules` 里（当前是 `link:` 指向本仓库），**插件升级会被覆盖**。
 - 依赖各客户端的**私有接口**（WorkBuddy 走 `v2/chat/completions`，Trae 走 `llm_utils_chat`）。官方改协议都可能失效；WorkBuddy 的桥接层失效时会退化成"原样透传"，不会比不装更糟。
 - 建议把「工具定义被 pi-ai 归一化丢弃」和「5.6+ 凭证未解密」这两个问题反馈给 WorkBuddy 插件作者，这是长期修法。
-- **使用记录只在打开管理页时采集**（不打开就不会有点）。这是刻意不做后台轮询：避免常驻任务。查看类 tab 里只有它依赖落盘数据，其余都是实时读取。
+- **「积分」与「使用记录」两个 tab 已移除**（2026-10-12）：采集接口 `/sample` 与 `/history-summary` 仍在服务端保留，但管理页不再读取，`daily.jsonl` 因此不再增长。
 - 每日净变化的语义是「当天最后观测 − 当天最初观测」。若当天只在**消耗之后**才打开过页面，最初值就是消耗后的值，那天的净变化会显示为 0 而不是负数。想更准就要提高采集频率。
 - 合并版**未发布到 npm**，profile 里用 `link:` 指向本仓库；换机器要带上这个目录，或先发布再改用版本号。
 - 两个 entry 的 id（`llm-workbuddy-xdpool`、`dsh-connect-trae`）**不能改名**：前者是 vendored 池卡片精确匹配设置命名空间的键，后者匹配 Trae 半边的 `/trae/i` 探测并保留已存设置。改名会让对应卡片变只读。
