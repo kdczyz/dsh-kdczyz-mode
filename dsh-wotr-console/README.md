@@ -8,34 +8,23 @@
 
 ## 安装
 
-新设备（Windows / macOS / Linux，**不需要 git、bash、pnpm**）：
+走 DSH 插件管理页，从 GitHub 直接装（前置只有 `git`）：
 
-```bash
-node tools/install-wotr.mjs        # 仓库里的安装器；也能单独下载后运行
-node tools/install-wotr.mjs --dry-run   # 只看计划
+```text
+设置 → 插件 → 安装 → 填 github:kdczyz/dsh-workbuddy-mode
 ```
 
-Windows PowerShell 一条条照抄即可（用 DSH 自带的 node）：
+Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`，
+装完**完全退出 DSH 再重新打开**，然后再装插件；装完**必须重启 DSH**。
 
-```powershell
-$node = (Get-ChildItem "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime" `
-         -Recurse -Filter node.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-irm https://raw.githubusercontent.com/kdczyz/dsh-workbuddy-mode/main/tools/install-wotr.mjs `
-    -OutFile "$env:TEMP\install-wotr.mjs"
-& $node "$env:TEMP\install-wotr.mjs"
-```
-
-安装器做的事：匿名 HTTPS 拉 GitHub 的 tar.gz 并自己解压 → 把本包放成
-`<profile>/node_modules/dsh-wotr-console` → 从 `app.asar` 里把 **9 个宿主内包**
-读出来装配成实体再软链进 profile（`react` 除外：它只被浏览器端的 `lib/client.js`
-用到，那份由 DSH 前端提供）→ 补 profile 的 `package.json` 与 `cordis.patch.yml`
-三个条目 → 写 `.npmrc` 的 `auto-install-peers=false` → 自检。装完**必须重启 DSH**。
-
-> **为什么不能只靠插件管理页**：pnpm 解析 `github:` 会先调 `git ls-remote`，
-> 没装 git 的 Windows 直接失败；就算有 git，默认的 `auto-install-peers=true`
-> 还会按 peer 范围从公共 npm **另装一份**宿主内包，那份在解析链上比宿主更近，
-> 会静默遮住宿主那份（表现：模型选择器里一个 provider 都没有）。
-> 详见根 `README.md` 的「零、安装」。
+> pnpm 解析 `github:` 时会先调 `git ls-remote`，没装 git（或 DSH 看不到它）
+> 就会失败，而失败的痕迹会留在 profile 里；另外默认的 `auto-install-peers=true`
+> 会按 peer 范围从公共 npm **另装一份**宿主内包，那份在解析链上比宿主更近，
+> 会静默遮住宿主那份（表现：模型选择器里一个 provider 都没有）——
+> 这两条现在都已处理：peer 范围选得中宿主版本，DSH 自己写的 profile
+> `pnpm-workspace.yaml` 里带 `autoInstallPeers: false`。
+> 宿主内包不需要往 profile 里复制或软链，DSH 会在内存里路由给每个 profile。
+> 详见根 `README.md` 的「零、安装」（含本机开发部署那条路）。
 
 ## 提供的 provider
 

@@ -3,7 +3,7 @@
 # 把合并版 dsh-wotr-console 部署到 DSH profile，并**移除**被它取代的两个旧插件。
 #
 #   ./tools/apply-wotr.sh              部署到 desktop profile
-#   ./tools/apply-wotr.sh --dry-run    只显示计划，不改任何文件
+#   ./tools/apply-wotr.sh --dry-run    只显示计划，不改 profile
 #   ./tools/apply-wotr.sh <profile目录> 指定 profile
 #
 # 与 apply.sh（单插件版）的区别：这是一次**替换**，不是原地更新。
@@ -44,7 +44,7 @@ if [ ! -d "$PROFILE" ]; then echo "找不到 profile: $PROFILE" >&2; exit 1; fi
 echo "源:      $SRC"
 echo "profile: $PROFILE"
 echo "备份到:  $BACKUP"
-[ "$DRY" = 1 ] && echo "（--dry-run：不会真的改动）"
+[ "$DRY" = 1 ] && echo "（--dry-run：不会改动 profile 与插件目录）"
 echo
 
 # —— 1) 前置门禁：源码自身必须先过 ——
@@ -56,6 +56,31 @@ echo "== 源码门禁 =="
   echo "      先跑：node $SRC/scripts/gen-console-inline.mjs" >&2
   exit 1
 }
+
+# —— 1b) 宿主内包软链：让**裸 Node** 也能解析到宿主内包 ——
+# 好几个套件直接 `import '../lib/trae.js'` / `'../lib/qoder.js'`，而这两个文件在模块
+# 顶层就 import 宿主内包（@deepseek-ai/schemastery、@earendil-works/pi-ai …）。
+# DSH 运行时会把这些包在内存里路由给 profile（见 README「零、安装」），裸 Node 不会 ——
+# 所以这里在仓库内的插件目录挂一层软链，指向 profile 里已装配好的那份。
+# `node_modules` 在 .gitignore 里；profile 里还没装配时先跑一次 link-host-deps.mjs。
+VENDOR_NM="$PROFILE/.dsh-runtime-deps/node_modules"
+if [ ! -d "$VENDOR_NM/@deepseek-ai/schemastery" ]; then
+  echo "  宿主内包尚未装配，先跑 link-host-deps.mjs …"
+  "$NODE" "$ROOT/tools/link-host-deps.mjs" "$PROFILE" >/dev/null
+fi
+mkdir -p "$SRC/node_modules/@deepseek-ai" "$SRC/node_modules/@earendil-works"
+LINKED=0
+for scope in "@deepseek-ai" "@earendil-works"; do
+  for pkg in "$VENDOR_NM/$scope"/*/; do
+    [ -d "$pkg" ] || continue
+    name="$(basename "$pkg")"
+    if [ ! -e "$SRC/node_modules/$scope/$name" ]; then
+      ln -sfn "${pkg%/}" "$SRC/node_modules/$scope/$name"
+      LINKED=$((LINKED + 1))
+    fi
+  done
+done
+echo "  宿主内包软链已就绪（本次新增 $LINKED 个）"
 # 门禁失败一律先**复跑一次**并把失败的那几条断言打出来：
 # 这些用例里有几处要等异步注册（本机有真实凭据时 apply 还会真发一次网络请求），
 # 满载时会偶发失败 —— 只报「某个套件未通过」既让人以为是代码坏了，也看不出是哪条。
@@ -82,11 +107,8 @@ done
 # host-assembly 单独跑在**装配之后**（第 8 步）：它断言的是 profile 的解析结果，
 # 部署前跑没有意义（那时依赖还没装配）。
 #
-# 安装器自己的单测（tools/test/install-wotr.test.mjs）也在这里跑：它覆盖
-# 「新设备装得上吗」—— tar.gz 解压、asar 读取、profile 修补、pnpm 副本清理，
-# 以及 peer 版本范围必须选得中宿主的版本（这条直接来自一次真机事故）。
-run_suite "$ROOT" tools/test/install-wotr.test.mjs "install-wotr（新设备安装器）" \
-  "别的设备会装不上，先修好再部署" || exit 1
+# 新设备安装不再有本仓库的安装器（2026-10-11 删除）：那条路是 DSH 插件管理页
+# 装 `github:kdczyz/dsh-workbuddy-mode`，前置只有 git，见 README「零、安装」。
 
 # —— 2) 备份 profile 的三个关键文件 + 两个旧包 ——
 if [ "$DRY" = 0 ]; then
@@ -231,14 +253,14 @@ if [ "$DRY" = 0 ]; then
   echo "语法检查通过（含 exports[\"./qoder\"] 白名单）。"
 fi
 
-# —— 8) 暴露宿主内包（否则三个入口在宿主里全都加载不了）——
+# —— 8) 把宿主内包装配进 profile（供**裸 Node** 解析）——
 #
-# 症状：插件源码、单测全绿，管理页也能看到已登录账号，但模型选择器里
-# 五个 provider 一个都没有 —— 因为 lib/qoder.js 等文件顶层的
-#   import ... from '@earendil-works/pi-ai'
-#   import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
-# 在宿主里解析失败（ERR_MODULE_NOT_FOUND / ERR_PACKAGE_PATH_NOT_EXPORTED），
-# 模块顶层求值就抛，apply() 根本不会执行，连 .catch() 里的日志都打不出来。
+# 说明：DSH 运行时会在内存里把宿主内包路由给每个 profile（app-boot 的
+# profile-resolution-bootstrap.js），所以插件在宿主里本来就能加载。这一步是给
+# **脱离 DSH 的裸 Node** 用的 —— 第 7 步的解析校验、第 8 步末尾的 host-assembly
+# 自检、以及 `node test/xxx.test.mjs` 手动复跑都走裸 Node 解析，需要 profile
+# 自己能找到这些包。（这三个入口顶层就 import 宿主内包，解析失败时模块顶层求值
+# 直接抛，apply() 根本不执行，连 .catch() 里的日志都打不出来。）
 #
 # 根因：这些包是 DSH 宿主自带的（在 app.asar 内），profile 的 node_modules
 # 里一个都没有；而 asar 内部路径纯 Node 读不到（ENOTDIR），软链过去无效。

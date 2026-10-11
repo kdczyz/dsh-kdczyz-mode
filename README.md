@@ -30,113 +30,45 @@
 
 ## 零、安装
 
-### 方式一：一键安装器（新设备推荐，不需要 git / bash / pnpm）
+**前置：机器上要有 `git`。** 插件管理页装的是 `github:` 规格，pnpm 解析时会先跑
+`git ls-remote` 问远端 ref —— 没有 git 就会得到这个错，而且**失败的痕迹会留在 profile 里**
+（依赖已经写进去了、但没装成），于是每次启动 DSH 都再报一次：
 
-```bash
-node tools/install-wotr.mjs            # 在仓库里跑
-node install-wotr.mjs                  # 或把脚本单独下载下来跑（它自己会拉源码）
-```
-
-Windows（PowerShell，只装了 DSH、别的什么都没有的机器）：
-
-```powershell
-# 1) 找 DSH 自带的 node —— 不用另装 Node
-$node = (Get-ChildItem "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime" `
-         -Recurse -Filter node.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-if (-not $node) { $node = (Get-Command node).Source }   # 退路：系统里装了 node 也行
-# 2) 下载安装器并运行
-irm https://raw.githubusercontent.com/kdczyz/dsh-workbuddy-mode/main/tools/install-wotr.mjs `
-    -OutFile "$env:TEMP\install-wotr.mjs"
-& $node "$env:TEMP\install-wotr.mjs"
-```
-
-macOS / Linux 同理（一条命令）：
-
-```bash
-curl -fsSL -o /tmp/install-wotr.mjs \
-  https://raw.githubusercontent.com/kdczyz/dsh-workbuddy-mode/main/tools/install-wotr.mjs
-node /tmp/install-wotr.mjs
-```
-
-参数：
-
-| 参数 | 说明 |
-|---|---|
-| `--profile <目录>` | 指定 profile（默认 `~/.dsh/profiles/desktop`） |
-| `--ref <分支\|标签\|sha>` | 装哪一版（默认 `main`） |
-| `--from <目录\|tar.gz>` | 用本地源码 / 本地 tar.gz 装（离线可用） |
-| `--dry-run` | 只打印计划，不改任何文件 |
-
-它做的事（少任何一步的症状都是「装完了但什么都没发生」）：
-
-1. 匿名 HTTPS 拉 GitHub 的 tar.gz（**不用 git**），自己解压（**不用 tar 命令**）；
-   下载失败会自动重试（实测网络抖一下 fetch 就抛一个光秃秃的 `fetch failed`），
-   三次都失败才报错，并打出底层原因；彻底不通就用 `--from` 走离线安装；
-2. 把插件放成 `<profile>/node_modules/dsh-wotr-console`（真实目录），
-   并在 `<profile>/.dsh-wotr-src` 留一份源码副本供 profile 的 `link:` 指向；
-3. 从 `app.asar` 里把 9 个宿主内包**读出来**（纯 JS 读 asar，不借 Electron），
-   实体写到 `<profile>/.dsh-runtime-deps/node_modules`，再软链进 profile
-   （Windows 上用目录联接，不需要管理员权限）；
-4. 补 `<profile>/package.json` 的 `dependencies` 与 `dsh.profile.bundles`；
-5. 补 `<profile>/cordis.patch.yml` 的三个条目 —— **只改名、只补条目，绝不删除**
-   （条目下面的 `config:` 就是你的设置本身）；
-6. 写 `<profile>/.npmrc` 的 `auto-install-peers=false`（见下面的「peer 陷阱」）；
-7. 清掉 pnpm 可能装出来的同名副本，并修掉管理页失败留下的 git 痕迹（见下）；
-8. 跑自检（真的 import 三个入口）。
-
-**它还会顺手修掉「插件管理页装失败」留下的坏状态。** 管理页那条路是 pnpm 解析
-`github:<owner>/<repo>` 规格，**必须要 git** —— 而 Windows 默认没有 git，于是：
-
-```
+```text
 pnpm: Command failed with ENOENT: git ls-remote 'https://github.com/kdczyz/dsh-workbuddy-mode.git' HEAD 'HEAD^{}'
 spawn git ENOENT
 ```
 
-更麻烦的是**失败的痕迹留在 profile 里**（`package.json` 的依赖还是那个 git 规格），
-所以每次启动 DSH 都会再报一次同样的错。安装器会把三处一起清掉：
+Windows 一条命令装上（macOS 用 `brew install git`，Linux 用发行版自带的包管理器）：
 
-| 位置 | 处理 |
-|---|---|
-| `package.json` 各依赖段 / `dsh.profile.bundles` | 指向本仓库的 git/URL 规格 → `link:.dsh-wotr-src` |
-| `pnpm-lock.yaml` | 那次失败写下的 `github:` / codeload 解析记录 → 与清单对齐（实测残留时 `pnpm install --frozen-lockfile` 会以「dependencies are mismatched」失败，那一步**什么都不装**） |
-| `pnpm-workspace.yaml` | 补 `autoInstallPeers: false`，与锁文件里记的设置一致（只在需要时动，健康 profile 一字不改） |
+```powershell
+winget install --id Git.Git -e --source winget
+```
 
-> 所以：**Windows 上不要用插件管理页那条路**（它要 git）。直接跑这个安装器即可，
-> 它会把你之前失败留下的痕迹一并清干净。
+装完**完全退出 DSH 再重新打开** —— DSH 进程要能看到 git；从桌面/开始菜单启动的 DSH
+继承的是登录时的 PATH，所以必要时重启一次系统。
 
-装前会备份 profile 配置到 `~/.dsh/wotr-install-backup/<时间戳>/`（5 个配置文件），装完**必须完全重启 DSH**。
-
-安装器是**幂等**的：重复跑只覆盖自己那几处（已装配且版本一致的宿主包直接沿用）。
-之后若又用插件管理页装/卸过别的插件（pnpm 会重建 profile 的 `node_modules`，
-可能把手写的软链一起清掉），重跑一次安装器即可恢复。
-
-### 方式二：DSH 插件管理页（需要 git）
+### 方式一：DSH 插件管理页（推荐）
 
 设置 → 插件 → 安装，填 `github:kdczyz/dsh-workbuddy-mode`（或
-`https://github.com/kdczyz/dsh-workbuddy-mode`）。
+`https://github.com/kdczyz/dsh-workbuddy-mode`），装完**重启 DSH**。
 
-**两个前提，缺一个就装不上或装了不生效：**
+装之前先看一眼旧包：合并前的 `dsh-workbuddy-console`、`dsh-connect-trae`
+（以及单独的 Qoder 插件）如果还在，先在管理页卸掉 —— 同一批 Loader entry id
+装两份会被加载两次。
 
-1. **机器上要有 `git`。** pnpm 解析 `github:` 时会先跑 `git ls-remote` 问远端 ref，
-   Windows 上没装 git 就会得到：
+**两个坑，以前各踩过一次：**
 
-   ```text
-   [ERROR] Command failed with exit code 1:
-     git ls-remote "https://github.com/kdczyz/dsh-workbuddy-mode.git" HEAD "HEAD^{}"
-   'git' 不是内部或外部命令，也不是可运行的程序
-   ```
-
-   装上即可（`winget install --id Git.Git -e`），装完**完全重启 DSH**（PATH 才会生效）。
-   不想装 git 就用方式一。
-
+1. **`git` 必须能被 DSH 看到**（见上面的前置）。装完没重启 DSH，报的还是老错。
 2. **peer 版本必须选得中宿主的版本。** pnpm 默认 `auto-install-peers=true`，会按
    `peerDependencies` 从公共 npm **另装一份**宿主内包。原先的范围是
    `>=0.1.7-rc.1 <0.3.0-0`，按 semver 规则**排除所有预发布版**，于是它装了
    `@deepseek-ai/dsh-llm@0.1.7-rc.2` / `@earendil-works/pi-ai@0.85.1`，
    而宿主自己用的是 `0.2.0-rc.2` / `0.87.1` —— 那份副本在解析链上**比宿主更近**，
    会直接遮住宿主那份，表现是「管理页能看到账号，但模型选择器里一个 provider 都没有」。
-   现在范围写成两条版本线的并集（`^0.1.7-rc.1 || ^0.2.0-rc.1`，已用真 semver 核对），
-   安装器还会顺手写 `auto-install-peers=false` 彻底断掉这条路。
+   现在范围写成两条版本线的并集（`^0.1.7-rc.1 || ^0.2.0-rc.1`，已用真 semver 核对）；
+   而且 DSH 给 profile 写的 `pnpm-workspace.yaml` 里本来就带 `autoInstallPeers: false`，
+   正常不会真去另装 peer。
 
 **为什么以前连装都装不上**：插件管理页 `pnpm add <git 地址>` 装的是**仓库根**，
 装完后它读包根的 `package.json` 找 `dsh.bundle.patch` —— 组合包的判定标准就是这一个字段
@@ -160,7 +92,7 @@ spawn git ENOENT
 （`dsh-wotr-console`、`dsh-wotr-console/trae`、`dsh-wotr-console/qoder`）与 profile
 里已保存的配置**完全不变**。
 
-### 方式三：本地开发部署（link:）
+### 方式二：本地开发部署（link:）
 
 ```bash
 ./tools/apply-wotr.sh            # 部署到 desktop profile
@@ -172,8 +104,18 @@ spawn git ENOENT
 改代码即时生效（要重启 DSH）。它是 macOS 专用的（用了 `rsync` 与 `.app` 内的绝对路径），
 新设备请用方式一。
 
-> 三种方式的包名都是 `dsh-wotr-console`，但**同时只能走一条**：管理页装了 git 版本后，
-> 本地 `link:` 会被替换掉，反之亦然。方式一每次都会把自己那份重新装配成一致状态。
+> 两种方式的包名都是 `dsh-wotr-console`，但**同时只能走一条**：管理页装了 git 版本后，
+> 本地 `link:` 会被替换掉，反之亦然。
+
+**宿主内包不用你管。** 三个入口在模块顶层 import 的 `@earendil-works/pi-ai`、
+`@deepseek-ai/dsh-llm-pi-ai`、`@deepseek-ai/schemastery` 等包只存在于 DSH 安装目录里，
+DSH 会在**内存里**把它们路由给每个 profile：`@deepseek-ai/dsh-app-boot/lib/worker/profile-resolution-bootstrap.js`
+（*In-memory profile package routing for Node's default ESM and CommonJS loaders*）
+把 installation scope 的包与 profile 自己装的包合成一张解析表，Node 自身解析不到时兜底。
+所以管理页装完即可用，**不需要往 profile 里复制或软链任何宿主包**。
+（本仓库 2026-10-11 之前为此写过一套「装配宿主包 + 免 git 安装」的工具，确认多余后已删除；
+`tools/link-host-deps.mjs` 留着给上面这条本机开发部署用 —— 它让脱离 DSH 的裸 Node
+也能解析到宿主内包，本仓库的自检与单测依赖这一点。）
 
 ---
 
@@ -214,6 +156,9 @@ dsh-workbuddy-mode/
 │   ├── apply-wotr.sh                 **合并版：一键部署（含门禁 + 备份 + 清旧包）**
 │   ├── apply.sh                     合并前的 WorkBuddy 单插件部署脚本
 │   ├── install-trae.sh              合并前的 Trae 安装/恢复脚本
+│   ├── link-host-deps.mjs           把宿主内包挂进 profile（**只给本机开发部署用**；
+│   │                                新设备安装不需要它 —— DSH 自己会路由，见「零、安装」）
+│   ├── lib/                         host-deps.mjs（装配宿主包）+ asar.mjs（纯 JS 读 app.asar）
 │   ├── dsml-test.mjs                44 项单元测试
 │   ├── raw-probe.mjs                直连上游抓原始 SSE（绕过 DSH 排查用）
 │   ├── read-session.mjs             解压并检索会话日志
@@ -271,19 +216,20 @@ dsh-workbuddy-mode/
 
 ```sh
 cd dsh-workbuddy-mode            # 改成你实际克隆下来的目录
-./tools/apply-wotr.sh --dry-run    # 先看计划，不改任何文件
+./tools/apply-wotr.sh --dry-run    # 先看计划（不改 profile）
 ./tools/apply-wotr.sh              # 真正部署
 ```
 
 合并版是一次**替换**（不是原地更新），脚本依次做：
 
-1. **源码门禁** —— 校验 `client.js` 内联块与 `console.mjs` 同步，再跑三套单测（14+21+31）；任一失败即停，不把坏版本推上去。
+1. **源码门禁** —— 校验 `client.js` 内联块与 `console.mjs` 同步；在仓库内的插件目录挂一层宿主内包软链（裸 Node 跑单测用，见「零、安装」）；再跑 **24 套单测**；任一失败即停，不把坏版本推上去（失败会复跑一次并把失败的断言打出来）。
 2. **备份** profile 的 `package.json` / `cordis.patch.yml` / `pnpm-lock.yaml` 与两个旧包到 `~/.dsh/wotr-merge-backup/<时间戳>/`。
 3. `rsync --delete` 同步 `dsh-wotr-console/`。
 4. 改 profile `package.json`：依赖换成 `link:` 指向本仓库，`bundles` 里两个旧包换成新包。
 5. 改 profile `cordis.patch.yml`：旧包名替换为 `dsh-wotr-console`，移除独立的 `dsh-connect-trae` 条目（entry id 保持不变）。
 6. **移除三个旧包目录**（`dsh-workbuddy-console`、`dsh-connect-trae`、`dsh-workbuddy-xdpool`）—— 必须删，否则与新包争用同一批 entry id 会导致加载两次。
-7. 语法校验。
+7. 校验目标文件语法与 `exports["./qoder"]` 白名单。
+8. 把宿主内包装配进 profile，再跑 `host-assembly` 自检（三个入口在该 profile 下**真的能加载**）。
 
 脚本**不跑 `pnpm install`**：它会重算 lockfile 并清掉旧包，所以要手动补一步（否则下次 DSH 启动的 install 可能把旧包拉回来）：
 
@@ -324,11 +270,14 @@ NODE="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/primary-runt
 # 1) 桥接层单测（44 项，含文本重复 bug 的回归）
 cd tools && "$NODE" dsml-test.mjs
 
-# 2) 合并版三套单测（14 + 21 + 31 = 66 项，部署门禁）
-cd ../dsh-wotr-console
+# 2) 全部单测 = 部署门禁（24 套 + host-assembly，见「三、部署」）
+cd .. && ./tools/apply-wotr.sh --dry-run      # 一次跑完所有套件
+cd dsh-wotr-console                            # 或单独复跑某几套：
 "$NODE" test/credit-store.test.mjs    # 数据层
 "$NODE" test/client-apply.test.mjs    # **防 DSH 启动失败**
 "$NODE" test/console-render.test.mjs  # **防设置面板白屏**
+# 注意：直接 import lib/trae.js、lib/qoder.js 的套件需要仓库内的宿主内包软链，
+# 缺了就先跑一次 ./tools/apply-wotr.sh（它会自动补，见「零、安装」）
 
 # 3) 三块内联内容是否与源码同步
 "$NODE" scripts/gen-console-inline.mjs --check

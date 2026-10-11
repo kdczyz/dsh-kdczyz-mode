@@ -50,8 +50,12 @@
  * 的形式炸出来。所以这里也纳入 `peerDependencies`，只排除
  * `peerDependenciesMeta.*.optional === true` 的项。
  *
- * 实现都在 `tools/lib/host-deps.mjs`（新设备安装器 `tools/install-wotr.mjs`
- * 复用同一份代码，避免两套逻辑各自跑偏）。
+ * 实现都在 `tools/lib/host-deps.mjs`。
+ *
+ * 用途只有两个：本机开发部署（`tools/apply-wotr.sh` 第 8 步调用本脚本）、
+ * 以及让脱离 DSH 的裸 Node（本仓库的自检与单测）也能解析到宿主内包。
+ * **新设备安装不需要这一步**：DSH 会在内存里把宿主内包路由给每个 profile
+ * （见 README「零、安装」末尾「宿主内包不用你管」）。
  *
  * 用法：
  *   node tools/link-host-deps.mjs [profile目录] [--dry-run]
