@@ -34,6 +34,15 @@ window.__ModuleLoader__.load({
 		* rotation preference the account survives, ignoring survives the account.
 		*/
 		const POOL_ACCOUNT_IGNORE_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/ignored";
+		/**
+		* Set (or clear) the region's "current account".
+		*
+		* Added by this fork. Unlike the disable toggle — which only keeps an account
+		* out of the rotation — this picks the ONE login every request is served by.
+		* The region travels as a query parameter because the two editions are
+		* separate providers; `accountId: null` clears the selection.
+		*/
+		const POOL_ACCOUNT_SELECT_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/select";
 		/** Run one automation job immediately, so the card can verify it on demand. */
 		const POOL_AUTOMATION_RUN_PATH = "/plugins/dsh-workbuddy-xdpool/automation/run";
 		/** Set or clear one account's reserved-credit floor. */
@@ -817,6 +826,39 @@ window.__ModuleLoader__.load({
 					if (mounted.current) setAccountBusyId(void 0);
 				}
 			};
+			/**
+			* Pin one account as the region's "current account", or clear it.
+			*
+			* This is an effect, not a saved list: the pool serves every request from
+			* the pinned login until the user picks another one, so it goes through the
+			* same route the disable toggle would if a list were what mattered. The
+			* host persists it per region, which is why the region rides along as a
+			* query parameter — pinning the domestic account must not move the
+			* international one.
+			*
+			* `accountId: null` clears the pin and returns the region to rotation.
+			*/
+			const selectAccount = async (accountId) => {
+				setAccountBusyId(accountId ?? "select");
+				setFlash(void 0);
+				try {
+					const response = await fetch(`${POOL_ACCOUNT_SELECT_PATH}?region=${activeRegion}`, {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ accountId })
+					});
+					if (!response.ok) {
+						const detail = await response.json().catch(() => ({}));
+						throw new Error(detail.error ?? `HTTP ${response.status}`);
+					}
+					await refresh(activeRegion);
+				} catch (cause) {
+					const message = cause instanceof Error ? cause.message : String(cause);
+					if (mounted.current) setError(t?.("row.accountSelectError", { message }) ?? "Could not switch the current account: " + message);
+				} finally {
+					if (mounted.current) setAccountBusyId(void 0);
+				}
+			};
 			/** Keep the draft in step with the server copy while nothing is dirty. */
 			const modelDraft = draft ?? (status === void 0 ? {} : draftFromStatus(status));
 			/** Model edits need a writable settings scope; otherwise the rows are read-only. */
@@ -1468,6 +1510,10 @@ const setModelBudget = (id, budget) => {
 								onIgnoreAccount: (accountId) => {
 									setAccountIgnored(accountId, true);
 								},
+								onSelectAccount: (accountId) => {
+									selectAccount(accountId);
+								},
+								selectedAccountId: status?.selectedAccountId ?? void 0,
 								...accountBusyId === void 0 ? {} : { accountBusyId },
 								t
 							}, account.id))
@@ -1581,9 +1627,10 @@ const setModelBudget = (id, budget) => {
 			});
 		}
 		/** One account block: label + status tag + meta + optional credit panels. */
-		function AccountBlock({ account, t, checkinBusyId, onClaimCheckin, accountBusyId, onToggleDisabled, onIgnoreAccount, onSaveCreditReserve, reserveBusyId }) {
+		function AccountBlock({ account, t, checkinBusyId, onClaimCheckin, accountBusyId, onToggleDisabled, onIgnoreAccount, onSelectAccount, selectedAccountId, onSaveCreditReserve, reserveBusyId }) {
 			const isDisabled = account.disabled === true;
 			const isCooling = account.cooling === true;
+			const isSelected = selectedAccountId !== void 0 && selectedAccountId === account.id;
 			const cooldownUntil = account.cooldownUntil !== void 0 ? Date.parse(account.cooldownUntil) : void 0;
 			const modelCooldowns = account.modelCooldowns ?? [];
 			const tag = isCooling ? {
@@ -1599,9 +1646,23 @@ const setModelBudget = (id, budget) => {
 							className: "dsm-workbuddy-xdpool-account-label",
 							children: account.label
 						}),
+						isSelected ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+							className: "dsm-workbuddy-xdpool-account-tag dsm-workbuddy-xdpool-account-tag-on",
+							children: t?.("row.accountCurrent") ?? "In use"
+						}) : null,
 						tag === null ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 							className: tag.cls,
 							children: tag.text
+						}),
+						/* @__PURE__ */ (0, react_jsx_runtime.jsx)("button", {
+							type: "button",
+							className: "dsm-workbuddy-xdpool-account-select",
+							title: t?.("row.accountSelectHint") ?? "Serve every request from this account",
+							disabled: accountBusyId === account.id,
+							onClick: () => {
+								onSelectAccount(isSelected ? null : account.id);
+							},
+							children: isSelected ? t?.("row.accountUnselect") ?? "Unpin" : t?.("row.accountSelect") ?? "Use this"
 						}),
 						/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("button", {
 							type: "button",
@@ -2105,6 +2166,11 @@ const setModelBudget = (id, budget) => {
 			"row.accountIgnore": "Remove",
 			"row.accountIgnoreHint": "Remove this account from the pool for good — its credential stops being read and it will not come back",
 			"row.accountIgnoreError": "Could not change the ignore list: {message}",
+			"row.accountCurrent": "In use",
+			"row.accountSelect": "Use this",
+			"row.accountUnselect": "Unpin",
+			"row.accountSelectHint": "Serve every request from this account (click again to go back to rotation)",
+			"row.accountSelectError": "Could not switch the current account: {message}",
 			"row.ignoredTitle": "Removed accounts",
 			"row.ignoredSummary": "{count} account(s) no longer in the pool",
 			"row.ignoredRestore": "Restore",
@@ -2247,6 +2313,11 @@ const setModelBudget = (id, budget) => {
 			"row.accountIgnore": "移出池子",
 			"row.accountIgnoreHint": "把这个账号永久移出池子 —— 不再读取它的凭据，即使重新登录也不会回来",
 			"row.accountIgnoreError": "修改忽略列表失败：{message}",
+			"row.accountCurrent": "当前使用",
+			"row.accountSelect": "设为当前",
+			"row.accountUnselect": "取消固定",
+			"row.accountSelectHint": "让请求固定使用这个账号（再点一次回到号池轮换）",
+			"row.accountSelectError": "切换当前账号失败：{message}",
 			"row.ignoredTitle": "已移出的账号",
 			"row.ignoredSummary": "{count} 个账号已不在池中",
 			"row.ignoredRestore": "恢复",

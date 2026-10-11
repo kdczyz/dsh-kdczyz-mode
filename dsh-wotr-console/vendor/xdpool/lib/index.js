@@ -19,15 +19,46 @@ const CN_CHAT_BASE = "https://copilot.tencent.com";
 const CN_BILLING_BASE = "https://www.codebuddy.cn";
 /** Global base for `workbuddy.ai` logins. */
 const GLOBAL_BASE = "https://www.workbuddy.ai";
-/** Client UA the desktop CLI uses. */
-/** Client UA the desktop CLI uses — the CN gateway answers this one. */
-const CLIENT_UA = "CLI/2.63.2 CodeBuddy/2.63.2";
+/**
+* Spawned-CLI version string.
+*
+* The official desktop app spawns `cbc` and stamps its UA from three hops
+* (`buildUserAgent()` in `cli/dist/codebuddy-lite-wb.mjs` @7719884):
+*
+*   platform/platformVersion  productName/productVersion  userAgentExtension
+*
+* With the desktop injecting `CLIENT_INFO_PLATFORM=WorkBuddy`,
+* `CLIENT_INFO_PLATFORM_VERSION=5.7.7`, `CLIENT_INFO_PRODUCT_NAME=WorkBuddy`,
+* `CLIENT_INFO_PRODUCT_VERSION=5.7.7` and
+* `CLIENT_INFO_USER_AGENT_EXTENSION=CLI/2.156.0`, that concatenates to
+* `WorkBuddy/5.7.7 WorkBuddy/5.7.7 CLI/2.156.0`.
+*
+* The CLI half is a *different* number from the desktop half: the desktop app
+* version lives in `cli/product.json` -> `genieVersion` (5.7.7), while the CLI
+* build version lives in `cli/package.json` ->
+* `publishConfig.customPackage.version` (2.156.0). The top-level
+* `cli/package.json` `version` is the placeholder `0.0.0` and must NOT be used.
+*/
+const WORKBUDDY_DESKTOP_VERSION = "5.7.7";
+/** CLI build version (see {@link WORKBUDDY_DESKTOP_VERSION}). */
+const WORKBUDDY_CLI_VERSION = "2.156.0";
+/**
+* UA the spawned CLI sends on the chat path.
+*
+* Not a guess: `buildUserAgent()` is the only UA builder on the inference path,
+* and the per-request assembler deletes the SDK's own `user-agent`
+* (`delete I["user-agent"]`, @3449514) precisely so this one survives.
+*/
+const CLIENT_UA = `WorkBuddy/${WORKBUDDY_DESKTOP_VERSION} WorkBuddy/${WORKBUDDY_DESKTOP_VERSION} CLI/${WORKBUDDY_CLI_VERSION}`;
 /**
 * Desktop app UA. The global gateway serves its product config only to this
 * client channel: the CLI UA gets a truncated roster (or an HTTP 500), which
 * is why the international catalog must be read with the desktop spelling.
+*
+* The desktop-native assembler (`Jr` in `app.asar`) builds exactly
+* `WorkBuddy/<appVersion> WorkBuddy/<appVersion> CLI/<cliVersion>`.
 */
-const DESKTOP_UA = "WorkBuddy/5.5.2";
+const DESKTOP_UA = `WorkBuddy/${WORKBUDDY_DESKTOP_VERSION}`;
 /** CN model catalog. */
 const MODELS_CATALOG_PATH = "/v2/enterprises/personal/models";
 /** Global product config, which carries the international model roster. */
@@ -130,6 +161,66 @@ function billingBase(credential) {
 function originReferer(credential) {
 	return regionOf(credential.domain) === "global" ? globalBase(credential) : CN_BILLING_BASE;
 }
+/**
+* The official `runIdentityHeaders()` — module 26492 in
+* `cli/dist/codebuddy-lite-wb.mjs` (@1301799).
+*
+* The desktop CLI does not send a bare `X-User-Id` pair. It rebuilds the
+* caller's identity on **every** request from the active run identity:
+*
+* ```js
+* if (n?.uid)          c[X-User-Id] = n.uid;
+* if (n?.enterpriseId) c[X-Enterprise-Id] = n.enterpriseId;
+* if (i?.method)       c[X-Auth-Method] = i.method;
+* if (n?.idSource)     c[X-Id-Source] = n.idSource;
+* if (n?.uid && (n.enterpriseId || n.idSource || i?.method))
+*   c[X-Userinfo] = base64(JSON.stringify({
+*     uin: n.uid,
+*     ...(n.enterpriseId ? { owner_uin: n.enterpriseId } : {}),
+*     ...(n.idSource     ? { id_source: n.idSource }       : {}),
+*     ...(i?.method      ? { token_source: i.method }      : {}),
+*   }));
+* ```
+*
+* Two properties matter for staying indistinguishable:
+*
+* 1. **`X-Userinfo` is only sent when it carries something.** The guard is
+*    `uid && (enterpriseId || idSource || method)` — sending a bare
+*    `{"uin": …}` envelope where the official client sends none is itself a
+*    fingerprint, so this mirrors the guard exactly rather than always sending.
+* 2. **Fields are omitted, not blanked.** `X-Auth-Method` / `X-Id-Source`
+*    appear only when the run identity actually has them. Our credential files
+*    carry `uid` / `uin` / `enterpriseId` but no `auth.method` or `idSource`
+*    (those are process-runtime values, not at-rest ones), so those two headers
+*    are only emitted when a caller supplies them.
+*
+* `uin` is the upstream's billing identity; the CLI's `uid` field is filled
+* from the signed-in account's `uid`. We have both, so prefer `uin` for the
+* envelope only when `uid` is unavailable — the official code uses the same
+* value for the header and the envelope, so we do too.
+*
+* @param {object} credential parsed WorkBuddy credential
+* @param {object} [identity]  optional `{ authMethod, idSource }` runtime values
+*/
+function runIdentityHeaders(credential, identity) {
+	const headers = {};
+	if (credential.uid !== void 0 && credential.uid !== "") headers["X-User-Id"] = credential.uid;
+	if (credential.enterpriseId !== void 0 && credential.enterpriseId !== "") {
+		headers["X-Enterprise-Id"] = credential.enterpriseId;
+	}
+	const authMethod = typeof identity?.authMethod === "string" && identity.authMethod !== "" ? identity.authMethod : void 0;
+	const idSource = typeof identity?.idSource === "string" && identity.idSource !== "" ? identity.idSource : void 0;
+	if (authMethod !== void 0) headers["X-Auth-Method"] = authMethod;
+	if (idSource !== void 0) headers["X-Id-Source"] = idSource;
+	if (credential.uid !== void 0 && credential.uid !== "" && (credential.enterpriseId !== void 0 && credential.enterpriseId !== "" || idSource !== void 0 || authMethod !== void 0)) {
+		const envelope = { uin: credential.uid };
+		if (credential.enterpriseId !== void 0 && credential.enterpriseId !== "") envelope.owner_uin = credential.enterpriseId;
+		if (idSource !== void 0) envelope.id_source = idSource;
+		if (authMethod !== void 0) envelope.token_source = authMethod;
+		headers["X-Userinfo"] = Buffer.from(JSON.stringify(envelope), "utf-8").toString("base64");
+	}
+	return headers;
+}
 /** Headers every upstream request shares. */
 function commonHeaders(credential) {
 	return {
@@ -140,17 +231,58 @@ function commonHeaders(credential) {
 		"User-Agent": CLIENT_UA
 	};
 }
-/** Chat request headers, including the X-No-* conventions the official CLI uses. */
-function chatHeaders(credential) {
-	return {
+/**
+* Chat request headers.
+*
+* # What the official chat path actually sends
+*
+* The request interceptor (`codebuddy-headless.js` @8135713) is the authority
+* here, and it is **additive with guards**, not a fixed template:
+*
+* ```js
+* if (!h[AUTHORIZATION] && auth.accessToken && !h[NO_AUTHORIZATION])
+*   h[AUTHORIZATION] = `Bearer ${auth.accessToken}`;
+* if (!h[USER_ID]       && account.uid          && !h[NO_USER_ID])       h[USER_ID] = account.uid;
+* if (!h[ENTERPRISE_ID] && account.enterpriseId && !h[NO_ENTERPRISE_ID]) h[ENTERPRISE_ID] = account.enterpriseId;
+* if (!h[DEPARTMENT_INFO] && account.departmentFullName && !h[NO_DEPARTMENT_INFO])
+*   h[DEPARTMENT_INFO] = account.departmentFullName;
+* if (!h[TENANT_ID] && account.enterpriseId) h[TENANT_ID] = account.enterpriseId;
+* if (!h[DOMAIN]    && auth.domain)          h[DOMAIN]    = auth.domain;
+* ```
+*
+* Two corrections to the naive reading of this, both of which matter:
+*
+* 1. **The chat path never sends `X-No-*`.** Those negatives are used by the
+*    `X-No-*`-marked calls only — the login-state endpoints
+*    (`/v2/auth/state`, `/v2/auth/token`) pass them explicitly to say "do not
+*    attach identity here" (`HTTP_HEADER_NO_AUTHORIZATION:"true"` etc.,
+*    @6447780). Emitting them on a chat request would announce "this account
+*    has no uid" to a gateway that never asked, which is its own fingerprint.
+*    They are read by the interceptor purely as suppression flags.
+* 2. **`X-Tenant-Id` mirrors `enterpriseId`.** The official interceptor sets
+*    tenant from the same value as enterprise, so a personal account (no
+*    enterprise) sends neither. Sending `X-Tenant-Id` on its own would be a
+*    shape the official client cannot produce.
+*
+* `X-Product` is added by the endpoint interceptor as
+* `deploymentType ?? "SaaS"` (@7749707); `product.json` ships `SaaS`.
+*
+* @param {object} credential parsed WorkBuddy credential
+* @param {object} [identity]  optional `{ authMethod, idSource }` runtime values
+*/
+function chatHeaders(credential, identity) {
+	const headers = {
 		...commonHeaders(credential),
 		"Content-Type": "application/json",
 		"Authorization": `Bearer ${credential.accessToken}`,
-		...credential.uid === "" || credential.uid === void 0 ? { "X-No-User-Id": "1" } : { "X-User-Id": credential.uid },
-		...credential.enterpriseId === void 0 || credential.enterpriseId === "" ? { "X-No-Enterprise-Id": "1" } : { "X-Enterprise-Id": credential.enterpriseId },
-		...credential.domain === "" ? { "X-No-Department-Info": "1" } : { "X-Domain": credential.domain },
-		"X-Product": "SaaS"
+		...runIdentityHeaders(credential, identity)
 	};
+	if (credential.enterpriseId !== void 0 && credential.enterpriseId !== "") {
+		headers["X-Tenant-Id"] = credential.enterpriseId;
+	}
+	if (credential.domain !== "") headers["X-Domain"] = credential.domain;
+	headers["X-Product"] = "SaaS";
+	return headers;
 }
 /** Refresh-endpoint headers; X-Refresh-Token appears here and nowhere else. */
 function refreshHeaders(credential) {
@@ -174,7 +306,72 @@ const CHAT_TIMEOUT_MS = 9e4;
 const SSE_SCAN_LIMIT = 1 << 20;
 /** Server request ids look like `cmb-<32 hex>` or a bare 32 hex string. */
 const SERVER_ID_PATTERN = /"id"\s*:\s*"((?:cmb-)?[0-9a-f]{32})"/;
-const DESKTOP_TASK_UA = "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1";
+/**
+* UA for the desktop-side automation/task chains.
+*
+* Same shape as {@link CLIENT_UA} but spelled through the desktop-native
+* assembler's variable names (`appVersion` + `cliVersion`), which is what the
+* report / appearance / expert-market endpoints are called with. Keeping it
+* derived from the same two constants means the version can never drift
+* between the chat path and the automation path again.
+*/
+const DESKTOP_TASK_UA = `WorkBuddy/${WORKBUDDY_DESKTOP_VERSION} WorkBuddy/${WORKBUDDY_DESKTOP_VERSION} CLI/${WORKBUDDY_CLI_VERSION}`;
+/**
+* The six per-request conversation headers the official CLI always sends.
+*
+* `codebuddy-lite-wb.mjs` @3447300 — after deleting the SDK's `authorization` /
+* `user-agent` and merging the run-identity headers, the assembler unconditionally
+* stamps these onto **every** chat request:
+*
+* ```js
+* I[CONVERSATION_ID_HEADER]          = M.id;
+* I[CONVERSATION_REQUEST_ID_HEADER]  = F || "";
+* I[CONVERSATION_MESSAGE_ID_HEADER]  = M.messageId;
+* I[REQUEST_ID_HEADER]               = M.messageId;
+* I[CONVERSATION_REQUEST_ID_HEADER]  = F || "";
+* setHeaderCaseInsensitive(I, ROOT_REQUEST_ID_HEADER, Q)   // only if present
+* setHeaderCaseInsensitive(I, PARENT_CONVERSATION_ID_HEADER, Z) // only if present
+* setHeaderCaseInsensitive(I, AGENT_TYPE_HEADER, resolveAgentType(M));
+* ```
+*
+* with (`@3430288`):
+*
+* ```js
+* resolveAgentType(M) = M.meta?.teamContext ? "team"
+*                     : M.meta?.parentConversationId ? "subagent"
+*                     : "main";
+* ```
+*
+* Two shapes worth noting, because getting them wrong is itself a fingerprint:
+*
+* 1. **`X-Request-ID` and `X-Conversation-Message-ID` are the same value**
+*    (`M.messageId`, a dash-stripped uuid). The official client never sends two
+*    different ids there.
+* 2. **`X-Conversation-Request-ID` is sent even when empty** (`F || ""`) — an
+*    absent header is visible, an empty one is what the client actually does.
+*
+* The gateway does not *enforce* these (a request without them still answers
+* 200), so they are not needed to make chat work — they are needed to stop the
+* request from looking unlike the desktop client's.
+*
+* @param {object} [ids] `{ conversationId, messageId, conversationRequestId }`
+*/
+function conversationHeaders(ids = {}) {
+	const conversationId = typeof ids.conversationId === "string" && ids.conversationId !== "" ? ids.conversationId : randomUUID();
+	const messageId = typeof ids.messageId === "string" && ids.messageId !== "" ? ids.messageId : randomUUID().replaceAll("-", "");
+	const headers = {
+		"X-Conversation-ID": conversationId,
+		"X-Conversation-Request-ID": typeof ids.conversationRequestId === "string" ? ids.conversationRequestId : "",
+		"X-Conversation-Message-ID": messageId,
+		"X-Request-ID": messageId,
+		"X-Agent-Type": typeof ids.agentType === "string" && ids.agentType !== "" ? ids.agentType : "main"
+	};
+	if (typeof ids.rootRequestId === "string" && ids.rootRequestId !== "") headers["X-Root-Request-ID"] = ids.rootRequestId;
+	if (typeof ids.parentConversationId === "string" && ids.parentConversationId !== "") {
+		headers["X-Parent-Conversation-ID"] = ids.parentConversationId;
+	}
+	return headers;
+}
 /**
 * Derive a stable 36-hex device id from the account uid.
 *
@@ -830,7 +1027,11 @@ var WorkBuddyUpstreamClient = class {
 	async completeChat(credential, prepared, signal) {
 		const response = await this.fetchImpl(`${chatBase(credential)}/v2/chat/completions`, {
 			method: "POST",
-			headers: chatHeaders(credential),
+			// 与 chatStream 同一形状：compaction 也是官方意义上的 chat 请求。
+			headers: {
+				...chatHeaders(credential),
+				...conversationHeaders()
+			},
 			body: prepared,
 			...signal === void 0 ? {} : { signal }
 		});
@@ -847,7 +1048,11 @@ var WorkBuddyUpstreamClient = class {
 		try {
 			response = await this.fetchImpl(`${chatBase(credential)}/v2/chat/completions`, {
 				method: "POST",
-				headers: chatHeaders(credential),
+				// 官方每次 chat 都带那六个会话头；补齐才与桌面客户端同形。
+				headers: {
+					...chatHeaders(credential),
+					...conversationHeaders()
+				},
 				body: prepared,
 				...signal === void 0 ? {} : { signal }
 			});
@@ -2587,6 +2792,22 @@ var WorkBuddyAccountPool = class {
 	* misses because a removed account simply disappears from the map on re-scan.
 	*/
 	lastUsedAt = /* @__PURE__ */ new Map();
+	/**
+	* The user's "current account" per region (`cn` | `global`).
+	*
+	* Added by this fork, aligned with the Trae half (`effectiveAccountFor` /
+	* `accounts.{cn,ai}` in lib/trae.js): the pool still stores every discovered
+	* login, but a request is served by THIS account whenever it is usable.
+	* Region-keyed because the two WorkBuddy editions are separate providers
+	* with separate accounts.
+	*
+	* Distinct from {@link preferredId}: that one is "prefer, but let cooldowns
+	* override"; this one is "serve this account, or explain why not".
+	*
+	* Not persisted here — the host writes it through `applyConfig` from
+	* settings, the same way `disabledAccountIds` is re-applied after a scan.
+	*/
+	selectedIds = /* @__PURE__ */ new Map();
 	refreshInflight = /* @__PURE__ */ new Map();
 	constructor(options = {}) {
 		this.logger = options.logger;
@@ -2596,6 +2817,72 @@ var WorkBuddyAccountPool = class {
 		this.client = options.client;
 		this.refreshMarginMs = options.refreshMarginMs ?? 3e5;
 		this.distribution = options.distribution ?? "priority";
+	}
+	/* -------- 当前账号（本 fork 新增，对齐 Trae 半边） -------- */
+	/**
+	* Set the "current account" of one region.
+	*
+	* The id is recorded without checking that it exists: an account may not
+	* have been scanned in yet (just signed in, disk not re-read), and refusing
+	* the write would make the card's switch silently do nothing.
+	* {@link resolveSelected} decides the fallback at pick time.
+	*/
+	selectAccount(region, accountId) {
+		if (typeof accountId !== "string" || accountId === "") this.selectedIds.delete(region);
+		else this.selectedIds.set(region, accountId);
+	}
+	/** The selected id of one region. */
+	selectedAccountId(region) {
+		return this.selectedIds.get(region);
+	}
+	/**
+	* The pool entry the region's "current account" resolves to, or undefined.
+	*
+	* Undefined means "fall back to the distribution" — the selection is absent,
+	* points at an account no longer in the pool, or that account is currently
+	* unusable (switched off, cooled, or its model is cooled).
+	*/
+	resolveSelected(region, now = Date.now(), modelId) {
+		const id = this.selectedIds.get(region);
+		if (id === void 0) return void 0;
+		const account = this.accounts.find((item) => item.id === id);
+		if (account === undefined) return void 0;
+		if (region !== undefined && regionOf(account.credential.domain) !== region) return void 0;
+		return this.isUsable(account, now, modelId) ? account : void 0;
+	}
+	/** Whether one account can serve a request right now (no state written). */
+	isUsable(account, now = Date.now(), modelId) {
+		if (this.disabledIds.has(account.id)) return false;
+		const reserve = this.creditReserves.get(account.id);
+		if (reserve !== undefined && reserve > 0) {
+			const balance = this.creditBalances.get(account.id);
+			if (balance !== undefined && balance <= reserve) return false;
+		}
+		if (account.cooldownUntilMs > now) return false;
+		if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now) return false;
+		return true;
+	}
+	/**
+	* Why the region's selected account cannot serve, or undefined when it can.
+	*
+	* Written to the log before a fallback so "I picked A, why was B billed?"
+	* is answerable after the fact.
+	*/
+	fallbackReason(region, now = Date.now(), modelId) {
+		const id = this.selectedIds.get(region);
+		if (id === void 0) return "no-selection";
+		const account = this.accounts.find((item) => item.id === id);
+		if (account === undefined) return "selected-missing";
+		if (region !== undefined && regionOf(account.credential.domain) !== region) return "selected-wrong-region";
+		if (this.disabledIds.has(account.id)) return "selected-disabled";
+		if (account.cooldownUntilMs > now) return "selected-cooling";
+		if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now) return "selected-model-cooling";
+		const reserve = this.creditReserves.get(account.id);
+		if (reserve !== undefined && reserve > 0) {
+			const balance = this.creditBalances.get(account.id);
+			if (balance !== undefined && balance <= reserve) return "selected-reserved";
+		}
+		return void 0;
 	}
 	/**
 	* Re-apply configuration that only affects discovery and cooldown policy,
@@ -2609,6 +2896,27 @@ var WorkBuddyAccountPool = class {
 		if (options.distribution !== void 0) this.distribution = options.distribution;
 		if (options.disabledAccountIds !== void 0) this.disabledIds = new Set(options.disabledAccountIds);
 		if (options.creditReserves !== void 0) this.setCreditReserves(options.creditReserves);
+		// 本 fork 新增：按区域的「当前账号」。`cn` / `global` 各自一份。
+		if (options.selectedAccountIds !== void 0) this.setSelectedAccounts(options.selectedAccountIds);
+	}
+	/**
+	* Replace every region's "current account" selection.
+	*
+	* Wholesale replace (rather than merge) so clearing one region's selection
+	* by omitting it actually takes effect — same contract as `applyIgnored`.
+	*/
+	setSelectedAccounts(map) {
+		const next = /* @__PURE__ */ new Map();
+		for (const [region, id] of Object.entries(map ?? {})) {
+			if (typeof id === "string" && id !== "") next.set(region, id);
+		}
+		this.selectedIds = next;
+	}
+	/** Every region's selection, for the card to read back. */
+	selectedAccountsInOrder() {
+		const out = {};
+		for (const [region, id] of this.selectedIds) out[region] = id;
+		return out;
 	}
 	/**
 	* Replace the permanent ignore list.
@@ -2762,6 +3070,20 @@ var WorkBuddyAccountPool = class {
 			pool = this.available(Date.now(), modelId, region);
 		}
 		if (pool.length === 0) return void 0;
+		/**
+		* ① 本 fork 新增：「当前账号」优先。
+		*
+		* 该区域的 selectedId 只要可用就一定用它，不看 distribution、不轮换 ——
+		* 这就是与 Trae 半边对齐后的「单账号」行为。选中账号不可用时才回退到
+		* 下面的分配策略，并先写一条 warn 说明原因。
+		*/
+		const selected = this.resolveSelected(region, Date.now(), modelId);
+		if (selected !== void 0) {
+			await this.ensureFresh(selected);
+			return selected;
+		}
+		const reason = this.fallbackReason(region, Date.now(), modelId);
+		if (reason !== undefined && reason !== "no-selection") this.logger?.warn?.(`workbuddy-pool: 当前账号不可用（${region}/${reason}），本次回退到号池轮换`);
 		if (this.preferredId !== void 0) {
 			const preferred = pool.find((account) => account.id === this.preferredId);
 			if (preferred !== void 0) {
@@ -4569,6 +4891,15 @@ const POOL_CHECKIN_PATH = "/plugins/dsh-workbuddy-xdpool/checkin";
 const POOL_MODELS_SAVE_PATH = "/plugins/dsh-workbuddy-xdpool/models/save";
 /** Switch one account in or out of the pool (card toggle). */
 const POOL_ACCOUNT_DISABLE_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/disabled";
+/**
+* Set the region's "current account" — the ONE login requests are served by.
+*
+* Added by this fork, mirroring lib/trae.js's per-region account selection.
+* Distinct from the disable route: disabling is "keep this account out of the
+* pool", this is "serve every request from this account". Passing `null` (or an
+* empty id) clears the selection and returns the region to pool rotation.
+*/
+const POOL_ACCOUNT_SELECT_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/select";
 /**
 * Throw one account out of the pool for good, or take it back.
 *
@@ -6720,6 +7051,29 @@ function parseAccountToggle(body, known) {
 	};
 }
 /**
+* Validate a "set the current account" request.
+*
+* Returns a normalized `{ accountId }` where an empty string means CLEAR the
+* selection (back to pool rotation). Two payload shapes are accepted, because
+* the card has both a "pick this one" button and a "stop pinning" button:
+*
+*   - `{ accountId: "<id>" }` → select, and the id MUST be in the pool;
+*   - `{ accountId: null }` (or `""`) → clear, and no pool check applies.
+*
+* The pool check matters: accepting an unknown id would leave every request
+* silently falling back to rotation while the card still shows a pinned
+* account, which is the exact failure this route exists to prevent.
+*/
+function parseAccountSelect(body, known) {
+	const raw = body["accountId"];
+	if (raw === null || raw === void 0 || raw === "") return { accountId: "" };
+	if (typeof raw !== "string") return void 0;
+	const accountId = raw.trim();
+	if (accountId === "") return { accountId: "" };
+	if (!known(accountId)) return void 0;
+	return { accountId };
+}
+/**
 * Validate an ignore/unignore request.
 *
 * Two different notions of "known" apply, which is why the caller passes both:
@@ -6897,6 +7251,14 @@ async function poolWebStatus(deps, region = "cn") {
 		ok: accounts.length > 0 && cooling < accounts.length,
 		accounts: rows,
 		...firstUsable === void 0 ? {} : { activeAccountId: firstUsable.id },
+		/**
+		* 本 fork 新增：该区域的「当前账号」。
+		*
+		* 请求固定用它（它不可用时才回退到轮换，见 `acquire`）。卡片据此把对应
+		* 那张卡标成「当前使用」，并提供「设为当前」的切换入口。
+		* null = 没选，走号池轮换。
+		*/
+		selectedAccountId: deps.pool.selectedAccountId(region) ?? null,
 		cooling,
 		models: deps.catalogs[region].current().map((model) => toWebModel({
 			id: model.id,
@@ -7056,6 +7418,43 @@ function registerPoolStatusRoute(ctx, deps) {
 			}
 		});
 		/**
+		* Set (or clear) this region's "current account".
+		*
+		* Same three guards as the disable route — POST only, loopback origin only,
+		* a parsed payload — but a different effect: the picked account becomes the
+		* ONE login every request is served by, instead of merely heading the
+		* rotation. Persisted through `deps.setAccountSelected`, so the choice
+		* survives a restart exactly like the disable toggle.
+		*
+		* `region` comes from the request (`?region=cn|global`) because the two
+		* editions are separate providers; omitting it defaults to `cn`, matching
+		* the status route.
+		*/
+		const disposeAccountSelect = ctx.webServer.register({
+			kind: "exact",
+			path: POOL_ACCOUNT_SELECT_PATH,
+			handler: async (req, res) => {
+				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
+				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
+				if (deps.setAccountSelected === void 0) return json(res, 503, { error: "settings service unavailable; the account selection cannot be saved" });
+				try {
+					const body = await readJsonBody(req);
+					const region = new URL(req.url ?? "/", "http://localhost").searchParams.get("region") === "global" ? "global" : "cn";
+					const known = new Set(deps.pool.list(region).map((account) => account.id));
+					const selection = parseAccountSelect(body, (id) => known.has(id));
+					if (selection === void 0) return json(res, 400, { error: "invalid account selection payload" });
+					await deps.setAccountSelected(region, selection.accountId);
+					json(res, 200, {
+						ok: true,
+						region,
+						selectedAccountId: selection.accountId === "" ? null : selection.accountId
+					});
+				} catch (error) {
+					json(res, 500, { error: safeMessage(error) });
+				}
+			}
+		});
+		/**
 		* Throw one account out of the pool for good, or take it back.
 		*
 		* Same three guards as the disable route — POST only, loopback origin only,
@@ -7154,6 +7553,7 @@ function registerPoolStatusRoute(ctx, deps) {
 			disposeAccountIgnore();
 			disposeCheckin();
 			disposeAccountDisable();
+			disposeAccountSelect();
 			disposeModelsSave();
 			disposeReset();
 			disposeRescan();
@@ -7463,6 +7863,7 @@ const Config = z.object({
 	]).default("priority").description("How requests are spread: priority (drain one), round-robin (in order), or balanced (idle-weighted random)")),
 	disabledAccountIds: asVolatile(z.array(z.string()).default([]).description("Account ids excluded from the pool (empty = every discovered account participates)")),
 	creditReserves: asVolatile(z.dict(z.number().step(1).min(0)).default({}).description("Per-account credit floor: stop using an account once its balance reaches this value")),
+	selectedAccountIds: asVolatile(z.dict(z.string()).default({}).description("本 fork 新增：按区域的「当前账号」，键为 cn / global。请求固定用该账号，它不可用时才回退到号池轮换；留空表示不固定")),
 	enabledModelIds: asVolatile(z.array(z.string()).default([]).description("Legacy shared model-id list; used by a region that has no per-region selection yet")),
 	imageModelIds: asVolatile(z.array(z.string()).default([]).description("Legacy shared image-id list; used by a region that has no per-region selection yet")),
 	contextBudgets: asVolatile(z.dict(z.number().step(1).min(1)).default({}).description("Legacy shared context budgets; used by a region with no per-region selection yet")),
@@ -7555,13 +7956,16 @@ function apply(ctx, config = {}) {
 		}
 	};
 	const applyConfigFromSource = () => {
-		const { authFile, cooldownMs, distribution, disabledAccountIds, creditReserves, enabledModelIds, imageModelIds, contextBudgets, modelSelectionCn, modelSelectionGlobal, automation } = current();
+		const { authFile, cooldownMs, distribution, disabledAccountIds, creditReserves, selectedAccountIds, enabledModelIds, imageModelIds, contextBudgets, modelSelectionCn, modelSelectionGlobal, automation } = current();
 		core.pool.applyConfig({
 			...authFile === void 0 ? {} : { authDirs: [dirname(authFile)] },
 			...cooldownMs === void 0 ? {} : { cooldownMs },
 			distribution: distribution ?? "priority",
 			...disabledAccountIds === void 0 ? {} : { disabledAccountIds },
 			...creditReserves === void 0 ? {} : { creditReserves },
+			// 本 fork 新增：按区域的「当前账号」。整批替换，所以省略一个区域
+			// 就等于清除该区域的选择（卡片上的「取消固定」走这条路径）。
+			...selectedAccountIds === void 0 ? {} : { selectedAccountIds },
 			...automation?.exhaustCooldownMs === void 0 ? {} : { exhaustCooldownMs: automation.exhaustCooldownMs }
 		});
 		const legacySelection = {
@@ -7718,6 +8122,25 @@ function apply(ctx, config = {}) {
 			const next = disabled ? currentIds.includes(accountId) ? currentIds : [...currentIds, accountId] : currentIds.filter((id) => id !== accountId);
 			await setSetting("disabledAccountIds", next, next);
 		},
+		/**
+		* Persist the region's "current account".
+		*
+		* Added by this fork. The stored shape is ONE dict keyed by region
+		* (`{ cn, global }`), so the write reads the other region's entry back
+		* first — writing only the incoming region would silently drop the other
+		* side's selection on every switch, and the two editions are meant to be
+		* pinned independently.
+		*
+		* An empty `accountId` removes this region's key: that is the card's
+		* "stop pinning" action, and a leftover empty string would otherwise be
+		* read back as a selection that resolves to nothing.
+		*/
+		setAccountSelected: async (region, accountId) => {
+			const next = { ...current().selectedAccountIds ?? {} };
+			if (accountId === "") delete next[region];
+			else next[region] = accountId;
+			await setSetting("selectedAccountIds", next, next);
+		},
 		setCreditReserve: async (accountId, reserve) => {
 			const next = { ...current().creditReserves ?? {} };
 			if (reserve > 0) next[accountId] = reserve;
@@ -7868,4 +8291,4 @@ function apply(ctx, config = {}) {
 	});
 }
 //#endregion
-export { downgradeUnsupportedImages, readImageSize, normalizeDeepImages, policyToHostTarget, withToolImageDowngrade, APPEARANCE_THEME_KEY, AUTOMATION_JOB_KINDS, AUTOMATION_TICK_MS, BUDDY_APP_ID, BUDDY_APP_NAME, Config, DEFAULT_AUTOMATION_HOURS, DEFAULT_CONTEXT_BUDGET, EVENT_SCORE_WAIT_MS, FALLBACK_WORKBUDDY_MODELS, IGNORED_FILE_NAME, LIBRARY_DOC_URL, LIGHTHOUSE_EXPERT_ID, PLAYBOOK_CASE_ID, PLAYBOOK_CASE_NAME, PLUGIN_DATA_DIR_NAME, POOL_ACCOUNT_IGNORE_PATH, POOL_AUTOMATION_RUN_PATH, POOL_CHECKIN_PATH, POOL_CREDIT_RESERVE_PATH, POOL_MODELS_SAVE_PATH, POOL_RESCAN_PATH, POOL_RESET_COOLDOWN_PATH, POOL_STATUS_PATH, SKILL_ID, SKILL_NAME, TEMPLATE_PRESETS, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_LIVE_FILENAME, WORKBUDDY_POOL_PROVIDER, WORKBUDDY_POOL_SETTINGS_NS, WorkBuddyAccountPool, WorkBuddyCatalog, WorkBuddyScheduler, WorkBuddyUpstreamClient, appearanceChain, apply, automationChain, automationOptions, buddyAppChain, buddyAppEvents, buildStatus, candidateAuthDirs, canvasChain, chatChain, classifyUpstreamError, createCore, createWorkBuddyAdapter, createWorkBuddyShim, currentApi, dayKey, defaultDesktopAuthDirs, desktopAutomationCreatedEvent, desktopCanvasEvents, desktopChatEvents, dshHome, expertActualUseEvent, expertChatEvents, expertSummonEvents, formatRates, formatStatus, ignoreAccount, ignoredIdsPath, inject, isAutomationJobKind, isFireHour, libraryReadChain, modelSelectionKeyFor, name, parseRateLimitReset, parseWorkBuddyAuth, playbookChain, pluginDataDir, poolWebStatus, readIgnoredAccounts, readIgnoredAccountsSync, registerPoolStatusRoute, setApi, skillChain, templateChain, templateChains, unignoreAccount, workbuddyAccountId, writeIgnoredAccounts };
+export { downgradeUnsupportedImages, readImageSize, normalizeDeepImages, policyToHostTarget, withToolImageDowngrade, APPEARANCE_THEME_KEY, AUTOMATION_JOB_KINDS, AUTOMATION_TICK_MS, BUDDY_APP_ID, BUDDY_APP_NAME, Config, DEFAULT_AUTOMATION_HOURS, DEFAULT_CONTEXT_BUDGET, EVENT_SCORE_WAIT_MS, FALLBACK_WORKBUDDY_MODELS, IGNORED_FILE_NAME, LIBRARY_DOC_URL, LIGHTHOUSE_EXPERT_ID, PLAYBOOK_CASE_ID, PLAYBOOK_CASE_NAME, PLUGIN_DATA_DIR_NAME, POOL_ACCOUNT_IGNORE_PATH, POOL_ACCOUNT_SELECT_PATH, POOL_AUTOMATION_RUN_PATH, POOL_CHECKIN_PATH, POOL_CREDIT_RESERVE_PATH, POOL_MODELS_SAVE_PATH, POOL_RESCAN_PATH, POOL_RESET_COOLDOWN_PATH, POOL_STATUS_PATH, SKILL_ID, SKILL_NAME, TEMPLATE_PRESETS, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_LIVE_FILENAME, WORKBUDDY_POOL_PROVIDER, WORKBUDDY_POOL_SETTINGS_NS, WorkBuddyAccountPool, WorkBuddyCatalog, WorkBuddyScheduler, WorkBuddyUpstreamClient, appearanceChain, apply, automationChain, automationOptions, buddyAppChain, buddyAppEvents, buildStatus, candidateAuthDirs, canvasChain, chatChain, chatHeaders, classifyUpstreamError, conversationHeaders, createCore, createWorkBuddyAdapter, createWorkBuddyShim, currentApi, dayKey, defaultDesktopAuthDirs, desktopAutomationCreatedEvent, desktopCanvasEvents, desktopChatEvents, dshHome, expertActualUseEvent, expertChatEvents, expertSummonEvents, formatRates, formatStatus, ignoreAccount, ignoredIdsPath, inject, isAutomationJobKind, isFireHour, libraryReadChain, modelSelectionKeyFor, name, parseRateLimitReset, parseWorkBuddyAuth, playbookChain, pluginDataDir, poolWebStatus, readIgnoredAccounts, readIgnoredAccountsSync, registerPoolStatusRoute, setApi, skillChain, templateChain, templateChains, unignoreAccount, workbuddyAccountId, writeIgnoredAccounts };
