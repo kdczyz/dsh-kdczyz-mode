@@ -56,7 +56,7 @@ echo "== 源码门禁 =="
   echo "      先跑：node $SRC/scripts/gen-console-inline.mjs" >&2
   exit 1
 }
-for t in credit-store client-apply console-render trae-pool wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-credits qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
+for t in credit-store client-apply console-render trae-pool wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
   if (cd "$SRC" && "$NODE" "test/$t.test.mjs" >/dev/null 2>&1); then
     echo "  ✓ $t"
   else
@@ -246,8 +246,17 @@ fi
 
 echo
 echo "完成。**下一步必须重启 DSH**（退出后重新打开），改动才会生效。"
-echo "重启后应看到：设置 → WOTR 一个入口、六个标签页（XD Pool / Trae 配置 / 账号[三列：WorkBuddy+Trae+Qoder] / Qoder 号池 / 积分 / 使用记录）；"
+echo "重启后应看到：设置 → WOTR 一个入口、六个标签页（XD Pool / Trae 配置 / 账号[三列：WorkBuddy+Trae+Qoder] / Qoder 配置[单列：先号池后模型，与另两个配置页同一套骨架] / 积分 / 使用记录）；"
 echo "模型选择器里 workbuddy-xdpool / workbuddy-xdpool-global / trae / trae-global / qoder 五个 provider 都在。"
-echo "（Qoder 已接通推理：登录入口在「账号」页第三列或「Qoder 号池」页，"
-echo "  对话走本机 loopback shim → COSY 签名 → 上游；积分余额进这两页后每 30 秒自动刷新。）"
+echo "（Qoder 已接通推理：登录入口在「账号」页第三列或「Qoder 配置」页页头，"
+echo "  对话走本机 loopback shim → COSY 签名 → 上游；积分余额进这两页后每 30 秒自动刷新。"
+echo "  模型区与 WorkBuddy / Trae 同款：每张卡只有「启用」一个勾选，图片能力（上游 is_vl）"
+echo "  与上下文窗口（上游 max_input_tokens）**跟随上游目录**，卡片上只显示不选择；"
+echo "  「从 Qoder 刷新」= 拉取即落盘（全部启用 + 图片/上下文按上游写回，无需再点保存），"
+echo "  拉取失败时一个字段都不写（不把内置兜底表固化成白名单）。"
+echo "  含图请求要两处接线都通（模型层声明 image + pi-ai 适配器的 resolveAttachments），"
+echo "  重启后确认进程里真的是这一版代码："
+echo "    curl -s http://127.0.0.1:19387/plugins/dsh-wotr-console/qoder/models/refresh"
+echo "  回执里 capabilities.imageAttachments 必须为 true —— null/false 说明还是旧代码；"
+echo "  同一份回执里每个模型都带正整数 contextWindow 与布尔 supportsImages。）"
 [ "$DRY" = 0 ] && echo "回滚：把 $BACKUP 里的文件拷回 profile，并恢复两个旧包目录。"

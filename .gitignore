@@ -5,7 +5,7 @@
 ._*
 
 # 依赖与构建产物
-node_modules/
+node_modules
 dist/
 *.tgz
 *.log
