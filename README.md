@@ -70,6 +70,8 @@ node /tmp/install-wotr.mjs
 它做的事（少任何一步的症状都是「装完了但什么都没发生」）：
 
 1. 匿名 HTTPS 拉 GitHub 的 tar.gz（**不用 git**），自己解压（**不用 tar 命令**）；
+   下载失败会自动重试（实测网络抖一下 fetch 就抛一个光秃秃的 `fetch failed`），
+   三次都失败才报错，并打出底层原因；彻底不通就用 `--from` 走离线安装；
 2. 把插件放成 `<profile>/node_modules/dsh-wotr-console`（真实目录），
    并在 `<profile>/.dsh-wotr-src` 留一份源码副本供 profile 的 `link:` 指向；
 3. 从 `app.asar` 里把 9 个宿主内包**读出来**（纯 JS 读 asar，不借 Electron），

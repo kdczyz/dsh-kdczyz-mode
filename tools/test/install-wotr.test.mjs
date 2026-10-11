@@ -43,6 +43,10 @@ import {
 } from '../lib/install.mjs';
 import { PLUGIN_TOP_LEVEL, discoverHost, isPlatformNoise } from '../lib/host-deps.mjs';
 
+// 引导段（单独跑时那一段）也直接测：它是新设备上**第一个**跑起来的代码，
+// 网络抖一下就得能自己缓过来，且失败时要说清楚为什么。
+import { download, describe as describeFetchError, parseArgs, tarballUrl } from '../install-wotr.mjs';
+
 let pass = 0;
 let fail = 0;
 let skip = 0;
@@ -558,6 +562,86 @@ console.log('\n—— 6) 辅助函数 ——');
   try { install({ sourceDir: path.join(tmpRoot, 'no-such-src'), profile: tmpRoot, home: tmpRoot, log: () => {} }); }
   catch (error) { err = error.message; }
   ok('源码目录不存在时报错', typeof err === 'string' && err.includes('找不到插件'), err);
+}
+
+/* ------------------------------------------------------------------ *
+ * 7) 引导段的下载与参数：新设备上第一段跑起来的代码
+ * ------------------------------------------------------------------ */
+{
+  const http = await import('node:http');
+  const { once } = await import('node:events');
+
+  /** 起一个本地服务器当靶子（不碰外网，门禁离线也能跑）。 */
+  const serve = async (handler) => {
+    const server = http.createServer(handler);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const { port } = server.address();
+    return { url: `http://127.0.0.1:${port}/x`, close: () => new Promise((r) => server.close(r)) };
+  };
+  const quiet = async (fn) => {
+    const lines = [];
+    const real = console.log;
+    console.log = (m) => lines.push(String(m));
+    try { return { value: await fn(), lines }; } finally { console.log = real; }
+  };
+
+  // 前两次 500、第三次成功 —— 实测网络抖动就是这个形状
+  let hits = 0;
+  const flaky = await serve((req, res) => {
+    hits += 1;
+    if (hits < 3) { res.writeHead(500); res.end('boom'); return; }
+    res.writeHead(200); res.end('OK-PAYLOAD');
+  });
+  {
+    const { value, lines } = await quiet(() => download(flaky.url, '测试'));
+    eq('抖两次后仍下成功', value.toString(), 'OK-PAYLOAD');
+    eq('一共请求了三次', hits, 3);
+    eq('重试过程有交代', lines.filter((l) => l.includes('重试')).length, 2);
+    ok('重试提示带底层原因', lines.some((l) => l.includes('500')), lines.join(' | '));
+  }
+  await flaky.close();
+
+  // 404 是地址写错了：不许重试，且要给出下一步
+  let notFoundHits = 0;
+  const missing = await serve((req, res) => { notFoundHits += 1; res.writeHead(404); res.end('nope'); });
+  {
+    let err = '';
+    const { lines } = await quiet(async () => {
+      try { await download(missing.url, '测试'); } catch (error) { err = error.message; }
+      return undefined;
+    });
+    ok('404 报错提到 HTTP 404', err.includes('HTTP 404'), err);
+    ok('404 给出线索（--repo/--ref）', err.includes('--repo'), err);
+    ok('404 教了离线退路（--from）', err.includes('--from'), err);
+    eq('404 只请求一次（不重试）', notFoundHits, 1);
+    eq('404 时没有重试日志', lines.filter((l) => l.includes('重试')).length, 0);
+  }
+  await missing.close();
+}
+{
+  eq('describe 带出 cause 的 code', describeFetchError({ message: 'fetch failed', cause: { code: 'ECONNRESET' } }),
+    'fetch failed（ECONNRESET）');
+  eq('describe 无 cause 时只用 message', describeFetchError(new Error('HTTP 500')), 'HTTP 500');
+  eq('describe 兜住 undefined', describeFetchError(undefined), '未知错误');
+
+  const opts = parseArgs(['--profile', '/tmp/p', '--ref', 'v1.2.3', '--dry-run', '--repo', 'a/b']);
+  eq('--profile 解析', opts.profile, '/tmp/p');
+  eq('--ref 解析', opts.ref, 'v1.2.3');
+  eq('--repo 解析', opts.repo, 'a/b');
+  eq('--dry-run 解析', opts.dryRun, true);
+  eq('默认 ref 是 main', parseArgs([]).ref, 'main');
+  eq('默认仓库', parseArgs([]).repo, 'kdczyz/dsh-workbuddy-mode');
+
+  const yamlErr = (argv) => { try { parseArgs(argv); return ''; } catch (error) { return error.message; } };
+  ok('不认识的参数会报错', yamlErr(['--nope']).includes('--nope'), yamlErr(['--nope']));
+  ok('参数缺值会报错', yamlErr(['--profile', '--dry-run']).includes('缺一个值'), yamlErr(['--profile', '--dry-run']));
+
+  ok('分支走 refs/heads', tarballUrl('a/b', 'main').includes('/refs/heads/main'),
+    tarballUrl('a/b', 'main'));
+  const sha = '0123456789abcdef0123456789abcdef01234567';
+  ok('sha 直接拼', tarballUrl('a/b', sha).endsWith(`/${sha}`) && !tarballUrl('a/b', sha).includes('refs/'),
+    tarballUrl('a/b', sha));
 }
 
 fs.rmSync(tmpRoot, { recursive: true, force: true });

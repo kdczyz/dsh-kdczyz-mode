@@ -99,6 +99,9 @@ dsh-wotr-console 安装器
 装完必须**重启 DSH**（ES module 有缓存，热重载不会重新加载代码）。
 `;
 
+/** 这些是给单测用的出口（`node tools/install-wotr.mjs` 自己跑时也用同一份）。 */
+export { REPO_DEFAULT, download, describe, parseArgs, tarballUrl };
+
 const log = (msg) => console.log(msg);
 
 /** 只有 Node ≥ 18 才有 fetch；DSH 自带 runtime 一定满足。 */
@@ -109,18 +112,48 @@ function requireFetch() {
   }
 }
 
-/** 下载到内存（几百 KB ~ 几 MB，不值得落盘再读）。 */
+/**
+ * 下载到内存（几百 KB ~ 几 MB，不值得落盘再读）。
+ *
+ * 失败重试两次：实测网络抖一下 `fetch` 就抛一个光秃秃的 `fetch failed`，
+ * 新设备第一次装就撞见这个太亏。三次都失败才报错，并把底层 `cause`
+ * 一起打出来（Node 把真正原因塞在 `error.cause`：ECONNRESET / ENOTFOUND /
+ * 证书问题 / 代理），否则用户只看到「fetch failed」无从下手。
+ */
 async function download(url, label) {
   requireFetch();
   log(`下载 ${label}\n     ${url}`);
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) {
-    throw new Error(`下载失败：HTTP ${res.status} ${res.statusText}\n  ${url}\n`
-      + (res.status === 404 ? '（仓库/分支名写错了？用 --repo 与 --ref 指定）' : ''));
+  let last;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const res = await fetch(url, { redirect: 'follow' });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`
+          + (res.status === 404 ? '（仓库/分支名写错了？用 --repo 与 --ref 指定）' : ''));
+      }
+      const buf = Buffer.from(await res.arrayBuffer());
+      log(`     完成：${(buf.length / 1048576).toFixed(2)} MB`);
+      return buf;
+    } catch (error) {
+      last = error;
+      // HTTP 4xx 是地址写错了，重试没有意义
+      if (/^HTTP 4/.test(error.message)) break;
+      if (attempt < 3) {
+        log(`     第 ${attempt} 次失败（${describe(error)}），重试…`);
+        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      }
+    }
   }
-  const buf = Buffer.from(await res.arrayBuffer());
-  log(`     完成：${(buf.length / 1048576).toFixed(2)} MB`);
-  return buf;
+  throw new Error(`下载失败：${describe(last)}\n  ${url}\n`
+    + '网络不通 / 需要代理时：手动下载这个文件，再用 --from <本地 tar.gz 或源码目录> 安装。');
+}
+
+/** 把 fetch 的错误说清楚（Node 把真正原因放在 cause 里）。 */
+function describe(error) {
+  if (error === undefined || error === null) return '未知错误';
+  const cause = error.cause;
+  const detail = cause === undefined ? undefined : (cause.code ?? cause.message ?? String(cause));
+  return detail === undefined ? error.message : `${error.message}（${detail}）`;
 }
 
 /** GitHub 的 tar.gz 地址：分支/标签走 refs/heads 或 refs/tags，sha 直接拼。 */
@@ -260,7 +293,13 @@ async function main() {
   return 0;
 }
 
-main().then((code) => process.exit(code)).catch((error) => {
-  console.error(`\n安装失败：${error.message}`);
-  process.exit(1);
-});
+/* 只有直接跑这个文件时才进 main —— 被 import 时（单测）只取函数。 */
+const invokedDirectly = process.argv[1] !== undefined
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) {
+  main().then((code) => process.exit(code)).catch((error) => {
+    console.error(`\n安装失败：${error.message}`);
+    process.exit(1);
+  });
+}
