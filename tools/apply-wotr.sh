@@ -56,7 +56,7 @@ echo "== 源码门禁 =="
   echo "      先跑：node $SRC/scripts/gen-console-inline.mjs" >&2
   exit 1
 }
-for t in credit-store client-apply console-render trae-pool wb-auth trae-auth; do
+for t in credit-store client-apply console-render trae-pool wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-credits qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
   if (cd "$SRC" && "$NODE" "test/$t.test.mjs" >/dev/null 2>&1); then
     echo "  ✓ $t"
   else
@@ -65,6 +65,8 @@ for t in credit-store client-apply console-render trae-pool wb-auth trae-auth; d
     exit 1
   fi
 done
+# host-assembly 单独跑在**装配之后**（第 8 步）：它断言的是 profile 的解析结果，
+# 部署前跑没有意义（那时依赖还没装配）。
 
 # —— 2) 备份 profile 的三个关键文件 + 两个旧包 ——
 if [ "$DRY" = 0 ]; then
@@ -141,16 +143,37 @@ const before = raw;
 raw = raw.replace(/^(\s*name:\s*)dsh-workbuddy-console\s*$/gm, '$1dsh-wotr-console');
 // 独立的旧 trae 包名 → 合并包名的子路径。**只改 name，原文与 config 一律保留。**
 raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-wotr-console/trae');
+
+// —— 补 Qoder 条目 ——
+//
+// Qoder 半边必须有自己的 profile 条目，否则 Loader 不会加载 lib/qoder.js，
+// provider 根本不会注册。表现是「模型选择器里没有 qoder」，而插件自己的
+// `- insert:` 只保证条目**存在**（不带 config）——实测这份 profile 里其余两个
+// 条目都是手写的，Qoder 那条从没被加进来，所以这里显式补齐。
+//
+// 幂等：已经有 `name: dsh-wotr-console/qoder` 就跳过，不重复插入、不覆盖
+// 可能已存在的用户 config。
+if (!/^\s*name:\s*dsh-wotr-console\/qoder\s*$/m.test(raw)) {
+  const block = [
+    '- id: dsh-connect-qoder',
+    '  name: dsh-wotr-console/qoder',
+    '',
+  ].join('\n');
+  raw = raw.replace(/\n*$/, '\n') + block;
+  console.log('  cordis.patch.yml: 已补上 Qoder 条目（dsh-connect-qoder → dsh-wotr-console/qoder）');
+}
+
 raw = raw.replace(/\n{3,}/g, '\n\n');
 if (raw !== before) {
   fs.writeFileSync(file, raw);
-  console.log('  cordis.patch.yml: 旧包名已替换为 dsh-wotr-console（条目与 config 原样保留）');
+  console.log('  cordis.patch.yml: 已更新（条目与 config 一律保留）');
 } else {
   console.log('  cordis.patch.yml: 无需改动');
 }
 EOF
 else
   echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-workbuddy-console 改为 dsh-wotr-console，dsh-connect-trae 改为 dsh-wotr-console/trae（条目与其 config 一律保留）"
+  echo "[dry-run] 将在缺失时补上 Qoder 条目：dsh-connect-qoder → dsh-wotr-console/qoder"
 fi
 
 # —— 6) 卸掉旧包目录 ——
@@ -172,15 +195,59 @@ fi
 
 # —— 7) 校验新包在该 profile 下能被解析 ——
 if [ "$DRY" = 0 ]; then
-  for f in lib/index.js lib/trae.js lib/client.js lib/console.mjs; do
+  for f in lib/index.js lib/trae.js lib/qoder.js lib/client.js lib/console.mjs; do
     [ -f "$TARGET/$f" ] || { echo "错误：目标缺少 $f" >&2; exit 1; }
     "$NODE" --check "$TARGET/$f"
   done
-  echo "语法检查通过。"
+  # Qoder 半边靠 package.json 的 exports 白名单解析子路径 `./qoder`，
+  # 缺了这一条 Loader 报 ERR_PACKAGE_PATH_NOT_EXPORTED，provider 不会注册。
+  "$NODE" -e "
+    const pkg = require('$TARGET/package.json');
+    if (pkg.exports?.['./qoder'] === undefined) {
+      console.error('错误：package.json 缺少 exports[\"./qoder\"]，qoder 半边无法被解析');
+      process.exit(1);
+    }
+  "
+  echo "语法检查通过（含 exports[\"./qoder\"] 白名单）。"
+fi
+
+# —— 8) 暴露宿主内包（否则三个入口在宿主里全都加载不了）——
+#
+# 症状：插件源码、单测全绿，管理页也能看到已登录账号，但模型选择器里
+# 五个 provider 一个都没有 —— 因为 lib/qoder.js 等文件顶层的
+#   import ... from '@earendil-works/pi-ai'
+#   import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
+# 在宿主里解析失败（ERR_MODULE_NOT_FOUND / ERR_PACKAGE_PATH_NOT_EXPORTED），
+# 模块顶层求值就抛，apply() 根本不会执行，连 .catch() 里的日志都打不出来。
+#
+# 根因：这些包是 DSH 宿主自带的（在 app.asar 内），profile 的 node_modules
+# 里一个都没有；而 asar 内部路径纯 Node 读不到（ENOTDIR），软链过去无效。
+# 所以要从宿主运行时把依赖闭包**复制**成磁盘实体，再软链进 profile。
+#
+# 幂等：已存在且版本一致就跳过；--dry-run 只报告。
+if [ "$DRY" = 0 ]; then
+  "$NODE" "$ROOT/tools/link-host-deps.mjs" "$PROFILE" || {
+    echo "错误：宿主内包未能装配，插件在宿主里仍会加载失败" >&2
+    exit 1
+  }
+  # 装配后再跑一次 host-assembly —— 这一步才真正回答「宿主里能不能加载」。
+  # 它是本项目唯一能抓到「源码全绿、真机全废」那类故障的测试。
+  if "$NODE" "$TARGET/test/host-assembly.test.mjs" >/dev/null 2>&1; then
+    echo "  ✓ host-assembly（三个入口在该 profile 下均可加载）"
+  else
+    echo "  ✗ host-assembly 未通过 —— 插件在宿主里加载不了，provider 不会出现" >&2
+    echo "    手动查看：\"$NODE\" $TARGET/test/host-assembly.test.mjs" >&2
+    exit 1
+  fi
+else
+  echo "[dry-run] 将从 DSH 宿主装配依赖闭包到 $PROFILE/.dsh-runtime-deps/node_modules 并软链进 node_modules/"
+  echo "[dry-run] 将运行 host-assembly 校验三个入口在该 profile 下可加载"
 fi
 
 echo
 echo "完成。**下一步必须重启 DSH**（退出后重新打开），改动才会生效。"
-echo "重启后应看到：设置 → WOTR 一个入口、五个标签页（XD Pool / Trae 配置 / 账号[左右两列] / 积分 / 使用记录）；"
-echo "模型选择器里 workbuddy-xdpool / workbuddy-xdpool-global / trae / trae-global 四个 provider 都在。"
+echo "重启后应看到：设置 → WOTR 一个入口、六个标签页（XD Pool / Trae 配置 / 账号[三列：WorkBuddy+Trae+Qoder] / Qoder 号池 / 积分 / 使用记录）；"
+echo "模型选择器里 workbuddy-xdpool / workbuddy-xdpool-global / trae / trae-global / qoder 五个 provider 都在。"
+echo "（Qoder 已接通推理：登录入口在「账号」页第三列或「Qoder 号池」页，"
+echo "  对话走本机 loopback shim → COSY 签名 → 上游；积分余额进这两页后每 30 秒自动刷新。）"
 [ "$DRY" = 0 ] && echo "回滚：把 $BACKUP 里的文件拷回 profile，并恢复两个旧包目录。"
