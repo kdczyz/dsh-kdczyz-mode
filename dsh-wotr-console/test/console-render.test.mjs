@@ -425,7 +425,38 @@ const traeFixture = {
   // Trae 的分配策略在 `pool.distribution` 里（按区域那一份）。
   // 刻意给一个与 WorkBuddy 侧（round-robin）**不同**的值：两列读的是
   // 不同来源，若有一侧读错来源，两边就会显示成同一个值而看不出来。
-  pool: { distribution: 'balanced' },
+  //
+  // `accounts` 按 `/trae/pool` 的真实形状给两条，与 store 里的登录按 id 对齐：
+  // 一条正常（带保留额度 0 → 行里应写「不限」），一条冷却中且限流过 2 次
+  // （覆盖「冷却中」标签、`限流 N 次` 标签与「冷却至」行）。
+  // 早先这里没有 `accounts`，于是所有号池字段渲染出来都是空的 ——
+  // 断言只能靠统计格的文字蒙混过关。
+  pool: {
+    distribution: 'balanced',
+    accounts: [
+      {
+        id: 't1',
+        accountName: 'trae-user@example.com',
+        cooling: false,
+        disabled: false,
+        reserved: false,
+        creditReserve: 0,
+        rateLimitHits: 0,
+        credits: 900,
+      },
+      {
+        id: 't2',
+        accountName: 'trae-backup@example.com',
+        cooling: true,
+        cooldownUntilMs: Date.now() + 60000,
+        disabled: false,
+        reserved: true,
+        creditReserve: 200,
+        rateLimitHits: 2,
+        credits: 120,
+      },
+    ],
+  },
 };
 
 const withData = { 2: statusFixture, 3: summaryFixture, 4: false, 5: false };
@@ -559,7 +590,11 @@ const poolStatusFixture = {
       creditReserve: 0,
       reserved: false,
       rateLimitHits: 0,
-      credits: 3080,
+      // 与 lib/index.js 的 `/status` 同形：上游把整份积分文档原样透传，
+      // 于是这里是**对象**（`{total, packages…}`）而不是数字。
+      // 早先 fixture 写的是数字，把「页面读不出 total、余额永远显示 –」
+      // 这个真机上的 bug 一直挡在测试之外。
+      credits: { total: 3080, packages: [{ packageName: '月包', remain: 80, size: 100 }] },
       creditsError: null,
       checkin: { todayCheckedIn: true, streakDays: 9 },
       expiresAt: new Date(Date.now() + 86400000).toISOString(),
@@ -574,7 +609,7 @@ const poolStatusFixture = {
       creditReserve: 100,
       reserved: true,
       rateLimitHits: 3,
-      credits: 0,
+      credits: { total: 0, packages: [] },
       checkin: { todayCheckedIn: false, streakDays: 0 },
     },
   ],
@@ -2658,11 +2693,19 @@ await (async () => {
     '清除冷却',
     'trae-backup@example.com', // 号池账号卡
     '冷却中',
-    '触发限流',
+    '冷却至',                // 冷却中的卡带「冷却至」行
+    '限流 2 次',             // 限流次数 = 标签（与另两页同款），不是一行「触发限流 0 次」
+    '当前使用',              // 首标签：固定的那张亮着
+    '备用',
+    '不限',                  // t1 没设保留额度 → 那一行写「不限」
   ]) {
     ok(`Trae 配置页渲染出「${must}」`, text.includes(must), text.slice(0, 200));
   }
-  ok('号池显示冷却账号数', text.includes('触发限流'), text.slice(0, 300));
+  ok(
+    'Trae 页不再出现「触发限流」行',
+    text.includes('触发限流') === false,
+    text.slice(0, 200),
+  );
 })();
 
 /**
@@ -2812,9 +2855,11 @@ await (async () => {
     '池内主号',              // 账号卡
     '冷却备用号',
     '冷却中',
-    '触发限流',
+    '备用',                  // 首标签与另两页同款（fixture 没给 activeAccountId）
+    '限流 3 次',             // 限流次数做成标签（与 Qoder 页同款）
     '参与轮换',              // 账号启停（与另两页同款勾选）
     '保留额度',              // 保留额度输入 + 行
+    '不限',                  // 没设保留额度时那一行写「不限」，不是整行消失
     '移出池子',
     '已移出账号池',          // ignored 区
     '已移出号',
@@ -2840,6 +2885,128 @@ await (async () => {
     ok(`XD Pool 配置页渲染出「${must}」`, text.includes(must), text.slice(0, 200));
   }
   ok('CN 区域渲染出积分自动化区块', text.includes('积分自动化'));
+})();
+
+/**
+ * —— 2g-2c) 三个配置页的账号卡：标签词汇、压暗规则、余额读法逐字同款 ——
+ *
+ * 「同一件事在三页里三种叫法」是本插件最容易复发的一类走样，而且**整页文本断言
+ * 抓不到**（词当然出现过，贴错卡片照样通过）。这里按卡片取文本，逐条守住三件事：
+ *
+ *   1. **首标签**：只有「当前使用 / 备用」两种词。WorkBuddy 侧曾经用「正常」，
+ *      于是同一个事实（这张卡在服务）在三页里有两个名字。
+ *   2. **压暗规则**：当前使用的那张亮着，其余压暗；不知道是谁时不压暗任何卡
+ *      （「不知道」≠「都不是它」）。
+ *   3. **余额读法**：`/status` 里的 `credits` 是**对象**（`{total, packages…}`，
+ *      上游原样透传），不是数字。曾经这里直接 `fmtNum(a.credits)`，于是真机上
+ *      一直显示「通用余额 –」，而 1031 就在响应体里。夹具也用真实形状，否则
+ *      这个 bug 会一直待在测试的盲区里。
+ *
+ * 另外守住「限流次数是标签」：曾经是常驻的「触发限流 0 次」行，三页两种写法。
+ */
+await (async () => {
+  const prevFetch = globalThis.fetch;
+  // 有「当前账号」的池快照：u1 在服务（亮着、标当前使用），u2 冷却 + 停用 + 限流过。
+  // `ignored` 清空：这一块只数「账号」区的卡。
+  const currentPool = { ...poolStatusFixture, activeAccountId: 'u1', ignored: [] };
+  globalThis.fetch = (url) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(currentPool) });
+    }
+    if (u.includes('/plugins/dsh-connect-trae/usage')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(traeFixture) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    /** 取一页的元素树（数据靠预设 hook 或 fetch 注入，与各页自己的用例一致） */
+    const treeOf = async (preset, runEffects) => {
+      const react = makeReact(preset, runEffects);
+      const Page = createConsoleSection({
+        react,
+        jsxRuntime: makeJsxRuntime(),
+        embedded: makeEmbedded(),
+      });
+      if (runEffects === true) {
+        // 要遍历一次才会执行子组件、发出请求；之后 reset 再渲染才是「拿到数据」的那一帧
+        collectText(Page({}), []);
+        await new Promise((r) => setTimeout(r, 0));
+        react.reset();
+      }
+      return Page({});
+    };
+
+    const pages = [
+      ['XD Pool', await treeOf({ 0: 'pool-config' }, true)],
+      ['Trae', await treeOf({ 0: 'trae-config' }, true)],
+      // Qoder 的数据直接由 hook 15 注入；**不跑副作用** —— 页内自带 30 秒自动
+      // 刷新定时器，为了这一块断言留一个活 timer 会拖着测试进程不退。
+      ['Qoder', await treeOf({ ...withData, 9: traeFixture, 15: qoderFixture, 0: 'qoder' }, false)],
+    ];
+
+    const byLabel = {};
+    for (const [label, tree] of pages) {
+      const cards = collectByClass(tree, 'wbc-card');
+      const texts = cards.map((c) => textOfNode(c));
+      const dimmed = cards.map((c) =>
+        String(c.props?.className ?? '')
+          .split(/\s+/)
+          .includes('wbc-card-off'),
+      );
+      byLabel[label] = { texts, pageText: textOfNode(tree) };
+      ok(`${label} 配置页渲染出至少两张账号卡`, cards.length >= 2, `cards=${cards.length}`);
+      if (cards.length < 2) continue;
+      ok(
+        `${label} 首标签只用「当前使用 / 备用」`,
+        texts.every((t) => t.includes('当前使用') || t.includes('备用')),
+        texts.join(' || '),
+      );
+      ok(
+        `${label} 恰好一张卡标「当前使用」`,
+        texts.filter((t) => t.includes('当前使用')).length === 1,
+        texts.join(' || '),
+      );
+      ok(
+        `${label} 当前使用的那张亮着、其余压暗`,
+        dimmed[0] === false && dimmed.slice(1).every((d) => d === true),
+        `dimmed=${JSON.stringify(dimmed)}`,
+      );
+      ok(`${label} 不再出现「正常」这种标签`, texts.every((t) => t.includes('正常') === false), texts.join(' || '));
+      ok(
+        `${label} 限流次数是标签而不是常驻的「触发限流」行`,
+        texts.every((t) => t.includes('触发限流') === false),
+        texts.join(' || '),
+      );
+    }
+
+    const pool = byLabel['XD Pool'];
+    const u1Card = pool.texts[0];
+    const u2Card = pool.texts[1];
+    ok(
+      'XD Pool 账号卡读得出 credits.total（对象形态）',
+      u1Card.includes('通用余额') && u1Card.includes('3,080'),
+      u1Card,
+    );
+    ok('XD Pool 账号卡不把对象渲染成「–」', u1Card.includes('通用余额 –') === false, u1Card);
+    ok('XD Pool 冷却账号卡带「限流 3 次」标签', u2Card.includes('限流 3 次'), u2Card);
+    ok('XD Pool 没设保留额度时写「不限」', u1Card.includes('不限'), u1Card);
+    ok('XD Pool 整页不再渲染「触发限流」', pool.pageText.includes('触发限流') === false, pool.pageText.slice(0, 200));
+
+    const trae = byLabel['Trae'];
+    ok(
+      'Trae 配置页的账号卡也读得出限流次数与「不限」',
+      trae.texts[1].includes('限流 2 次') && trae.texts[0].includes('不限'),
+      `${trae.texts[0]} || ${trae.texts[1]}`,
+    );
+    ok(
+      'Trae 配置页整页不再渲染「触发限流」',
+      trae.pageText.includes('触发限流') === false,
+      trae.pageText.slice(0, 200),
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
 })();
 
 /**

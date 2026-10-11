@@ -75,13 +75,14 @@
 > | 页头 | `ColumnHead`：标题 + 区域切换（Qoder 无区域）+ 右侧按钮（都是「刷新」，Qoder 另有「添加账号」）。**按钮文案固定**，状态变化用禁用态与下面的说明行表达 |
 > | 状态行 | 固定顺序：只读提示（`READONLY_NOTE`）→ `读取失败：` → `保存失败：` → 已保存 → 正在读取 → 空态 `EmptyBox` |
 > | 统计 | `StatsRow`：**四格** —— 账号 / 可用 / 冷却中 / 当前使用（每页第三、四格的事实各按本页数据措辞） |
-> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子） |
+> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子）。**卡上的标签词汇、压暗规则、余额读法三页逐字同款**：首标签只有「当前使用 / 备用」（当前那张亮着，其余压暗；宿主没给「当前是谁」时一张都不压暗）；状态标签是「冷却中 / 已停用 / 已保留·暂停 / 限流 N 次」——**限流次数是标签，不是常驻的「触发限流 0 次」行**；余额统一走 `accountCreditsOf`（WorkBuddy 的 `credits` 是 `{total, packages…}` **对象**，曾经直接 `fmtNum` 渲染成「通用余额 –」，而数字就在响应体里） |
 > | 「模型」区 | `Section` 收尾 + `wbc-cols` 网格的 `ModelCard`（勾选 / 元信息 / 附加控件 / 测试徽章）+ 底部 sticky 保存条 `wbc-model-actions` |
 >
 > 三页**功能集**不同（Trae 页头有供应商开关；XD Pool 多「已移出账号池」「积分自动化」两个分区；Qoder 页头有「添加账号」、账号卡多「令牌到期 / 余额」行），
 > 这些差异保留 —— 统一的是骨架、控件与措辞，不是内容。`test/console-render.test.mjs`
-> 里有「三页样式一致性」与「页头按钮文案不随状态变」「号池快照为空时主要按钮仍在」
-> 几组断言守着它，因为这类退化不会让任何功能测试失败，只能显式断言。
+> 里有「三页样式一致性」「账号卡标签词汇/压暗规则/余额读法逐字同款」「页头按钮文案不随状态
+> 变」「号池快照为空时主要按钮仍在」几组断言守着它，因为这类退化不会让任何功能测试失败，
+> 只能显式断言（而且整页文本断言不够 —— 卡上贴错的标签，整页搜词照样通过，得按卡片取文本）。
 >
 > 补充两点实现细节：`Section`（分区）与 `CardActions`（卡片操作）也是共用模块里的
 > 原语，新增分区/卡片控件请直接用它们，别在页面里另起一套；「Qoder 配置」页的两个
@@ -235,7 +236,7 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 341 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）
+node test/console-render.test.mjs   # 372 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）
 node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
 node test/trae-auth.test.mjs        # 71 项：Trae 浏览器登录（PKCE+回环回调，自动回调）、凭据落盘

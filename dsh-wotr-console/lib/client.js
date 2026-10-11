@@ -1049,64 +1049,90 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                 ],
                 children: jsx('div', {
                   className: 'wbc-cards',
-                  children: accounts.map((a) =>
-                    jsx(
-                      AccountCard,
-                      {
-                        name: a.nickname || a.label || a.id,
-                        dim: a.cooling === true || a.disabled === true,
-                        tags: [
-                          a.cooling === true
-                            ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' }
-                            : { text: '正常', cls: 'wbc-tag wbc-tag-on' },
-                          a.disabled === true ? { text: '已停用', cls: 'wbc-tag' } : null,
-                          a.reserved === true ? { text: '已保留·暂停', cls: 'wbc-tag' } : null,
-                        ],
-                        rows: [
-                          { k: '触发限流', v: `${fmtNum(a.rateLimitHits ?? 0)} 次` },
-                          a.cooldownUntil !== undefined
-                            ? { k: '冷却至', v: fmtTime(a.cooldownUntil) }
-                            : null,
-                          a.credits !== undefined ? { k: '通用余额', v: fmtNum(a.credits) } : null,
-                          a.creditReserve !== undefined && a.creditReserve > 0
-                            ? { k: '保留额度', v: fmtNum(a.creditReserve) }
-                            : null,
-                        ],
-                        // 启停 / 保留额度 / 移出：走共用的 CardActions，
-                        // 三个配置页的账号卡逐字同款（先前 WorkBuddy 用勾选、
-                        // Trae 与 Qoder 用按钮，同一件事三种手感）。
-                        extra: [
-                          jsx(
-                            CardActions,
-                            {
-                              locked: !writable,
-                              rotating: a.disabled !== true,
-                              rotateBusy: busy === a.id,
-                              onToggleRotate: (next) => onToggleDisabled(a.id, next !== true),
-                              reserveValue: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
-                              onReserveChange: (v) =>
-                                setReserveDraft((prev) => ({ ...prev, [a.id]: v })),
-                              onSaveReserve: () => onSaveReserve(a.id),
-                              saving: busy === `reserve-${a.id}`,
-                              onRemove: () => onIgnore(a.id, true),
-                              removeBusy: busy === `ignore-${a.id}`,
-                            },
-                            'actions',
-                          ),
-                        ],
-                        // 主操作：签到领取（唯一一个「对单个账号做一件上游动作」的按钮）
-                        action:
-                          a.cooling === true
-                            ? null
-                            : {
-                                label: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
-                                disabled: busy === `checkin-${a.id}`,
-                                onClick: () => onCheckin(a.id),
+                  children: accounts.map((a) => {
+                    /**
+                     * 首标签与压暗规则**与另两页逐字同款**：`isCurrent` 亮着并标
+                     * 「当前使用」，其余标「备用」并压暗。先前这里是「正常 / 冷却中」
+                     * —— 同一件事（哪张卡在服务）在三页里三种叫法，而且 WorkBuddy
+                     * 这边整页看不出是哪张卡在服务（只有顶部统计格里有）。
+                     *
+                     * `currentId` 为空（宿主没给 activeAccountId）时**不压暗任何卡**：
+                     * 「不知道是谁」不等于「都不是它」。
+                     */
+                    const isCurrent = currentId !== '' && a.id === currentId;
+                    const creditTotal = accountCreditsOf(a);
+                    return jsx(
+                        AccountCard,
+                        {
+                          name: a.nickname || a.label || a.id,
+                          dim: a.cooling === true || a.disabled === true || (currentId !== '' && isCurrent !== true),
+                          tags: [
+                            isCurrent
+                              ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
+                              : { text: '备用', cls: 'wbc-tag' },
+                            a.disabled === true
+                              ? { text: '已停用', cls: 'wbc-tag' }
+                              : a.cooling === true
+                                ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' }
+                                : null,
+                            a.reserved === true ? { text: '已保留·暂停', cls: 'wbc-tag' } : null,
+                            // 限流次数与其他两页一样做成标签（只在真的发生过时出现）
+                            // —— 一条永远写着「0 次」的行只是噪声。
+                            (a.rateLimitHits ?? 0) > 0
+                              ? { text: `限流 ${fmtNum(a.rateLimitHits)} 次`, cls: 'wbc-tag' }
+                              : null,
+                          ],
+                          rows: [
+                            a.cooldownUntil !== undefined
+                              ? { k: '冷却至', v: fmtTime(a.cooldownUntil) }
+                              : null,
+                            /**
+                             * 余额：`credits` 是**对象**（`{total, packages…}`，上游
+                             * 原样透传的那份），早先这里直接 `fmtNum(a.credits)`，
+                             * 于是页面上一直显示「通用余额 –」，而真实的 1031 就
+                             * 在响应体里。判据统一走 `accountCreditsOf`（三种池的
+                             * 字段名差异都在它里面）。
+                             */
+                            creditTotal !== undefined
+                              ? { k: '通用余额', v: fmtNum(creditTotal) }
+                              : null,
+                            { k: '保留额度', v: (a.creditReserve ?? 0) > 0 ? fmtNum(a.creditReserve) : '不限' },
+                          ],
+                          // 启停 / 保留额度 / 移出：走共用的 CardActions，
+                          // 三个配置页的账号卡逐字同款（先前 WorkBuddy 用勾选、
+                          // Trae 与 Qoder 用按钮，同一件事三种手感）。
+                          extra: [
+                            jsx(
+                              CardActions,
+                              {
+                                locked: !writable,
+                                rotating: a.disabled !== true,
+                                rotateBusy: busy === a.id,
+                                onToggleRotate: (next) => onToggleDisabled(a.id, next !== true),
+                                reserveValue: reserveDraft[a.id] ?? String(a.creditReserve ?? 0),
+                                onReserveChange: (v) =>
+                                  setReserveDraft((prev) => ({ ...prev, [a.id]: v })),
+                                onSaveReserve: () => onSaveReserve(a.id),
+                                saving: busy === `reserve-${a.id}`,
+                                onRemove: () => onIgnore(a.id, true),
+                                removeBusy: busy === `ignore-${a.id}`,
                               },
-                      },
+                              'actions',
+                            ),
+                          ],
+                          // 主操作：签到领取（唯一一个「对单个账号做一件上游动作」的按钮）
+                          action:
+                            a.cooling === true
+                              ? null
+                              : {
+                                  label: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
+                                  disabled: busy === `checkin-${a.id}`,
+                                  onClick: () => onCheckin(a.id),
+                                },
+                        },
                       String(a.id ?? a.label),
-                    ),
-                  ),
+                    );
+                  }),
                 }),
               })
             : null,
@@ -1127,7 +1153,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         dim: true,
                         tags: [{ text: '已移出', cls: 'wbc-tag' }],
                         rows: [
-                          a.credits !== undefined ? { k: '通用余额', v: fmtNum(a.credits) } : null,
+                          // 与账号卡同一条判据：`credits` 是对象（`{total…}`）
+                          // 时也要读得出数字，否则这一行会永远显示「–」。
+                          accountCreditsOf(a) !== undefined
+                            ? { k: '通用余额', v: fmtNum(accountCreditsOf(a)) }
+                            : null,
                         ],
                         action: {
                           label: busy === `ignore-${a.id}` ? '恢复中…' : '恢复',
@@ -1909,13 +1939,15 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             : null,
                           pool?.disabled === true ? { text: '已停用', cls: 'wbc-tag' } : null,
                           pool?.reserved === true ? { text: '已保留·暂停', cls: 'wbc-tag' } : null,
+                          // 限流次数做标签，只在真的发生过时出现 —— 与另两页同款
+                          // （先前行里常驻一条「触发限流 0 次」）。
+                          (pool?.rateLimitHits ?? 0) > 0
+                            ? { text: `限流 ${fmtNum(pool.rateLimitHits)} 次`, cls: 'wbc-tag' }
+                            : null,
                         ],
                         // 余额来自 /usage 的逐账号 credits，号池状态来自 pool 段，
                         // 两张表按 id 对齐后拼成同一张卡。
                         rows: [
-                          pool === null || pool === undefined
-                            ? null
-                            : { k: '触发限流', v: `${fmtNum(pool.rateLimitHits ?? 0)} 次` },
                           pool?.cooldownUntilMs !== undefined
                             ? { k: '冷却至', v: fmtTime(pool.cooldownUntilMs) }
                             : null,
@@ -1927,9 +1959,13 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                           account?.credits?.workAvailable !== undefined
                             ? { k: '工作余额', v: fmtNum(account.credits.workAvailable) }
                             : null,
-                          pool?.creditReserve !== undefined && pool.creditReserve > 0
-                            ? { k: '保留额度', v: fmtNum(pool.creditReserve) }
-                            : null,
+                          // 与 Qoder 页同款：没设保留额度就写「不限」，而不是整行消失
+                          pool === null || pool === undefined
+                            ? null
+                            : {
+                                k: '保留额度',
+                                v: (pool.creditReserve ?? 0) > 0 ? fmtNum(pool.creditReserve) : '不限',
+                              },
                         ],
                         extra: [
                           jsx(
@@ -3002,14 +3038,30 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                   // 「当前账号」= 本区域请求固定使用的那个（`selectedAccountId`
                   // 由宿主的池状态返回）。它是**按区域**的：切到国际版 tab 时
                   // 看到的是国际版自己的选中项。
-                  const isSelected = status?.selectedAccountId === a.id;
+                  //
+                  // 没有固定项时退到 `activeAccountId`（上次真的服务过请求的那个）
+                  // —— 与「XD Pool」配置页同一条判据，两处的标签与压暗规则才会
+                  // 一致。两个都拿不到就**不压暗任何卡**：「不知道是谁」不等于
+                  // 「都不是它」。
+                  const selectedId =
+                    typeof status?.selectedAccountId === 'string' ? status.selectedAccountId : '';
+                  const activeId =
+                    typeof status?.activeAccountId === 'string' ? status.activeAccountId : '';
+                  /** 被用户**固定**的那个（按钮显示「取消固定」） */
+                  const isSelected = selectedId !== '' && a.id === selectedId;
+                  /** 实际在服务的那个：固定项优先，否则是上次真的服务过请求的 */
+                  const currentId = selectedId !== '' ? selectedId : activeId;
+                  const isCurrent = currentId !== '' && a.id === currentId;
                   return jsx(
                     AccountCard,
                     {
                       name: a.nickname || a.label || a.id,
-                      dim: a.cooling === true || a.disabled === true,
+                      dim:
+                        a.cooling === true ||
+                        a.disabled === true ||
+                        (currentId !== '' && isCurrent !== true),
                       tags: [
-                        isSelected
+                        isCurrent
                           ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
                           : { text: '备用', cls: 'wbc-tag' },
                         a.cooling ? { text: '冷却中', cls: 'wbc-tag wbc-tag-warn' } : null,
@@ -3945,7 +3997,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                           { k: '账号', v: a.userId || a.id },
                           { k: '令牌到期', v: a.expiresAtMs > 0 ? fmtTime(a.expiresAtMs) : '未知' },
                           isCooling ? { k: '冷却至', v: fmtTime(a.cooldownUntilMs) } : null,
-                          { k: '保留额度', v: a.creditReserve > 0 ? fmtNum(a.creditReserve) : '不限' },
                           /**
                            * 余额三态：读到数字 / 本次读失败 / 尚未读到。**「读失败」
                            * 与「余额 0」必须看起来不一样** —— 显示成 0 会让用户
@@ -3964,6 +4015,8 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                               : creditsErrors[a.id] !== undefined
                                 ? { k: '余额', v: `读取失败：${creditsErrors[a.id]}` }
                                 : { k: '余额', v: '读取中…' },
+                          // 行序与另两页对齐：余额之后才是保留额度
+                          { k: '保留额度', v: a.creditReserve > 0 ? fmtNum(a.creditReserve) : '不限' },
                         ],
                         // 参与轮换 / 保留额度 / 移出池子：走共用的 CardActions，
                         // 与另两个配置页逐字同款。「切换到此账号」不在这条 bar 里
