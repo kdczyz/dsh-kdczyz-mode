@@ -19,8 +19,8 @@ tar -xzf dsh-wotr-console-1.1.0-20261011.tar.gz
 
 | 路径 | 说明 |
 |---|---|
-| `dsh-kdczyz-mode/` | 插件本体（63 个文件）：三个 Loader 入口、浏览器端管理页、vendor 池、单测 |
-| `package.json` | 仓库根的安装壳（`dsh.bundle.patch` → `./dsh-kdczyz-mode/cordis.patch.yml`） |
+| `dsh-wotr-console/` | 插件本体（63 个文件）：三个 Loader 入口、浏览器端管理页、vendor 池、单测 |
+| `package.json` | 仓库根的安装壳（`dsh.bundle.patch` → `./dsh-wotr-console/cordis.patch.yml`，即快照内的旧目录名） |
 | `README.md` | 仓库根说明（安装 / 排错 / provider 清单 / 验证命令） |
 | `README-备份说明.md` | **详细用法**：三种安装方式、装完怎么验证、快照里没有什么 |
 | `MANIFEST.txt` | 66 个文件的 sha256 与字节数，可在解包目录里 `shasum -a 256 -c` 复验 |
@@ -28,7 +28,8 @@ tar -xzf dsh-wotr-console-1.1.0-20261011.tar.gz
 ## 三个必须知道的点
 
 1. **账号数据不在快照里。** 号池、令牌、积分与历史记录在
-   `~/.dsh/plugin-data/dsh-kdczyz-mode/`，那是本机数据，**不应该**进任何仓库。
+   `~/.dsh/plugin-data/dsh-workbuddy-console/`（目录名**有意保留旧插件名**），
+   那是本机数据，**不应该**进任何仓库。
    换机器要重新登录（浏览器扫码 / 设备码）。
 2. **profile 里的 `config:` 也不在。** `~/.dsh/profiles/<profile>/cordis.patch.yml`
    里三个 entry 下面的 `config:`（登录方式、分配策略、模型勾选、区域开关）
