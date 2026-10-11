@@ -227,6 +227,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
   .wbc-sum-sub{font-size:11px;color:var(--dsw-alias-label-secondary);margin-top:4px}
   .wbc-card{border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:10px}
   .wbc-card-off{opacity:.55}
+  /* 卡片底部那一排主操作（WorkBuddy 账号卡：切换到此账号 + 签到领取）。
+     与另两页单个 action 按钮占同一行：flex:1 1 auto 让这一排铺满卡片内宽，
+     内容宽度不同时按内容分宽再等分剩余空间，不会挤成两个小方块。 */
+  .wbc-card-foot{display:flex;gap:8px;flex-wrap:wrap}
+  .wbc-card-foot>.wbc-btn{flex:1 1 auto;white-space:nowrap}
   .wbc-card-head{display:flex;align-items:center;gap:8px}
   .wbc-name{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .wbc-tag{border-radius:4px;font-size:10px;padding:2px 6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);flex:none}
@@ -743,6 +748,34 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
           }), '签到完成');
       };
 
+      /**
+       * 切换「当前账号」——请求从此固定用这一张；`null` = 取消固定，交回号池轮换。
+       *
+       * 路由与「账号」页左列**同一条**（`POST /accounts/select?region=…`），区域参数
+       * 不能省：国内版与国际版是两个独立 provider，各自固定自己的账号，服务端按
+       * `?region=` 写进 `selectedAccountIds` 的对应键。
+       *
+       * 早先只有「账号」页能切、配置页只能干看着（页面顶部还写着「当前使用：xxx
+       * 已固定，优先用它」，却没有地方能改），同一个池子的两个界面能力不一致。
+       * Trae / Qoder 的配置页一直有「切换到此账号」，这一页补齐。
+       *
+       * 与那两页的唯一差别：**这一页允许取消固定**。Trae / Qoder 的池要求池里永远
+       * 有一个当前账号（清空选择只会悄悄回到第一个账号），而 WorkBuddy 的池把
+       * 「未固定」当成正常状态（`selectedAccountId` 为 null = 按分配策略自动选），
+       * 所以固定住之后必须给一条退回轮换的路。
+       */
+      const onSelectAccount = (accountId) =>
+        run(
+          `select-${accountId ?? 'none'}`,
+          () =>
+            fetchJson(`${POOL_API}/accounts/select?region=${region}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accountId }),
+            }),
+          accountId === null ? '已取消固定，回到号池轮换' : '已固定，优先用这个账号',
+        );
+
       // —— 自动化开关：整段写 automation（小时表原样带过，缺省补默认）——
       const onToggleAutomation = (enabled) => {
         if (!writable) return;
@@ -1060,6 +1093,19 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                      * 「不知道是谁」不等于「都不是它」。
                      */
                     const isCurrent = currentId !== '' && a.id === currentId;
+                    /**
+                     * `isPinned` 与 `isCurrent` 是两件事，别合并：
+                     *
+                     *   isPinned   用户**固定**了这张卡（`selectedAccountId`），
+                     *              固定住之后请求一直用它 —— 决定底部给
+                     *              「取消固定」还是「切换到此账号」；
+                     *   isCurrent  此刻**在服务**的那张（固定优先，其次
+                     *              `activeAccountId`）—— 决定标签与压暗。
+                     *
+                     * 固定为空（真机默认就是这个状态：`selectedAccountId` 为 null）
+                     * 时，正在服务的那张仍然可以点「切换到此账号」把它钉住。
+                     */
+                    const isPinned = selectedId !== '' && a.id === selectedId;
                     const creditTotal = accountCreditsOf(a);
                     return jsx(
                         AccountCard,
@@ -1098,9 +1144,20 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                               : null,
                             { k: '保留额度', v: (a.creditReserve ?? 0) > 0 ? fmtNum(a.creditReserve) : '不限' },
                           ],
-                          // 启停 / 保留额度 / 移出：走共用的 CardActions，
-                          // 三个配置页的账号卡逐字同款（先前 WorkBuddy 用勾选、
-                          // Trae 与 Qoder 用按钮，同一件事三种手感）。
+                          /**
+                           * 卡片底部一排主操作：**切换账号 + 签到领取**。
+                           *
+                           * 另两页的底部是单个「切换到此账号」，这一页多一个逐账号的
+                           * 上游动作（签到领取），所以底部是两个按钮并排 —— 位置与
+                           * 那两页相同（卡片最后一行），切换按钮的措辞也逐字相同。
+                           * 先前这一页的底部只有签到领取，于是「想让请求固定用某张
+                           * 卡」在这页做不到，只能绕到「账号」页去点。
+                           *
+                           * 当前使用的那张**也给**「切换到此账号」：池子此刻在服务它，
+                           * 但「在服务」不等于「已固定」（轮换模式下每次请求都可能换人），
+                           * 想让它一直用下去只能靠固定。已经固定的那张改成「取消固定」，
+                           * 把路由交回分配策略。
+                           */
                           extra: [
                             jsx(
                               CardActions,
@@ -1119,16 +1176,44 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                               },
                               'actions',
                             ),
+                            jsxs(
+                              'div',
+                              {
+                                className: 'wbc-card-foot',
+                                children: [
+                                  isPinned
+                                    ? jsx('button', {
+                                        type: 'button',
+                                        className: 'wbc-btn',
+                                        disabled: !writable || busy === 'select-none',
+                                        onClick: () => onSelectAccount(null),
+                                        children: busy === 'select-none' ? '取消中…' : '取消固定',
+                                      })
+                                    : jsx('button', {
+                                        type: 'button',
+                                        className: 'wbc-btn',
+                                        disabled: !writable || busy === `select-${a.id}`,
+                                        onClick: () => onSelectAccount(a.id),
+                                        children:
+                                          busy === `select-${a.id}` ? '切换中…' : '切换到此账号',
+                                      }),
+                                  // 冷却中的账号不给签到按钮：签到是一次真实的上游调用，
+                                  // 冷静期内点它只会再吃一次拒绝。切换按钮照给 —— 固定
+                                  // 一个正在冷却的账号是合法的选择（冷却结束后自然用它）。
+                                  a.cooling === true
+                                    ? null
+                                    : jsx('button', {
+                                        type: 'button',
+                                        className: 'wbc-btn',
+                                        disabled: busy === `checkin-${a.id}`,
+                                        onClick: () => onCheckin(a.id),
+                                        children: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
+                                      }),
+                                ],
+                              },
+                              'foot',
+                            ),
                           ],
-                          // 主操作：签到领取（唯一一个「对单个账号做一件上游动作」的按钮）
-                          action:
-                            a.cooling === true
-                              ? null
-                              : {
-                                  label: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
-                                  disabled: busy === `checkin-${a.id}`,
-                                  onClick: () => onCheckin(a.id),
-                                },
                         },
                       String(a.id ?? a.label),
                     );
@@ -2227,7 +2312,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      *   head   名称 + 若干状态标签
      *   rows   KV 明细
      *   extra  卡片中部的自定义控件（号池账号的「保留积分 + 保存 + 停用」那行）
-     *   action 卡片底部一个按钮（WorkBuddy 是「签到领取」、Trae 是「切换到此账号」）
+     *   action 卡片底部一个按钮（Trae / Qoder 是「切换到此账号」）
+     *
+     * WorkBuddy 的账号卡底部是**两个**按钮（切换到此账号 + 签到领取），走 `extra`
+     * 里的 `.wbc-card-foot` 那一排 —— 位置与另两页的 `action` 相同（卡片最后一行），
+     * 只是多一个逐账号的上游动作。单个按钮的页面继续用 `action`。
      *
      * `dim` 为 true 时整卡降透明度（停用 / 备用账号）。
      *

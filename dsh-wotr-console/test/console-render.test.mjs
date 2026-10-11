@@ -3132,6 +3132,166 @@ await (async () => {
 })();
 
 /**
+ * —— 2g-3c) XD Pool「切换到此账号 / 取消固定」：真点一次，断言请求打对了地方 ——
+ *
+ * 这一页先前**没有**切换账号的入口：页面顶部写着「当前使用：xxx 已固定，优先用它」，
+ * 但想换人只能绕到「账号」页左列去点 —— 同一个池子的两个界面，能力不一样。
+ * 补齐之后盯三件事（都属于「按钮画出来了但点下去写错地方」这类不会让别的测试变红的退化）：
+ *
+ *   1. 每张**未固定**的卡都有「切换到此账号」，**包括正在服务的那张** —— 轮换模式下
+ *      「在服务」不等于「已固定」，不让用户把它钉住，下一次请求就可能换人；
+ *   2. 已固定的那张换成「取消固定」（与「账号」页同一个词），固定之后仍有一条
+ *      退回号池轮换的路（Trae / Qoder 的池没有这条路，所以那两页不给这个按钮）；
+ *   3. 点下去真的 `POST …/accounts/select?region=…`，body 是 `{accountId}`；
+ *      取消固定发 `{accountId: null}`；写完重新拉一次状态（否则界面不会变）。
+ *
+ * 区域参数是这里最容易写错、又最难发现的一处：写错区域不报错，只会把「固定」落进
+ * 另一个区域的池子，界面上看就是点了没反应。所以连国际版一起断言。
+ */
+await (async () => {
+  const prevFetch = globalThis.fetch;
+  const posts = [];
+  let statusCalls = 0;
+  let pool = poolStatusFixture;
+  globalThis.fetch = (url, init) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
+      statusCalls += 1;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(pool) });
+    }
+    if (u.includes('/accounts/select')) {
+      posts.push({ url: u, body: init?.body });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    /** 渲染一页；`preset` 用来把 region 预置成国际版（region 是 hook 1） */
+    const render = async (fixture, preset) => {
+      pool = fixture;
+      const react = makeReact({ 0: 'pool-config', ...(preset ?? {}) }, true);
+      const Page = createConsoleSection({
+        react,
+        jsxRuntime: makeJsxRuntime(),
+        embedded: makeEmbedded(),
+      });
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      react.reset();
+      return Page({});
+    };
+    /** 按渲染顺序收集按钮文案匹配的 onClick（同一文案可能出现在多张卡上） */
+    const buttonsOf = (tree, label) => {
+      const found = [];
+      (function walk(n, d = 0) {
+        if (d > 40 || n === null || typeof n !== 'object') return;
+        if (Array.isArray(n)) {
+          for (const c of n) walk(c, d);
+          return;
+        }
+        const { type, props } = n;
+        if (type === 'button' && props?.children === label) {
+          found.push(props.onClick);
+          return;
+        }
+        if (typeof type === 'function') {
+          try {
+            walk(type(props ?? {}), d + 1);
+          } catch {
+            /* 忽略渲染失败的子树 */
+          }
+          return;
+        }
+        if (typeof type === 'string') walk(props?.children, d + 1);
+      })(tree);
+      return found;
+    };
+
+    // ① 没固定任何账号（真机默认状态：selectedAccountId 为 null，但 u1 正在服务）
+    const unpinned = await render({
+      ...poolStatusFixture,
+      selectedAccountId: null,
+      activeAccountId: 'u1',
+      ignored: [],
+    });
+    const cardsA = collectByClass(unpinned, 'wbc-card').map((c) => textOfNode(c));
+    ok(
+      'XD Pool 没固定账号时两张卡都给「切换到此账号」',
+      cardsA.length === 2 && cardsA.filter((t) => t.includes('切换到此账号')).length === 2,
+      cardsA.join(' || '),
+    );
+    ok('XD Pool 没固定账号时不出现「取消固定」', textOfNode(unpinned).includes('取消固定') === false);
+    ok(
+      '正在服务的那张卡也能被钉住（「在服务」≠「已固定」）',
+      cardsA[0].includes('切换到此账号') === true,
+      cardsA[0],
+    );
+    const switches = buttonsOf(unpinned, '切换到此账号');
+    ok(
+      '两张「切换到此账号」都拿得到 onClick',
+      switches.length === 2 && switches.every((f) => typeof f === 'function'),
+      `n=${switches.length}`,
+    );
+    const beforeCalls = statusCalls;
+    await switches[1](); // 第二张卡 = 备用号 u2
+    ok(
+      '点「切换到此账号」POST 到 /accounts/select',
+      posts.length === 1 && posts[0].url.includes('/plugins/dsh-workbuddy-xdpool/accounts/select'),
+      JSON.stringify(posts),
+    );
+    ok('切换请求带上本区域 region=cn', posts[0]?.url.includes('region=cn') === true, posts[0]?.url);
+    ok(
+      '切换请求的 body 是 {"accountId":"u2"}',
+      posts[0]?.body === JSON.stringify({ accountId: 'u2' }),
+      String(posts[0]?.body),
+    );
+    ok('切换成功后重新拉了池状态', statusCalls > beforeCalls, `${beforeCalls} → ${statusCalls}`);
+
+    // ② u1 已固定：那张换成「取消固定」，另一张照旧
+    const pinned = await render({
+      ...poolStatusFixture,
+      selectedAccountId: 'u1',
+      activeAccountId: 'u1',
+      ignored: [],
+    });
+    const cardsB = collectByClass(pinned, 'wbc-card').map((c) => textOfNode(c));
+    ok('已固定的那张卡给「取消固定」', cardsB[0].includes('取消固定') === true, cardsB[0]);
+    ok('已固定的那张不再给「切换到此账号」', cardsB[0].includes('切换到此账号') === false, cardsB[0]);
+    ok(
+      '未固定的那张仍是「切换到此账号」',
+      cardsB[1].includes('切换到此账号') === true && cardsB[1].includes('取消固定') === false,
+      cardsB[1],
+    );
+    const unpin = buttonsOf(pinned, '取消固定');
+    ok('「取消固定」拿得到 onClick', unpin.length === 1 && typeof unpin[0] === 'function');
+    posts.length = 0;
+    await unpin[0]();
+    ok(
+      '取消固定发 {"accountId":null}（服务端把 null 当清除）',
+      posts.length === 1 && posts[0].body === JSON.stringify({ accountId: null }),
+      String(posts[0]?.body),
+    );
+
+    // ③ 国际版：区域参数必须跟着走，否则「固定」会落进另一个池子
+    const globalPage = await render(
+      { ...poolStatusFixture, selectedAccountId: null, activeAccountId: 'u1', ignored: [] },
+      { 1: 'global' },
+    );
+    const globalSwitches = buttonsOf(globalPage, '切换到此账号');
+    ok('国际版也渲染出「切换到此账号」', globalSwitches.length === 2, `n=${globalSwitches.length}`);
+    posts.length = 0;
+    await globalSwitches[0]();
+    ok(
+      '国际版的切换请求带 region=global',
+      posts[0]?.url.includes('region=global') === true && posts[0]?.url.includes('region=cn') === false,
+      posts[0]?.url,
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+})();
+
+/**
  * —— 2g-4) XD Pool 模型保存：整段覆盖 + 拒绝空启用列表 ——
  *
  * 这是最容易写坏、坏了最难发现的一条路径：
