@@ -18,6 +18,7 @@ import {
   QODER_FALLBACK_CONTEXT_WINDOW,
   QODER_FALLBACK_MODELS,
   QoderCatalog,
+  qoderInputModalities,
 } from '../lib/qoder-catalog.mjs';
 
 let pass = 0;
@@ -166,6 +167,104 @@ for (const [label, script] of [
 /* —— 7) 兜底常量合理 —— */
 ok('兜底 contextWindow 是正数', QODER_FALLBACK_CONTEXT_WINDOW > 0);
 ok('兜底目录 id 无重复', new Set(QODER_FALLBACK_MODELS.map((m) => m.id)).size === QODER_FALLBACK_MODELS.length);
+
+/**
+ * 兜底表的内容断言。
+ *
+ * 兜底表是**真机目录的快照**（2026-10-11 实测 14 条 chat 模型，13 条 `is_vl`），
+ * 所以这里把条数、图片分布和 id 一起钉住：
+ *
+ *   - 少一条 = 上游目录拉不到时用户会少看到模型；
+ *   - 图片标记写错 = 直接复现「不支持图片」那个 bug（兜底表会在没登录/刚装好
+ *     第一次启动时生效，正是最容易出问题的那段时间）。
+ *
+ * 上游若真的改了模型清单，这条会红 —— 那是**应该**红：兜底表要跟着更新。
+ */
+ok('兜底目录 14 条（与真机 chat 组一致）', QODER_FALLBACK_MODELS.length === 14, String(QODER_FALLBACK_MODELS.length));
+ok(
+  '兜底目录 13 条声明支持图片',
+  QODER_FALLBACK_MODELS.filter((m) => m.supportsImages === true).length === 13,
+  String(QODER_FALLBACK_MODELS.filter((m) => m.supportsImages === true).length),
+);
+ok(
+  '唯一不支持图片的是 mmodel（MiniMax-M2.7，真机 is_vl:false）',
+  QODER_FALLBACK_MODELS.filter((m) => m.supportsImages !== true)
+    .map((m) => m.id)
+    .join(',') === 'mmodel',
+  QODER_FALLBACK_MODELS.filter((m) => m.supportsImages !== true)
+    .map((m) => m.id)
+    .join(','),
+);
+ok(
+  '每条都带严格布尔 supportsImages（不留 undefined）',
+  QODER_FALLBACK_MODELS.every((m) => typeof m.supportsImages === 'boolean'),
+);
+ok(
+  '兜底表覆盖 dfmodel 且标为支持图片（用户默认模型就是它）',
+  QODER_FALLBACK_MODELS.some((m) => m.id === 'dfmodel' && m.supportsImages === true),
+);
+
+/* —— 8) `is_vl` → 图片能力：这就是「支持图片的模型不能发图」的根因 —— */
+{
+  const body = JSON.stringify({
+    chat: [
+      { key: 'dfmodel', display_name: 'DeepSeek-Flash', is_vl: true },
+      { key: 'mmodel', display_name: 'MiniMax-M2.7', is_vl: false },
+      { key: 'nomodel', display_name: '没给标记' },
+      { key: 'strmodel', display_name: '字符串 true', is_vl: 'true' },
+      { key: 'nullmodel', display_name: 'null', is_vl: null },
+    ],
+  });
+  const cat = new QoderCatalog({ fetcher: fakeFetcher([jsonResponse(body)]) });
+  const r = await cat.refresh(CRED);
+  const byId = new Map(cat.current().map((m) => [m.id, m]));
+  ok('上游给了 5 条就解析出 5 条', r.ok === true && cat.current().length === 5, String(cat.current().length));
+  ok('is_vl:true → supportsImages:true（dfmodel）', byId.get('dfmodel')?.supportsImages === true);
+  ok('is_vl:false → supportsImages:false（mmodel）', byId.get('mmodel')?.supportsImages === false);
+  // 下面三条都要求「不猜」：宁可少发图片（用户能手动补勾），也不能对纯文本
+  // 模型声明 image —— 那会让 DSH 把图片发出去，由上游在准入之后拒绝。
+  ok('缺 is_vl → 纯文本', byId.get('nomodel')?.supportsImages === false);
+  ok('is_vl 是字符串 "true" → 纯文本（严格布尔）', byId.get('strmodel')?.supportsImages === false);
+  ok('is_vl:null → 纯文本', byId.get('nullmodel')?.supportsImages === false);
+  ok(
+    '每条都带布尔 supportsImages（归一化不留 undefined）',
+    cat.current().every((m) => typeof m.supportsImages === 'boolean'),
+  );
+}
+
+/* —— 9) 共用谓词：provider 侧与选择器侧必须同源 —— */
+{
+  // 这两处（toPiModel 与 registerModelDiscovery）各写一份 `input` 就会
+  // 出现「能发图但界面说不能」或反之，所以只允许有一个判据。
+  ok(
+    'supportsImages:true → ["text","image"]',
+    qoderInputModalities({ supportsImages: true }).join(',') === 'text,image',
+    qoderInputModalities({ supportsImages: true }).join(','),
+  );
+  ok('supportsImages:false → 只有 text', qoderInputModalities({ supportsImages: false }).join(',') === 'text');
+  ok('缺字段 → 只有 text（不猜）', qoderInputModalities({}).join(',') === 'text');
+  ok('undefined 也不抛', qoderInputModalities(undefined).join(',') === 'text');
+}
+
+/* —— 10) 并发刷新只打一次上游 —— */
+{
+  // 启动种子 / 登录后补拉 / 手动刷新三个触发点会撞在一起。除了浪费请求，
+  // 真正的危害是**先发的慢响应覆盖后发的快响应**，所以必须合并。
+  let calls = 0;
+  const cat = new QoderCatalog({
+    fetcher: async () => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 30));
+      return jsonResponse({ chat: [{ key: 'a1', display_name: 'A1', is_vl: true }] });
+    },
+  });
+  const [r1, r2] = await Promise.all([cat.refresh(CRED), cat.refresh(CRED)]);
+  ok('两次并发 refresh 只打了一次上游', calls === 1, `实际 ${calls} 次`);
+  ok('两次都拿到同一份结果', r1?.ok === true && r2?.ok === true && r2.models[0].id === 'a1');
+  await cat.refresh(CRED);
+  ok('刷新结束后能重新打（不是永久复用旧 promise）', calls === 2, `实际 ${calls} 次`);
+  ok('并发期间不影响目录可用', cat.current().length === 1 && cat.current()[0].id === 'a1');
+}
 
 console.log(`\n${pass} 通过, ${fail} 失败`);
 process.exit(fail === 0 ? 0 : 1);

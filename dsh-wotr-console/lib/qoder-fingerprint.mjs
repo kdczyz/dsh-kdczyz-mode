@@ -83,6 +83,15 @@ export const QODER_SIGNED_CHAT_QUERY = 'FetchKeys=llm_model_result&AgentId=agent
 export const QODER_SIGNED_CHAT_PATH = '/algo/api/v2/service/pro/sse/agent_chat_generation';
 
 /**
+ * 模型目录的签名路径。
+ *
+ * ⚠️ 官方传的是 **`/api/v2/model/list?Encode=1`**（不带 `/algo` 前缀）——
+ * wasm 的 `Zoe()` 会在拼接时自动插 `/algo`。所以这里存的是**未加前缀**的形态，
+ * 与官方调用参数逐字一致。
+ */
+export const QODER_SIGNED_MODELS_PATH = '/api/v2/model/list?Encode=1';
+
+/**
  * 官方 `noe` —— `Cosy-MachineOS` 的值（worker @3060084 逐字）：
  *
  * ```js
@@ -629,6 +638,73 @@ export async function createQoderFingerprint(options = {}) {
         const hostname = normalizeQoderHostname(hostnameProvider());
         if (hostname !== '') headers['Cosy-MachineHostname'] = hostname;
       }
+      return { url, headers, body: encodedBody };
+    },
+    /**
+     * 生成一次模型目录请求。
+     *
+     * 官方（worker @19108378）用的是**通用** `prepareRequest`，而不是推理专用的
+     * `prepareInferRequest`：
+     *
+     * ```js
+     * Z5A(host, path, authManager)
+     *   → prepareRequest(host, path, "GET", "auth", undefined, undefined)
+     * ```
+     *
+     * 三个与推理链的差别，都会改变输出，必须照抄：
+     *
+     * 1. **`auth` 模式**（不是 `sign`）—— 走已认证的签名；
+     * 2. **body 不传**（`undefined`），由签名层自行决定；实测产出空串；
+     * 3. `requestClass` 是 **`model-list`**，**不是** `infer-sse` —— 所以按官方
+     *    `oo()` 的逻辑，这条**不加** `Cosy-MachineHostname`（那个只在 infer-sse 加）。
+     *
+     * @returns {{url:string, headers:Record<string,string>, body:string}|undefined}
+     */
+    prepareModelsRequest({ machineId, uid, securityToken, organizationId = '', organizationTags = [], dataPolicyAgreed = false, base = QODER_GATEWAY_HOST, path: requestPath, machine }) {
+      const runtime = this.runtimeAuthFields({ uid, securityToken, organizationId, organizationTags, dataPolicyAgreed });
+      if (runtime === undefined) return undefined;
+      const ctx = newCtx(machineId, QODER_COSY_VERSION, JSON.stringify({ uid: '', encrypt_user_info: '', key: '' }), JSON.stringify({}));
+      refreshAuth(
+        ctx,
+        JSON.stringify({
+          uid,
+          encrypt_user_info: runtime.encryptUserInfo,
+          key: runtime.key,
+          organization_id: organizationId,
+          organization_tags: organizationTags,
+          data_policy_agreed: dataPolicyAgreed,
+        }),
+      );
+      const signedPath =
+        typeof requestPath === 'string' && requestPath !== '' ? requestPath : QODER_SIGNED_MODELS_PATH;
+      const sp = wasm.__wbindgen_add_to_stack_pointer(-16);
+      let rr;
+      try {
+        const p1 = glue.passString(base);
+        const l1 = glue.vecLen();
+        const p2 = glue.passString(signedPath);
+        const l2 = glue.vecLen();
+        const p3 = glue.passString('GET');
+        const l3 = glue.vecLen();
+        const p4 = glue.passString('auth');
+        const l4 = glue.vecLen();
+        // 后两个可选参数（body / headers）官方都传 undefined → 指针 0。
+        wasm.qodercontext_prepareRequest(sp, ctx, p1, l1, p2, l2, p3, l3, p4, l4, 0, 0, 0, 0);
+        const dv = new DataView(wasm.memory.buffer);
+        if (dv.getInt32(sp + 8, true)) throw new Error('qoder wasm: prepareRequest failed');
+        rr = dv.getInt32(sp + 0, true) >>> 0;
+      } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+      }
+      // 读取顺序同推理链：url → body → headers（理由见上）。
+      const url = rrString(rr, 'url');
+      const encodedBody = rrString(rr, 'body');
+      const rawHeaders = rrHeaders(rr);
+      const headers = finalizeQoderMachineHeaders(rawHeaders, machine);
+      // ⚠️ 这里**刻意不加** `Cosy-MachineHostname`：官方只在 `infer-sse`
+      // 时注入它，目录链的 requestClass 是 `model-list`。加上去就是一处
+      // 官方客户端不会产生的形态。
+      if (typeof headers['Cosy-MachineOS'] !== 'string') headers['Cosy-MachineOS'] = qoderMachineOs();
       return { url, headers, body: encodedBody };
     },
   };

@@ -24,11 +24,13 @@ import { saveQoderCredential, deleteQoderCredential } from '../lib/qoder-auth.mj
 import {
   QoderAccountPool,
   QoderCredentialStore,
+  _resetQoderServedSlot,
   classifyQoderFailure,
+  lastServedQoderAccountId,
+  noteQoderServed,
   normalizeQoderCredential,
   parseQoderOwn,
   qoderAccountId,
-  qoderIdleWeight,
 } from '../lib/qoder-pool.mjs';
 
 let pass = 0;
@@ -132,56 +134,58 @@ console.log('\n== 新登录的账号被并入池 ==');
   ok('重扫后发现新账号', pool.list().length === 2, pool.list().length);
 }
 
-console.log('\n== priority（默认）策略 ==');
+console.log('\n== 单一「当前账号」：没有分配策略 ==');
 {
+  // 池里**只剩**「优先」这一条语义：一个账号一直用到它不可用，再换下一个。
+  // 轮换 / 均衡已删除（它们与「哪个账号在服务必须由用户手动切换决定」冲突），
+  // 所以这里第一条断言就是「池上不再有 distribution 这个概念」。
   const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
-  const pool = new QoderAccountPool({ store });
-  ok('默认是 priority', pool.currentDistribution() === 'priority');
+  const pool = new QoderAccountPool({ store, distribution: 'round-robin' });
+  ok('构造参数里的 distribution 被忽略', pool.distribution === undefined && pool.currentDistribution === undefined);
 
   const first = await pool.acquire();
   const second = await pool.acquire();
-  ok('priority 下一直取第一个', first.id === second.id, `${first.label} vs ${second.label}`);
+  ok('连续两次请求都是同一个账号', first.id === second.id, `${first.label} vs ${second.label}`);
   ok('取到的是列表第一个', first.id === pool.list()[0].id);
 
-  // 第一个冷却后自动换第二个
+  // 第一个冷却后自动让位给第二个（备用账号的意义就在这里）
   pool.penalize(first.id, Date.now() + 60_000);
   const third = await pool.acquire();
-  ok('第一个冷却后换到第二个', third.id !== first.id, third.label);
+  ok('第一个冷却后让位给第二个', third.id !== first.id, third.label);
+  ok('让位只影响不可用的那个，恢复后仍回到它', (() => {
+    pool.applyConfig({}); // 不动冷却
+    return pool.resolveNext(Date.now(), undefined).id === third.id;
+  })());
 }
 
-console.log('\n== round-robin 策略 ==');
-{
-  const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob'), cred('u3', 'carol')]);
-  const pool = new QoderAccountPool({ store, distribution: 'round-robin' });
-  await pool.scan();
-  const picks = [];
-  for (let i = 0; i < 6; i += 1) picks.push((await pool.acquire()).id);
-  ok('连续请求在池内轮流', picks[0] !== picks[1] && picks[1] !== picks[2], picks.join(','));
-  ok('轮完一圈回到起点', picks[0] === picks[3] && picks[1] === picks[4], picks.join(','));
-  ok('三个账号都被用到', new Set(picks).size === 3, new Set(picks).size);
-}
-
-console.log('\n== balanced 策略 ==');
+console.log('\n== 当前使用 vs 备用：effectiveSelectedAccountId（Trae 同款） ==');
 {
   const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
-  const pool = new QoderAccountPool({ store, distribution: 'balanced' });
+  const pool = new QoderAccountPool({ store });
   await pool.scan();
-  const counts = new Map();
-  for (let i = 0; i < 200; i += 1) {
-    const account = await pool.acquire();
-    counts.set(account.id, (counts.get(account.id) ?? 0) + 1);
-  }
-  ok('balanced 会用到多个账号', counts.size === 2, counts.size);
-  ok('两个账号都被抽到（不是恒定一个）', [...counts.values()].every((n) => n > 0), [...counts.values()].join(','));
-}
+  const [alice, bob] = ['alice', 'bob'].map((n) => pool.list().find((a) => a.label === n));
 
-console.log('\n== 空闲加权 ==');
-{
-  const now = Date.now();
-  ok('从未用过给最高基础权重', qoderIdleWeight(undefined, now) > 1);
-  ok('刚用过权重最低', qoderIdleWeight(now, now) === 1);
-  ok('空闲越久权重越高', qoderIdleWeight(now - 4 * 36e5, now) > qoderIdleWeight(now - 36e5, now));
-  ok('权重有上限', qoderIdleWeight(now - 1000 * 36e5, now) === 6);
+  // 没选过：确定性默认值是池里第一个账号（界面上标「当前使用」的那个）
+  ok('未选定时默认第一个账号', pool.effectiveSelectedAccountId() === alice.id, pool.effectiveSelectedAccountId());
+  ok('未选定时 selectedAccountId 仍为空', pool.selectedAccountId() === undefined);
+
+  pool.selectAccount(bob.id);
+  ok('选中后就是它', pool.effectiveSelectedAccountId() === bob.id);
+
+  // 冷却**不**改变「当前使用」的归属：那是可用性的问题，卡片上有冷却标签，
+  // 让「当前使用」跟着冷却跳会让用户每 60 秒找不到自己在用谁。
+  pool.penalize(bob.id);
+  ok('当前账号冷却中仍标它', pool.effectiveSelectedAccountId() === bob.id);
+
+  // 选中的账号从池里消失（凭据被删）→ 回到第一个账号
+  pool.selectAccount('gone-account');
+  ok('选中账号不在池里时回落到第一个', pool.effectiveSelectedAccountId() === alice.id);
+  ok('显式选择本身仍然记着', pool.selectedAccountId() === 'gone-account');
+
+  // 空池：没有「当前使用」，返回 undefined 而不是编造一个
+  const empty = new QoderAccountPool({ store: fakeStore([]) });
+  await empty.scan();
+  ok('空池没有当前账号', empty.effectiveSelectedAccountId() === undefined);
 }
 
 console.log('\n== 逐模型冷却 ==');
@@ -280,21 +284,6 @@ console.log('\n== 保留额度（creditReserves） ==');
   ok('清空 reserve 后不再限制', pool.creditReserveOf(alice.id) === 0);
 }
 
-console.log('\n== 显式偏好（prefer） ==');
-{
-  const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
-  const pool = new QoderAccountPool({ store, distribution: 'round-robin' });
-  await pool.scan();
-  const bob = pool.list().find((a) => a.label === 'bob');
-  pool.prefer(bob.id);
-  ok('prefer 在 round-robin 下也优先', (await pool.acquire()).id === bob.id);
-  ok('连续取号仍锁定偏好账号', (await pool.acquire()).id === bob.id);
-
-  // 偏好账号冷却后回落到常规策略
-  pool.penalizeExhausted(bob.id);
-  ok('偏好账号冷却后回落', (await pool.acquire()).id !== bob.id);
-}
-
 console.log('\n== noteServed / lastServedId ==');
 {
   const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
@@ -327,7 +316,9 @@ console.log('\n== applyConfig ==');
   pool.applyConfig({ cooldownMs: 5000, exhaustCooldownMs: 9000, distribution: 'balanced' });
   ok('cooldownMs 生效', pool.cooldownMs === 5000);
   ok('exhaustCooldownMs 生效', pool.exhaustCooldownMs === 9000);
-  ok('distribution 生效', pool.currentDistribution() === 'balanced');
+  // 分配策略已经不存在了：传进来既不生效也不报错（老配置/老客户端写下的
+  // 遗留键不能把池打挂）。
+  ok('distribution 键被安全忽略', pool.distribution === undefined && pool.currentDistribution === undefined);
   pool.applyConfig({ cooldownMs: 10 });
   ok('过小的 cooldownMs 被拒（不会把冷却变成 10ms）', pool.cooldownMs === 5000);
 }
@@ -415,19 +406,19 @@ console.log('\n== 出池账号的残留状态被清理 ==');
   ok('disabledIds 被清理', pool.disabledIdsInOrder().length === 0);
 }
 
-console.log('\n== 单账号语义：selectedId 优先于分配策略 ==');
+console.log('\n== 单账号语义：selectedId 就是服务请求的那一个 ==');
 {
   const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
-  const pool = new QoderAccountPool({ store, distribution: 'round-robin' });
+  const pool = new QoderAccountPool({ store });
   await pool.scan();
   const [, bob] = ['alice', 'bob'].map((n) => pool.list().find((a) => a.label === n));
 
-  // ① 没选定时仍是轮换行为（回归：不能因为加了 selectedId 就改掉默认）
+  // ① 没选定时取池里第一个（确定性默认值，与界面上「当前使用」一致）
   const first = await pool.acquire();
   ok('未选定时取到账号', first !== undefined);
-  ok('未选定时走轮换', first.label === 'alice', first?.label);
+  ok('未选定时取第一个', first.label === 'alice', first?.label);
 
-  // ② 选定 bob 后，无论 round-robin 游标在哪都固定返回 bob
+  // ② 选定 bob 后固定返回 bob
   pool.selectAccount(bob.id);
   for (let i = 0; i < 5; i += 1) {
     const got = await pool.acquire();
@@ -438,7 +429,7 @@ console.log('\n== 单账号语义：selectedId 优先于分配策略 ==');
   ok('resolveSelected 命中', pool.resolveSelected()?.id === bob.id);
 }
 
-console.log('\n== 选中账号不可用时回退，且给出原因 ==');
+console.log('\n== 当前账号不可用时让位给备用，且给出原因 ==');
 {
   const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
   const pool = new QoderAccountPool({ store });
@@ -516,7 +507,7 @@ console.log('\n== selectAccount 的空值语义 ==');
   ok('undefined = 清除选择', pool.selectedAccountId() === undefined);
 }
 
-console.log('\n== applyConfig 能持久化驱动 selectedId ==');
+console.log('\n== applyConfig 由设置驱动 selectedId ==');
 {
   const store = fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]);
   const pool = new QoderAccountPool({ store });
@@ -524,8 +515,164 @@ console.log('\n== applyConfig 能持久化驱动 selectedId ==');
   const bob = pool.list().find((a) => a.label === 'bob');
   pool.applyConfig({ selectedAccountId: bob.id });
   ok('applyConfig 写入选中账号', pool.selectedAccountId() === bob.id);
+  ok('空字符串 = 清除选择（回到第一个账号）', (() => {
+    pool.applyConfig({ selectedAccountId: '' });
+    return pool.selectedAccountId() === undefined && pool.effectiveSelectedAccountId() === pool.list()[0].id;
+  })());
+  pool.applyConfig({ selectedAccountId: bob.id });
   const got = await pool.acquire();
   ok('配置驱动后取到 bob', got?.id === bob.id, got?.label);
+}
+
+console.log('\n== 「谁在被调用」：跨实例共享 + 无副作用预告 ==');
+{
+  // 两个池实例模拟真实拓扑：provider 池（lib/qoder.js）服务请求，
+  // 管理页池（lib/index.js 的 qoderPool() 单例）只读状态。它们扫的是同一批
+  // 凭据文件，但**不是同一个对象** —— 管理页若只看自己的 lastUsedAt，就永远
+  // 读不到「刚才是谁服务的」，界面上任何账号都不会被标成正在使用。
+  _resetQoderServedSlot();
+  const credentials = [cred('u1', 'alice'), cred('u2', 'bob')];
+  const providerPool = new QoderAccountPool({ store: fakeStore(credentials) });
+  const adminPool = new QoderAccountPool({ store: fakeStore(credentials) });
+  await providerPool.scan();
+  await adminPool.scan();
+
+  ok('服务之前：provider 池 lastServedId 为空', providerPool.lastServedId() === undefined);
+  ok('服务之前：管理页池也读不到', adminPool.lastServedId() === undefined);
+
+  const served = await providerPool.acquire();
+  providerPool.noteServed(served.id);
+
+  ok('provider 池记下了刚服务的账号', providerPool.lastServedId() === served.id);
+  ok('管理页池**跨实例**也读到了同一个账号', adminPool.lastServedId() === served.id, adminPool.lastServedId());
+  ok('共享槽位里就是它', lastServedQoderAccountId() === served.id);
+
+  // noteServed 对池里不存在的账号必须静默忽略，否则共享槽位会被写进垃圾值，
+  // 管理页就会显示一个「已不在池里」的账号。
+  providerPool.noteServed('not-in-pool');
+  ok('池外账号不写共享槽位', lastServedQoderAccountId() === served.id);
+
+  // 账号被移出池子后，管理页不能再把它当成「正在使用」：分享的是 id，
+  // 但读出来时必须拿当前池过滤一遍。
+  const rest = credentials.filter((c) => qoderAccountId(c) !== served.id);
+  const shrunk = new QoderAccountPool({ store: fakeStore(rest) });
+  await shrunk.scan();
+  ok('账号移出池子后不再被认作在服务', shrunk.lastServedId() === undefined, shrunk.lastServedId());
+
+  _resetQoderServedSlot();
+  const fresh = new QoderAccountPool({ store: fakeStore(credentials) });
+  await fresh.scan();
+  ok('槽位清空后回到「没有服务过」', fresh.lastServedId() === undefined);
+  // provider 侧仍然靠自己实例内的记录回答（共享槽位只是给别的实例看）
+  ok('provider 池自己的记录不受槽位清空影响', providerPool.lastServedId() === served.id);
+}
+
+console.log('\n== 显示侧：余额与「读到的时刻」 ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await pool.scan();
+  const [a, b] = pool.list();
+
+  ok('从没读到过余额时 creditsOf 为 undefined', pool.creditsOf(a.id) === undefined);
+  ok('从没读到过时 creditsAt 为 0', pool.creditsAt(a.id) === 0);
+
+  pool.noteCredits(a.id, 500);
+  ok('noteCredits 记下余额', pool.creditsOf(a.id) === 500);
+  // noteCredits 是内部记账（批量刷新顺手带过）；只有「为了显示而读」的
+  // rememberCredits 才更新时间戳，否则节流判据会被内部记账污染。
+  ok('noteCredits 不更新「读到的时刻」', pool.creditsAt(a.id) === 0);
+
+  pool.rememberCredits(a.id, 480, 1700000000000);
+  ok('rememberCredits 同时记下时刻', pool.creditsAt(a.id) === 1700000000000);
+  ok('rememberCredits 记下余额', pool.creditsOf(a.id) === 480);
+  pool.rememberCredits(a.id, Number.NaN, 1700000009000);
+  ok('非法余额被忽略（不写 0）', pool.creditsOf(a.id) === 480);
+  ok('非法余额也不推进时间戳', pool.creditsAt(a.id) === 1700000000000);
+
+  // 余额必须能按账号分别读：把 A 的余额显示成 B 的是最难发现的错误。
+  pool.rememberCredits(b.id, 7, 1700000001000);
+  ok('两个账号的余额互不串台', pool.creditsOf(a.id) === 480 && pool.creditsOf(b.id) === 7);
+}
+
+console.log('\n== resolveNext：预览不改状态 ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob'), cred('u3', 'cara')]) });
+  await pool.scan();
+
+  // 关键性质：预览「下一个是谁」不能改变真实结果 —— 界面每 30 秒读一次，
+  // 若它把「谁服务」这件事搅动了，用户光看着设置页就会换号。
+  const previews = [pool.resolveNext()?.id, pool.resolveNext()?.id, pool.resolveNext()?.id];
+  ok('反复预览得到同一个账号', previews[0] === previews[1] && previews[1] === previews[2]);
+  const acquired = [];
+  for (let i = 0; i < 3; i += 1) {
+    const got = await pool.acquire();
+    acquired.push(got?.id);
+  }
+  ok('预览不改变真实取号结果', new Set(acquired).size === 1, acquired.join(','));
+  ok('预览到的就是真的会被取到的账号', previews[0] === acquired[0]);
+  ok('当前账号冷却后预览跟着让位', (() => {
+    pool.penalize(acquired[0], Date.now() + 60_000);
+    return pool.resolveNext()?.id !== acquired[0];
+  })());
+}
+
+console.log('\n== resolveNext：只有优先语义，且不越界 ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await pool.scan();
+  const next = pool.resolveNext();
+  ok('能预告下一个账号', next !== undefined, String(next));
+  ok('预告的账号确实在池里', pool.list().some((x) => x.id === next.id));
+  ok('预告的就是池里第一个（未选定时的确定性默认）', next.id === pool.list()[0].id);
+  // 遗留的 distribution 键不再有分支效果
+  pool.applyConfig({ distribution: 'balanced' });
+  ok('遗留 distribution 键不影响预告', pool.resolveNext()?.id === next.id);
+  const empty = new QoderAccountPool({ store: fakeStore([]) });
+  await empty.scan();
+  ok('空池预告为 undefined（不编造账号）', empty.resolveNext() === undefined);
+}
+
+console.log('\n== servingAccount：served 优先于 next ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await pool.scan();
+  pool.applyConfig({ distribution: 'round-robin' });
+
+  const preview = pool.servingAccount();
+  ok('没有任何服务记录时回退为「预告」', preview.source === 'next', preview.source);
+  ok('预告给出的是池里的账号', preview.account !== undefined);
+
+  // 固定选中的是 alice，但刚刚真正服务的是 bob —— 界面必须显示 bob：
+  // 「被调用的账号」与「固定用哪个」是两个问题，轮换模式下更是完全无关。
+  const alice = pool.list().find((a) => a.label === 'alice');
+  const bob = pool.list().find((a) => a.label === 'bob');
+  pool.applyConfig({ selectedAccountId: alice.id });
+  pool.noteServed(bob.id);
+  const served = pool.servingAccount();
+  ok('有服务记录时报告 served', served.source === 'served', served.source);
+  ok('报告的是**刚服务的**账号而不是固定选中的', served.account?.id === bob.id, served.account?.label);
+  ok('servingAccount 带上模型 id 也不抛', pool.servingAccount(Date.now(), 'qwen3-coder').account?.id === bob.id);
+
+  const empty = new QoderAccountPool({ store: fakeStore([]) });
+  await empty.scan();
+  const none = empty.servingAccount();
+  ok('空池给出 source=none 且账号为 undefined', none.source === 'none' && none.account === undefined);
+}
+
+console.log('\n== 停用的账号不会被预告成「下一个」 ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await pool.scan();
+  const alice = pool.list().find((a) => a.label === 'alice');
+  const bob = pool.list().find((a) => a.label === 'bob');
+  pool.applyConfig({ disabledAccountIds: [alice.id], distribution: 'priority' });
+  const next = pool.resolveNext();
+  ok('预告跳过已停用账号', next?.id === bob.id, next?.label);
 }
 
 console.log(`\nqoder-pool: ${pass} 通过, ${fail} 失败`);

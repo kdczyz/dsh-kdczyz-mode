@@ -4412,6 +4412,21 @@ const TRAE_USAGE_PATH = "/plugins/dsh-connect-trae/usage";
 /** Plugin-owned live model refresh endpoint. */
 const TRAE_MODELS_REFRESH_PATH = "/plugins/dsh-connect-trae/models/refresh";
 /**
+* In-flight upstream directory fetch, per region.
+*
+* Three independent paths call `stacks[region].discoverModels()`: the card's
+* refresh button, DSH's own model discovery, and the startup seed. They overlap
+* in practice (open the panel while the seed is still running, or click refresh
+* twice), and without coalescing the LAST RESPONSE TO ARRIVE wins — a slow
+* first fetch can overwrite a newer directory. Reusing the running promise
+* removes both the duplicate upstream call and that ordering hazard, and it is
+* safe because the fetch never leaves a half-written state behind: every
+* mutation below happens after the await, in one synchronous block.
+*
+* Same shape as the WorkBuddy half's `modelRefreshInflight` (lib/index.js).
+*/
+const directoryInflight = new Map();
+/**
 * Plugin-owned availability probe: POST the model ids to test, get one verdict
 * per model. Unlike every read-only sibling this route SPENDS quota — a real
 * (minimal) chat call per model — so it is user-initiated only, and the card
@@ -5785,26 +5800,34 @@ function apply(ctx, config) {
 				return toCredits(await new TraeUsageClient({ credential: async () => credential }).snapshot());
 			},
 			discoverModels: async (signal) => {
-				const merged = mergeTraeModelSources(await withDirectoryRetry(() => remoteCatalog.fetchModels(signal)), await solo.fetchModels(signal));
-				// 全量目录留一份给卡片（catalog 里放的是过滤后的，见 liveDirectory 注释）
-				if (merged.length > 0) stacks[region].liveDirectory = sanitizeCatalog(merged);
-				wire.callableKeys.clear();
-				for (const model of merged) {
-					wire.callableKeys.add(model.id.trim().toLowerCase());
-					wire.callableKeys.add(model.name.trim().toLowerCase());
-				}
-				wire.resolved = merged.length > 0;
-				wire.byId.clear();
-				wire.byName.clear();
-				for (const model of merged) if (model.wireConfigName !== void 0) {
-					const target = {
-						configName: model.wireConfigName,
-						...model.wireFunction === void 0 ? {} : { function: model.wireFunction }
-					};
-					wire.byId.set(model.id, target);
-					wire.byName.set(model.name.trim().toLowerCase(), target);
-				}
-				return merged;
+				const running = directoryInflight.get(region);
+				if (running !== void 0) return running;
+				const task = (async () => {
+					const merged = mergeTraeModelSources(await withDirectoryRetry(() => remoteCatalog.fetchModels(signal)), await solo.fetchModels(signal));
+					// 全量目录留一份给卡片（catalog 里放的是过滤后的，见 liveDirectory 注释）
+					if (merged.length > 0) stacks[region].liveDirectory = sanitizeCatalog(merged);
+					wire.callableKeys.clear();
+					for (const model of merged) {
+						wire.callableKeys.add(model.id.trim().toLowerCase());
+						wire.callableKeys.add(model.name.trim().toLowerCase());
+					}
+					wire.resolved = merged.length > 0;
+					wire.byId.clear();
+					wire.byName.clear();
+					for (const model of merged) if (model.wireConfigName !== void 0) {
+						const target = {
+							configName: model.wireConfigName,
+							...model.wireFunction === void 0 ? {} : { function: model.wireFunction }
+						};
+						wire.byId.set(model.id, target);
+						wire.byName.set(model.name.trim().toLowerCase(), target);
+					}
+					return merged;
+				})().finally(() => {
+					directoryInflight.delete(region);
+				});
+				directoryInflight.set(region, task);
+				return task;
 			},
 			/**
 			* One-click availability test. The ids come from the card, so each one is

@@ -32,7 +32,11 @@
  * 运行：node test/qoder-payload.test.mjs
  */
 
-import { normalizeQoderPayload, buildQoderChatRequest } from '../lib/qoder-relay.mjs';
+import {
+  normalizeQoderPayload,
+  buildQoderChatRequest,
+  buildQoderFingerprintedRequest,
+} from '../lib/qoder-relay.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -147,6 +151,86 @@ const CALLS = [{ id: 'call_1', type: 'function', function: { name: 'read', argum
   ok('手写路径：Content-Length 与 body 一致',
     Number(manual.headers['Content-Length']) === Buffer.byteLength(manual.body),
     `${manual.headers['Content-Length']} vs ${Buffer.byteLength(manual.body)}`);
+}
+
+/* —— 7) 图片块必须原样到达上游 body —— */
+//
+// 用户报的「当前模型不支持图片」修掉之后，下一条风险就是**图片在插件里被丢掉**：
+// 那种失败很难看出来 —— 请求成功、模型正常回话，只是完全没看见图。所以这里直接把
+// 两条构造路径的发包内容钉住：pi-ai 把图片转成 OpenAI 形状的
+// `{type:'image_url', image_url:{url:'data:image/png;base64,…'}}`，插件这一层
+// 只允许**逐字透传**。
+//
+// `normalizeQoderPayload` 是唯一的改写点，它只碰 `content:null + tool_calls` 的
+// assistant 消息；这里用「同一条 payload 里既有该改的消息、又有图片消息」来证明
+// 改写不会顺手把图片抹掉（早先正是这类整体重建消息的写法最容易踩）。
+{
+  const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const imageMessage = {
+    role: 'user',
+    content: [
+      { type: 'text', text: '图里是什么' },
+      { type: 'image_url', image_url: { url: DATA_URL } },
+    ],
+  };
+  const payload = {
+    model: 'dfmodel',
+    messages: [
+      { role: 'system', content: 's' },
+      { role: 'assistant', content: null, tool_calls: CALLS },
+      { role: 'tool', tool_call_id: 'call_1', content: 'r' },
+      imageMessage,
+    ],
+  };
+
+  const normalized = normalizeQoderPayload(payload);
+  ok(
+    '归一化时图片消息一字不动（含 base64 本体）',
+    JSON.stringify(normalized.messages.at(-1)) === JSON.stringify(imageMessage),
+    JSON.stringify(normalized.messages.at(-1)).slice(0, 120),
+  );
+  ok('  同一条 payload 里该改的那条仍然改了', normalized.messages[1].content === '');
+
+  const identity = { uid: 'u1', securityToken: 'dt-x' };
+  const manual = buildQoderChatRequest({ identity, payload });
+  ok(
+    '手写路径：body 里带着完整 data URL',
+    manual.body.includes(DATA_URL) && /"type"\s*:\s*"image_url"/.test(manual.body),
+    manual.body.slice(0, 200),
+  );
+  ok(
+    '手写路径：Content-Length 按带图 body 算（少算会被上游截断）',
+    Number(manual.headers['Content-Length']) === Buffer.byteLength(manual.body),
+  );
+
+  // 指纹路径：body 由 wasm 编码（不可读），所以钉「交给编码器的那份 JSON」。
+  // 这里用替身捕获入参 —— 真 wasm 拿到的就是同一个字符串。
+  const captured = {};
+  const fakeFingerprint = {
+    prepareInferRequest(args) {
+      captured.bodyJson = args.bodyJson;
+      captured.modelKey = args.modelKey;
+      return { url: 'https://example.invalid/x', headers: {}, body: 'ENCODED' };
+    },
+  };
+  const wired = buildQoderFingerprintedRequest({
+    fingerprint: fakeFingerprint,
+    machineId: 'machine-1',
+    uid: 'u1',
+    securityToken: 'jt-x',
+    payload,
+  });
+  ok('指纹路径：产出请求', wired !== undefined && wired.body === 'ENCODED');
+  ok(
+    '指纹路径：交给编码器的 bodyJson 里带着完整 data URL',
+    typeof captured.bodyJson === 'string' && captured.bodyJson.includes(DATA_URL),
+    String(captured.bodyJson).slice(0, 200),
+  );
+  ok('指纹路径：modelKey 仍是模型 id', captured.modelKey === 'dfmodel', String(captured.modelKey));
+  ok(
+    '指纹路径：编码器收到的是**归一化后**的 body（与手写路径同一份）',
+    typeof captured.bodyJson === 'string' && !captured.bodyJson.includes('"content":null'),
+  );
 }
 
 console.log(`\nqoder-payload: ${pass} 通过, ${fail} 失败`);

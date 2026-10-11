@@ -35,11 +35,16 @@ import z from '@deepseek-ai/schemastery';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { QoderCatalog, QODER_FALLBACK_CONTEXT_WINDOW } from './qoder-catalog.mjs';
+import {
+  QoderCatalog,
+  QODER_FALLBACK_CONTEXT_WINDOW,
+  qoderInputModalities,
+} from './qoder-catalog.mjs';
 import { readOrCreateQoderMachineId } from './qoder-auth.mjs';
 import { createQoderFingerprint } from './qoder-fingerprint.mjs';
 import { QoderAccountPool, QoderCredentialStore } from './qoder-pool.mjs';
 import { createQoderShim } from './qoder-shim.mjs';
+import { asVolatile, unwrapVolatile } from './volatile.mjs';
 import {
   applyQoderRelayFailure,
   buildQoderChatRequest,
@@ -78,10 +83,116 @@ const QODER_PROVIDER = 'qoder';
 const QODER_SETTINGS_NS = 'qoder';
 const QODER_STREAM_IDLE_TIMEOUT_MS = 3e5;
 
+/**
+ * 含图请求的图片预算三件套。
+ *
+ * 与 Trae 入口（`lib/trae.js` 的同名常量）**逐字同值**：`maxRequestImageBytes`
+ * 是一次请求里所有图片解码后的总量上限，`requestImagePixelBudget` /
+ * `requestImageMaxBytes` 是单图缩放目标（超了才缩，不放大）。
+ *
+ * 前两者 pi-ai 侧有同值兜底、缺了不崩，但那是「碰巧一致」；第三个缺了就是
+ * **完全没有总量闸门**。三家 provider 的图片行为必须一致，所以两边都显式写。
+ */
+const REQUEST_IMAGE_BUDGETS = {
+  maxRequestImageBytes: 20971520,
+  requestImagePixelBudget: 4194304,
+  requestImageMaxBytes: 1048576,
+};
+
+/**
+ * 当前活着的 provider 句柄，供**另一个 Loader 入口**使用。
+ *
+ * `lib/index.js`（管理页路由）与这里是两个独立的 Loader 入口，各自 `apply`、各自
+ * 持有实例 —— 管理页想触发一次目录刷新，跨入口只有模块级句柄这一条路。与 vendor
+ * 半边发布 `currentApi()` 是同一个套路。
+ *
+ * 注册成功后写入，dispose 时**校验身份再清空**：热重载时新实例可能已经写入，
+ * 旧实例的清理不能把新句柄抹掉。
+ */
+let published;
+
+/**
+ * 取当前 provider 句柄；未注册（或已 dispose）时为 `undefined`。
+ *
+ * @returns {{adapter:object, catalog:object, models:()=>Array, pool:object, refreshCatalog:()=>Promise<object>, syncPoolConfig:()=>object}|undefined}
+ */
+export function currentQoderApi() {
+  return published;
+}
+
+/**
+ * provider 配置。
+ *
+ * ⚠️ **每个字段都必须包 `asVolatile`**：宿主 0.1.7 的 settings 写入闸门要求
+ * schema 至少有一个 volatile 字段，否则 `set()` 抛
+ * `Plugin entry "qoder" has no volatile fields`。没有它，这一整块配置**存不进去**
+ * —— 卡片看着保存成功、实际被静默回滚，profile 里永远不会出现 `config:` 块。
+ *
+ * 模型三件套的语义与 WorkBuddy / Trae 对齐（见 `selectModels`）。
+ *
+ * 号池三件套**是本入口独有的**：Qoder 的池配置放在这里（而不是管理页那个
+ * 入口的 settings 里），因为**读它的是 provider 自己** —— 设置写在谁身上，
+ * 谁就能拿到最新值，不必跨入口传话。管理页只负责写，写入路径与 Trae 半边
+ * 完全一样（客户端写 settings，provider 在 `loader/volatile-update` 时推给池）。
+ */
 const Config = z.object({
-  enabledModelIds: z.array(z.string()).default([]),
-  contextBudgets: z.dict(z.number()).default({}),
+  enabledModelIds: asVolatile(
+    z
+      .array(z.string())
+      .default([])
+      .description('本 provider 提供给 DSH 的模型 id 白名单（留空 = 全部）'),
+  ),
+  imageModelIds: asVolatile(
+    z
+      .array(z.string())
+      .default([])
+      .description(
+        '「可收图」的模型 id（设置页按上游目录的 is_vl 回写，没有手动开关）。只加不减：与上游目录取并集，写进来不会让某个上游支持图片的模型失去图片能力',
+      ),
+  ),
+  contextBudgets: asVolatile(
+    z
+      .dict(z.number().step(1).min(1))
+      .default({})
+      .description(
+        '按模型收紧上下文窗口（设置页按上游目录回写，没有手动开关）：留空 = 用满上游原生窗口；有值且小于上游窗口时才生效',
+      ),
+  ),
+  selectedAccountId: asVolatile(
+    z
+      .string()
+      .default('')
+      .description(
+        '号池里「当前使用」的账号 id：请求优先用它，它不可用（停用 / 冷却 / 令牌失效）时才让位给下一个可用账号。留空 = 用池里第一个账号',
+      ),
+  ),
+  disabledAccountIds: asVolatile(
+    z
+      .array(z.string())
+      .default([])
+      .description('不参与号池的 Qoder 账号 id（留空 = 池里每个已登录账号都参与）'),
+  ),
+  creditReserves: asVolatile(
+    z
+      .dict(z.number().step(1).min(0))
+      .default({})
+      .description('按账号的积分下限：余额降到这个值就不再从这个账号发请求'),
+  ),
 });
+
+/**
+ * 从（可能是活引用的）配置里取出号池那份设置。
+ *
+ * volatile 字段在 0.1.7 上是 `{get(): T}` 活引用，所以**每次都要重新解引用**，
+ * 不能把结果缓存下来 —— 设置页保存后，同一个 `config` 对象上读到的就是新值。
+ */
+function poolConfigOf(config) {
+  return {
+    selectedAccountId: unwrapVolatile(config?.selectedAccountId) ?? '',
+    disabledAccountIds: unwrapVolatile(config?.disabledAccountIds) ?? [],
+    creditReserves: unwrapVolatile(config?.creditReserves) ?? {},
+  };
+}
 
 /**
  * 0.1.7 起宿主按 **Loader entry id** 作 settings 键。
@@ -94,6 +205,62 @@ function settingsNamespaceOf(ctx) {
   return typeof id === 'string' && id !== '' ? id : QODER_SETTINGS_NS;
 }
 
+/**
+ * 把一个 id 列表读成集合。**空数组与缺省同义 = 不限制**。
+ *
+ * ⚠️ 这里刻意**不照抄** WorkBuddy `visible()` 对空数组的处理：那边
+ * `enabledModelIds: []` 会把模型全部过滤掉（schemastery 的 `.default([])` 让它
+ * 永远不是 `undefined`，于是「缺省 = 全部」的回退分支成了死代码），表现是
+ * 「provider 已注册但一个模型都没有」。schema 的文档语义是「absent = all」，
+ * 这里按文档实现：**空 = 全部**。
+ *
+ * 活引用（0.1.7 的 `{get(): T}`）先解引用再判 —— 直接对活引用做 `Array.isArray`
+ * 永远是 `false`，那会静默退化成「不限制」。
+ */
+function idSetOf(value) {
+  const list = unwrapVolatile(value);
+  return Array.isArray(list) && list.length > 0 ? new Set(list) : undefined;
+}
+
+/**
+ * 目录 + 配置 → 真正提供给 DSH 的模型行。
+ *
+ * 与 WorkBuddy 的 `visible()`、Trae 的 `derive()` 同款，三条规则：
+ *
+ * 1. `enabledModelIds` 非空时按它过滤；
+ * 2. `imageModelIds`（图片）与 `contextBudgets`（上下文）**都不是手动开关**：
+ *    设置页的模型列按上游目录回写它们 —— 图片取上游 `is_vl`、上下文留空表示用满
+ *    上游原生窗口（见 lib/console.mjs 的 `upstreamFieldsOf`）。这里保留的语义是
+ *    「与上游取并集 / 只下调」，所以即便设置里留着一份旧的手写值，也不会把一个
+ *    上游标了 `is_vl: true` 的模型降回纯文本 —— 反向的诉求（上游撤销了图片能力
+ *    但本地列表还留着旧 id）在这套语义下无法表达，属于已知限制，与另两家一致。
+ * 3. `contextBudgets` 只在**小于**上游窗口时收紧。**不做抬升**：真机
+ *    `context_config` 虽然有 1M/400K/200K 三档，但选用高档需要在请求里带对应的
+ *    档位参数（未验证），只把窗口数字改大而请求仍走默认档，等于让 DSH 放心发出
+ *    一段上游根本不接受的超长上下文 —— 宁可保守。
+ */
+function selectModels(models, config) {
+  const allow = idSetOf(config?.enabledModelIds);
+  const images = idSetOf(config?.imageModelIds);
+  const budgets = unwrapVolatile(config?.contextBudgets);
+  return models
+    .filter((model) => allow === undefined || allow.has(model.id))
+    .map((model) => {
+      const next = { ...model };
+      if (images !== undefined && images.has(model.id)) next.supportsImages = true;
+      const budget = budgets?.[model.id];
+      if (
+        typeof budget === 'number' &&
+        Number.isInteger(budget) &&
+        budget > 0 &&
+        budget < next.contextWindow
+      ) {
+        next.contextWindow = budget;
+      }
+      return next;
+    });
+}
+
 /** 目录 → pi-ai 的模型形状。`contextWindow` 是硬性必填。 */
 function toPiModel(model, baseUrl, providerId) {
   return {
@@ -102,10 +269,19 @@ function toPiModel(model, baseUrl, providerId) {
     api: 'openai-completions',
     provider: providerId,
     baseUrl,
-    input: ['text'],
+    // ⚠️ 图片能力必须走共用谓词：写死 `['text']` 会让 `resolveModelInfo` 报
+    // 「不支持图片」，宿主的准入闸门随即在**提交 prompt 时**硬拒整条消息
+    // （前端横幅「当前模型不支持图片」）。上游 14 个 chat 模型里 13 个 `is_vl`
+    // 为 true，包括 DSH 的默认模型 `dfmodel`。
+    input: qoderInputModalities(model),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    // 真机的 `thinking_config` 有档位，但请求侧参数**未验证**：声明 reasoning
+    // 会让 pi-ai 真的往请求里塞 `reasoning_effort`，写错就是把「能聊天」变成
+    // 「一律 400」。所以这里保守留 false，直到真机确认过参数形状。
     reasoning: false,
-    // ⚠️ 缺这一行 DSH 会以 INVALID_MODEL_CONTEXT 拒掉**整个 provider**
+    // ⚠️ `contextWindow` 必须是正整数：宿主 `normalizeModelInfo` 会对这一行抛
+    // `INVALID_MODEL_CONTEXT`（**只作废这一个模型**，不是整个 provider ——
+    // pi-ai 还有 `defaultContextWindow` 兜底）。
     contextWindow: model.contextWindow ?? QODER_FALLBACK_CONTEXT_WINDOW,
     ...(model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens }),
   };
@@ -357,8 +533,10 @@ function deferred() {
 function createQoderAdapter(options) {
   const providerId = options.provider ?? QODER_PROVIDER;
   const providerName = options.displayName ?? 'Qoder';
+  // `options.models()` 已经过配置（白名单 / 图片并集 / 上下文预算），不是裸目录 ——
+  // 与 discovery 读的是同一个函数，两处不可能再各说各话。
   const buildModels = () =>
-    options.catalog.current().map((m) => toPiModel(m, `${options.shim.baseUrl()}/v1`, providerId));
+    options.models().map((m) => toPiModel(m, `${options.shim.baseUrl()}/v1`, providerId));
 
   const provider = {
     ...createProvider({
@@ -388,6 +566,11 @@ function createQoderAdapter(options) {
     configuredMaxTokens: new Map(),
     modelErrors: new Map(),
     defaultContextWindow: QODER_FALLBACK_CONTEXT_WINDOW,
+    // 图片预算三件套 —— 与 Trae 入口逐字同一组值（见 lib/trae.js 的
+    // `REQUEST_IMAGE_BUDGETS`）。pi-ai 对 `maxPixels`/`maxBytes` 有同值兜底，
+    // 缺了不会崩，但两家的缩图行为会悄悄分叉；`maxRequestImageBytes` 缺了更是
+    // 直接没有总量闸门。所以显式写出来。
+    ...REQUEST_IMAGE_BUDGETS,
     piProvider: provider,
   };
   let profiles = new Map([[providerId, profile]]);
@@ -398,6 +581,31 @@ function createQoderAdapter(options) {
       auth: { kind: 'none' },
       // shim 的随机 secret —— 每次启动都变，不落盘
       resolveApiKey: async () => options.shim.token(),
+      /**
+       * 图片消息必须能拿到**宿主的持久附件服务**。
+       *
+       * pi-ai 适配器在 `stream()` 里对含图消息依次做三个判定
+       * （dsh-llm-pi-ai 的 `streamWithSnapshot`）：
+       *
+       *   1. `containsImage && !model.input.includes("image")` → 「模型不支持图片」
+       *      —— 这一层是准入闸门，已由 `qoderInputModalities` 放行；
+       *   2. `const attachments = containsImage ? this.config.resolveAttachments?.() : undefined`
+       *      —— **没接线就是 undefined**；
+       *   3. `containsImage && attachments === undefined` → 抛
+       *      `pi-ai image input requires the durable attachment service`
+       *      （`UNSUPPORTED_CONTENT`，用户看到的就是这句）。
+       *
+       * 也就是说：模型层声明了 image、但适配器没拿到附件服务时，报错**晚一层**
+       * 才出现，看起来仍像「模型不支持图片」。Trae 入口一直有这一行
+       * （`lib/trae.js`：`resolveAttachments: () => ctx.get("attachments")`），
+       * Qoder 漏了。
+       *
+       * 值是箭头函数 —— 注册期服务可能还没就绪，`stream()` 时才取值；真没这个
+       * 服务时那句报错仍照常抛出，不会静默降级成纯文本。
+       */
+      ...options.resolveAttachments === void 0
+        ? {}
+        : { resolveAttachments: options.resolveAttachments },
     }),
     invalidate() {
       profiles = new Map([[providerId, profile]]);
@@ -407,36 +615,38 @@ function createQoderAdapter(options) {
 
 function apply(ctx, config) {
   const settingsNs = settingsNamespaceOf(ctx);
-  const catalog = new QoderCatalog({});
   const registration = { adapter: undefined, directory: undefined };
-
-  // 池与 shim 都是本入口自己的实例：不跨入口共享，避免生命周期耦合。
-  //
-  // ⚠️ `dshHome` **必须显式传**（与 lib/index.js 管理页同一个口径 `DSH_HOME ?? ~/.dsh`）。
-  // 漏传时 `QoderCredentialStore.readAll()` 会因为 dshHome 为空串而直接返回 `[]`，
-  // 表现为「管理页能看到已登录账号、但 provider 每次取号都空、模型永远跑不通」。
-  // 这是真机踩过的：登录落盘在 `~/.dsh/.qoder-auth.cn.*.json`，只有给了正确
-  // dshHome，provider 侧的池才扫得到它们。
-  const pool = new QoderAccountPool({
-    store: new QoderCredentialStore({ dshHome: qoderDshHome() }),
-  });
-
-  let shim;
-  let disposed = false;
 
   /**
    * 官方指纹器（懒加载，全局一份）。
    *
-   * 首次转发时从本机 Qoder 安装里提取官方 wasm 并实例化。提取一次就够，
-   * 之后复用 —— 33 MB 的源码只读一次，wasm 也只实例化一次。
+   * 首次用到时从本机 Qoder 安装里提取官方 wasm 并实例化。提取一次就够，之后复用
+   * —— 33 MB 的源码只读一次，wasm 也只实例化一次。
    *
-   * `undefined` 表示本机没有官方安装（或提取失败），此时退回手写 COSY。
-   * **不因此失败**：明文那条路是实测可用的，只是与官方客户端不同形。
+   * `undefined` 表示本机没有官方安装（或提取失败），此时**推理与目录两条链都**
+   * 退回手写 COSY。不因此失败：手写那条是实测可用的，只是与官方客户端不同形。
+   *
+   * ⚠️ **失败不缓存**：提取失败通常只是「本机还没装官方客户端」，把 `undefined`
+   * 钉死会让用户装好 Qoder 之后**整个进程**仍走手写链 —— 与
+   * `qoder-fingerprint.mjs` 里「wasm 提取结果只缓存成功」的设计正好相反。
+   * 重试本身很便宜（昂贵的提取结果已按候选路径缓存），且并发调用共享同一个
+   * 进行中的 promise。
    */
   let fingerprintPromise;
+  /** 已成功解析出的指纹器实例。**只有成功才常驻**。 */
+  let fingerprintValue;
   const fingerprint = () => {
+    if (fingerprintValue !== undefined) return Promise.resolve(fingerprintValue);
     if (fingerprintPromise === undefined) {
-      fingerprintPromise = createQoderFingerprint().catch(() => undefined);
+      fingerprintPromise = createQoderFingerprint()
+        .then((value) => {
+          if (value !== undefined && value !== null) fingerprintValue = value;
+          return value;
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          fingerprintPromise = undefined;
+        });
     }
     return fingerprintPromise;
   };
@@ -447,14 +657,79 @@ function apply(ctx, config) {
    * 与登录共用同一个值（`~/.qoder-cn/.auth/machine_id`）：指纹里的
    * `Cosy-MachineId` / `Cosy-MachineToken` 必须与官方登录身份一致，
    * 否则就是「同一个账号在不同机器上」的可疑形态。
+   *
+   * 刻意**不缓存 promise 的失败**：拿不到就每次都重试（读文件很便宜），
+   * 免得一次瞬时失败把指纹路径永久钉死在手写兜底上。
    */
-  let machineIdPromise;
-  const machineId = () => {
-    if (machineIdPromise === undefined) {
-      machineIdPromise = readOrCreateQoderMachineId().catch(() => undefined);
+  const machineId = async () => {
+    try {
+      const value = await readOrCreateQoderMachineId();
+      return typeof value === 'string' && value !== '' ? value : undefined;
+    } catch {
+      return undefined;
     }
-    return machineIdPromise;
   };
+
+  // 目录也走指纹路径：给它指纹器与 machineId 取值器。
+  const catalog = new QoderCatalog({
+    fingerprint: async () => fingerprint(),
+    machineId,
+  });
+
+  // 池与 shim 都是本入口自己的实例：不跨入口共享，避免生命周期耦合。
+  //
+  // ⚠️ `dshHome` **必须显式传**（与 lib/index.js 管理页同一个口径 `DSH_HOME ?? ~/.dsh`）。
+  // 漏传时 `QoderCredentialStore.readAll()` 会因为 dshHome 为空串而直接返回 `[]`，
+  // 表现为「管理页能看到已登录账号、但 provider 每次取号都空、模型永远跑不通」。
+  // 这是真机踩过的：登录落盘在 `~/.dsh/.qoder-auth.cn.*.json`，只有给了正确
+  // dshHome，provider 侧的池才扫得到它们。
+  //
+  // ⚠️ `logger` 同样**必须显式传**。池里所有「自动换号」的可观测痕迹都是
+  // `this.logger?.warn?.()`（限流冷却、当前账号不可用而让位给备用）—— 不传时
+  // 这些日志全部落进 `undefined?.`，一声不响地消失。用户看到的现象就退化成
+  // 「请求打到别的号上了，但没有任何地方说过为什么」，与改造前那个 bug 的
+  // 观感一模一样。这里传的是宿主 logger（`ctx.logger`）。
+  const pool = new QoderAccountPool({
+    store: new QoderCredentialStore({ dshHome: qoderDshHome() }),
+    logger: ctx.logger,
+  });
+
+  /**
+   * 把设置里的号池三件套推给池 —— **本入口是唯一做这件事的地方**。
+   *
+   * 为什么必须在这里而不是管理页那个入口：管理页（lib/index.js）是另一个
+   * Loader 入口，它改自己的池实例改不到请求路径上。这条链是：
+   *
+   *   设置页写 `dsh-connect-qoder` 的 `selectedAccountId`
+   *     → 宿主发 `loader/volatile-update`
+   *     → 这里重新解引用 `config` 并 `pool.applyConfig(...)`
+   *     → 下一次 `pool.acquire()` 就用新的「当前账号」
+   *
+   * 启动时也要跑一次：`selectedAccountId` 存在 profile 里，重启后得恢复。
+   * 管理页那条快照路由还会主动调用发布出去的 `syncPoolConfig()`，这样
+   * 「刚保存完就刷新页面」看到的也是新值，不必等一条请求先把事件带过来。
+   */
+  const syncPoolConfig = () => {
+    const next = poolConfigOf(config);
+    pool.applyConfig(next);
+    return next;
+  };
+  syncPoolConfig();
+
+  /**
+   * 设置页保存后立刻生效 —— 与 Trae 入口同一根线（见 lib/trae.js 的
+   * `applySelection` + `loader/volatile-update`）。
+   *
+   * 少了这一句，「切换到此账号」要等**下一次 DSH 重启**才生效：写入的是设置，
+   * 而池只在自己构造时读过一次配置。`ctx.on` 用可选调用是因为单测里的假 ctx
+   * 没有事件系统，真宿主一定有。
+   */
+  ctx.on?.('loader/volatile-update', () => {
+    syncPoolConfig();
+  });
+
+  let shim;
+  let disposed = false;
 
   /**
    * 转发一次对话：取号 → 签名 → 打上游 → 解信封 → 转标准 OpenAI SSE。
@@ -532,6 +807,15 @@ function apply(ctx, config) {
 
   const routeChat = async (bodyJson, signal, parsed) => {
     const modelId = typeof parsed?.model === 'string' ? parsed.model : undefined;
+
+    /**
+     * 取号前先把设置里的号池配置同步一次。
+     *
+     * `loader/volatile-update` 理论上已经覆盖了每一次保存，但「当前账号」是
+     * 用户点了按钮就立刻期待生效的东西 —— 这里多读一次活引用（两个 `get()`）
+     * 的代价可以忽略，换来的是「无论事件有没有到，下一次请求一定用新选择」。
+     */
+    syncPoolConfig();
 
     // 同一个 body 刚因确定性原因失败 → 直接回放结论，不再打上游。
     // 这不改变对用户可见的结果（同样的错误码与消息），只是不再重复十八遍。
@@ -736,20 +1020,59 @@ function apply(ctx, config) {
     return failure;
   };
 
+  /**
+   * 真正提供给 DSH 的模型行 = 目录 + 配置。
+   *
+   * **推理链（`toPiModel`）与 DSH 目录（discovery）都只读它**，这样两边不可能
+   * 出现「选择器说能收图、实际发不出去」这类不一致。
+   */
+  const visibleModels = () => selectModels(catalog.current(), config);
+
   const ready = (async () => {
     await pool.scan();
     shim = await createQoderShim({ routeChat, models: () => catalog.current() });
 
     // 目录：拉不到就用兜底，**绝不因为拉不到就不注册 provider**
-    const first = catalog.current()[0];
-    const cred = first === undefined ? undefined : pool.list()[0]?.credential;
+    const cred = pool.list()[0]?.credential;
     if (cred !== undefined) await catalog.refresh(cred);
   })();
+
+  /**
+   * 从号池里挑一个账号拉目录。
+   *
+   * 与启动时同一口径（第一个账号），并按 `pool.acquire()` 的惯例**空池先懒扫一次**
+   * —— provider 只在启动时扫过一次盘，用户中途登录的账号要等下一次扫描才可见。
+   * 没有账号时**不报错**，如实返回「还没登录」：手动刷新最常见的失败原因就是这个，
+   * 报成「上游形状变了」会把人带偏。
+   */
+  const refreshCatalog = async () => {
+    let cred = pool.list()[0]?.credential;
+    if (cred === undefined) {
+      try {
+        await pool.scan();
+      } catch {
+        /* 扫不动就按「没账号」处理，下面统一返回 */
+      }
+      cred = pool.list()[0]?.credential;
+    }
+    if (cred === undefined) {
+      return { ok: false, models: catalog.current(), message: '号池里还没有账号，请先登录 Qoder' };
+    }
+    return catalog.refresh(cred);
+  };
 
   ready
     .then(() => {
       if (disposed) return;
-      const qoder = createQoderAdapter({ shim, catalog, provider: QODER_PROVIDER });
+      const qoder = createQoderAdapter({
+        shim,
+        models: visibleModels,
+        provider: QODER_PROVIDER,
+        // 宿主的持久附件服务：图片消息靠它把 `{attachmentId}` 读成真实字节。
+        // 与 Trae 入口同款接线；缺了它含图消息会在 pi-ai 适配器里抛
+        // `pi-ai image input requires the durable attachment service`。
+        resolveAttachments: () => ctx.get('attachments'),
+      });
       registration.adapter = ctx.llm.registerAdapter([QODER_PROVIDER], qoder.adapter);
       registration.directory = ctx.llm.registerConfigurableProviders([
         {
@@ -761,14 +1084,51 @@ function apply(ctx, config) {
         },
       ]);
       ctx.llm.registerModelDiscovery(settingsNs, async () =>
-        catalog.current().map((m) => ({
+        visibleModels().map((m) => ({
           id: m.id,
           name: m.name ?? m.id,
           contextWindow: m.contextWindow ?? QODER_FALLBACK_CONTEXT_WINDOW,
           ...(m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens }),
-          inputModalities: ['text'],
+          inputModalities: qoderInputModalities(m),
         })),
       );
+      // 管理页要能碰到 provider 内部（目录、刷新）—— `lib/index.js` 是另一个
+      // Loader 入口，与这里各自持有实例，只有模块级句柄能跨过去。
+      //
+      // `directory` 与 `models` 的区别是**过滤前/后**，两者都要给：
+      //   - `models()`  = `selectModels` 之后，DSH 选择器看到的那份；
+      //   - `directory()` = 上游目录原样，勾选卡必须用这一份。
+      // 卡片若读过滤后的列表，用户一取消勾选那个模型就从列表里消失、再也勾不
+      // 回来（Trae 半边的 `liveDirectory` 是同一条教训，见 lib/trae.js 注释）。
+      published = {
+        adapter: qoder,
+        catalog,
+        models: visibleModels,
+        directory: () => catalog.current(),
+        pool,
+        refreshCatalog,
+        /**
+         * 把设置里的号池配置重新推给池，并返回推下去的那份值。
+         *
+         * 管理页的路由在出快照前调用它：设置写入与 `loader/volatile-update`
+         * 事件之间有一个极短的窗口，而用户点完「切换到此账号」就立刻刷新列表
+         * —— 那个窗口里读到的还是旧的「当前使用」，看起来像没切换成功。
+         */
+        syncPoolConfig,
+        /**
+         * 这一版代码的**接线自述**，给管理页与诊断用。
+         *
+         * `imageAttachments` 就是图片链路第二层（pi-ai 适配器的
+         * `resolveAttachments`）的标志。加它的理由很实际：部署后**必须重启
+         * DSH** 才生效，而没接线时的报错（`pi-ai image input requires the
+         * durable attachment service`）与「模型不支持图片」长得几乎一样，
+         * 光看现象分不清「代码没加载」还是「代码不对」。有了它，
+         * `GET …/qoder/models/refresh` 一眼就能回答「跑的是哪一版」。
+         */
+        capabilities: () => ({
+          imageAttachments: typeof qoder.adapter?.config?.resolveAttachments === 'function',
+        }),
+      };
     })
     .catch((error) => {
       ctx.logger?.error?.('[wotr-console] Qoder provider 注册失败', error);
@@ -776,12 +1136,11 @@ function apply(ctx, config) {
 
   ctx.effect(() => () => {
     disposed = true;
+    if (published?.catalog === catalog) published = undefined;
     registration.adapter?.();
     registration.directory?.();
     shim?.close?.();
   });
-
-  void config;
 }
 
 export {

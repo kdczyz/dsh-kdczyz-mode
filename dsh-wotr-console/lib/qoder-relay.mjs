@@ -36,10 +36,12 @@
  *    `CustomBase64Util.decode` 解请求体（发明文会触发 Java 异常）；**不带**
  *    就按明文 JSON 处理，正常回话。所以查询串去掉 `Encode` 后，明文 body
  *    直接可用，官方编码器不再是前提。见 `QODER_SIGNED_CHAT_QUERY`。
- * 2. **目录链是 GET + `{}` body，且必须显式带 `Content-Length`**。写成 POST
- *    回 `400 Request method 'POST' not supported`；GET 缺 `Content-Length`
- *    时服务端读到空 body，签名对不上回 `101 Signature invalid`。见
- *    `QODER_CN_SIGNED_MODELS_QUERY`。
+ * 2. **目录链是 GET + 空 body**（官方同形：`…?Encode=1` + `Content-Length: 0`）。
+ *    写成 POST 回 `400 Request method 'POST' not supported`；GET 带非空 body
+ *    时服务端按 `Encode=1` 去解自定义 Base64，明文 `{}` 会触发 Java 异常；
+ *    而**不带 `Content-Length`** 时服务端读到空 body，与签名用的 body 不一致，
+ *    回 `101 Signature invalid`。见 `QODER_CN_SIGNED_MODELS_QUERY` 与
+ *    `buildQoderModelsRequest`。
  *
  * # 令牌族：`dt-` 原样可用
  *
@@ -95,32 +97,59 @@ export const QODER_CN_MODELS_PATH = '/api/v1/cloud/models';
  * wasm 签名目录链」。本插件入池凭据**全是 `dt-`**，所以走下面这条签名链
  * —— 好消息是它用的正是我们已经能构造的 COSY 签名。
  *
- * ⚠️ **必须是 GET + `{}` body**（实测 2026-10-11，真机）：
+ * ⚠️ **必须是 GET + 空 body**（实测 2026-10-11，真机；与官方 worker 同形）：
  *
- * | 方法 | 结果 |
+ * | 方法 / body | 结果 |
  * |---|---|
  * | POST | `400 Request method 'POST' not supported` |
- * | GET，**不带** `Content-Length` | `403 / 101 Signature invalid` |
- * | GET，带 `Content-Length: 2` | **200，正常返回目录** |
+ * | GET，不带 `Content-Length` | `403 / 101 Signature invalid` |
+ * | GET，空 body + `Content-Length: 0` | **200，正常返回目录** |
+ * | GET，`{}` body + `Content-Length: 2` | 200（早期探测的形态，仍可用） |
  *
  * 第二行是最容易踩的坑：GET 发 body 时 Node 的 `http` 会走 chunked 而**不自动
- * 加** `Content-Length`，服务端于是读到空 body，与签名所用的 `{}` 不一致，
+ * 加** `Content-Length`，服务端于是读到空 body，与签名所用的 body 不一致，
  * 摘要对不上就回 101。Node 的 `fetch` 更直接 —— 它**禁止** GET 带 body，
  * 所以目录链只能用 `node:http` 发，不能用 `fetch`。
  */
 export const QODER_CN_SIGNED_MODELS_PATH = '/algo/api/v2/model/list';
-export const QODER_CN_SIGNED_MODELS_QUERY = 'FetchKeys=llm_model_result&AgentId=agent_common';
+/**
+ * 目录链查询串。
+ *
+ * ⚠️ 这是**签名层之外**的东西，官方用的是另一套，两者都能取到目录但不同形：
+ *
+ * | | 查询串 | 实测 |
+ * |---|---|---|
+ * | 官方 | `Encode=1` | 200，14 个模型 |
+ * | 本插件早期探测 | `FetchKeys=llm_model_result&AgentId=agent_common` | 200，14 个模型（走 node:http） |
+ *
+ * 保留这个常量只为兼容既有调用方与测试；`buildQoderModelsRequest` 已改为
+ * 默认发官方那套（见 {@link QODER_SIGNED_MODELS_QUERY} 的用法）。
+ */
+export const QODER_CN_LEGACY_MODELS_QUERY = 'FetchKeys=llm_model_result&AgentId=agent_common';
 
-/** 出站 UA。形态取自官方 CN CLI 的 `qoder/<版本>` 模板。 */
-export const QODER_CN_USER_AGENT = 'qoder/1.1.58';
+/** 官方目录链查询串（worker @19109661 逐字：`/api/v2/model/list?Encode=1`）。 */
+export const QODER_CN_SIGNED_MODELS_QUERY = 'Encode=1';
+
+/** 兼容别名：既有调用方按旧名引用。 */
+export const QODER_CN_MODELS_QUERY = QODER_CN_SIGNED_MODELS_QUERY;
 
 /**
- * `cosy-version`。取自官方 CN CLI 的版本常量（1.1.58）与实测可用值（1.1.64）。
+ * `cosy-version`。取自官方 worker 的硬编码常量（`s5="1.1.64"`，
+ * `qoder-worker-runtime.obf.mjs` @37753）。
  *
  * 它进签名 payload，所以**改它会改签名结果** —— 服务端校验不过就是 401，
- * 且看不出是版本号不对。默认值用官方 CLI 的 1.1.58。
+ * 且看不出是版本号不对。
  */
-export const QODER_COSY_VERSION = '1.1.58';
+export const QODER_COSY_VERSION = '1.1.64';
+
+/**
+ * 出站 UA。形态取自官方 CN CLI 的 `qoder/<版本>` 模板。
+ *
+ * 版本与 {@link QODER_COSY_VERSION} 同源 —— 官方只有一个版本常量，三处各写
+ * 一个数就是三处会漂移（本仓库此前同时存在 1.1.16 / 1.1.58 / 1.1.64）。
+ */
+export const QODER_CN_USER_AGENT = `qoder/${QODER_COSY_VERSION}`;
+
 
 /** 请求超时。推理比查额度慢得多，30s 不够。 */
 export const QODER_CHAT_TIMEOUT_MS = 120_000;
@@ -517,16 +546,40 @@ export function streamQoderRequest({ url, method = 'POST', headers, body, timeou
 /**
  * 构造「拉模型目录」的请求（`dt-` 走的**签名链**）。
  *
- * ⚠️ **GET 也要带与签名一致的 `{}` body**：官方要求 body 与签名一致，否则 403。
- * 所以这里 `body` 固定是字符串 `'{}'`，且**必须**用同一个 body 去签名 ——
- * 少这一步就是 403，且看不出原因。
+ * # 两条形态，都能用，但只有一条与官方同形
  *
- * ⚠️ `Content-Length` **必须显式给出**：见 `QODER_CN_SIGNED_MODELS_QUERY` 的
- * 实测表。缺了它服务端读到空 body，签名对不上回 101。
+ * | | URL | body | 头 |
+ * |---|---|---|---|
+ * | **官方** | `/algo/api/v2/model/list?Encode=1` | 空（签名层自产） | `auth` 签名 + `oo()` 补的 `Cosy-*` |
+ * | 早期探测 | `/algo/api/v2/model/list?FetchKeys=…&AgentId=…` | 字符串 `{}` | 手写 COSY 三件套 |
+ *
+ * 官方（worker @19109661 / @19108378）是：
+ *
+ * ```js
+ * let o = "/api/v2/model/list?Encode=1";
+ * let A = Z5A(host, o, authManager);   // → prepareRequest(host, path, "GET", "auth", undefined, undefined)
+ * fetchWithTrace({ operation:"listModels", endpointType:"infer", method:"GET",
+ *                  requestClass:"model-list", path:o, url:A.url,
+ *                  injectClientIdentityHeaders:!isServiceAccount,
+ *                  init:{ method:"GET", headers:A.headers } })
+ * ```
+ *
+ * 两点与推理链的关键差别：
+ *
+ * - **`auth` 签名模式**、body 由签名层自己决定（不再传 `'{}'`）；
+ * - `requestClass` 是 **`model-list`**，**不是** `infer-sse`，所以 `oo()` 会补
+ *   `Cosy-Version`/`Cosy-ClientType`/`Cosy-MachineOS`，但**不会**补
+ *   `Cosy-MachineHostname`（那个只在 `infer-sse` 时加）。
+ *
+ * ⚠️ 用 `node:http` 发时 **`Content-Length` 仍须显式给出**：GET 带 body 时 Node
+ * 走 chunked 而不会自动加长度，服务端读到空 body 与签名不一致会回 101。
+ * 官方空 body 的情形同理需要 `Content-Length: 0`。
  */
-export function buildQoderModelsRequest({ identity, base, timestamp }) {
-  const url = `${String(base ?? QODER_CN_CHAT_BASE).replace(/\/$/, '')}${QODER_CN_SIGNED_MODELS_PATH}?${QODER_CN_SIGNED_MODELS_QUERY}`;
-  const body = '{}';
+export function buildQoderModelsRequest({ identity, base, timestamp, query }) {
+  const search = typeof query === 'string' && query !== '' ? query : QODER_CN_SIGNED_MODELS_QUERY;
+  const url = `${String(base ?? QODER_CN_CHAT_BASE).replace(/\/$/, '')}${QODER_CN_SIGNED_MODELS_PATH}?${search}`;
+  // 官方空 body：签名层按空串摘要。这里显式给 `''`，长度 0。
+  const body = '';
   return {
     url,
     body,
@@ -540,6 +593,54 @@ export function buildQoderModelsRequest({ identity, base, timestamp }) {
     },
   };
 }
+
+/**
+ * 用**官方 wasm 指纹器**构造目录请求。
+ *
+ * 与 {@link buildQoderModelsRequest} 的关系同推理链：wasm 那条产出官方同形的
+ * 头与签名，手写那条是兜底。差别见 {@link buildQoderModelsRequest} 的注释。
+ *
+ * 注意 `requestClass` 是 `model-list` 而非 `infer-sse` —— 所以这里**不补**
+ * `Cosy-MachineHostname`（官方只在 `infer-sse` 时加它）。
+ *
+ * @param {object} options
+ * @param {object} options.fingerprint 指纹器
+ * @param {string} options.machineId
+ * @param {string} options.uid
+ * @param {string} options.securityToken
+ */
+export function buildQoderFingerprintedModelsRequest({
+  fingerprint,
+  machineId,
+  uid,
+  securityToken,
+  organizationId = '',
+  organizationTags = [],
+  dataPolicyAgreed = false,
+  base,
+  machine,
+}) {
+  if (fingerprint === undefined) return undefined;
+  if (typeof machineId !== 'string' || machineId === '') return undefined;
+  const built = fingerprint.prepareModelsRequest({
+    machineId,
+    uid,
+    securityToken,
+    organizationId,
+    organizationTags,
+    dataPolicyAgreed,
+    base: base ?? QODER_CN_CHAT_BASE,
+    machine,
+  });
+  if (built === undefined) return undefined;
+  return {
+    url: built.url,
+    body: built.body,
+    method: 'GET',
+    headers: { ...built.headers, 'Content-Length': Buffer.byteLength(built.body) },
+  };
+}
+
 
 /**
  * 从目录响应里抽出模型条目。
@@ -564,12 +665,15 @@ export function buildQoderModelsRequest({ identity, base, timestamp }) {
  *    本 provider 只接**对话**，所以只取 `chat` —— 取其它组会列出一堆对话用不了
  *    的模型。若 `chat` 缺失再退到别的组，总比目录为空强。
  * 3. **`enable: false` 的条目要跳过**：上游明确标了不可用。
+ * 4. **`is_vl` 是图片能力**，必须解析出来并且只认严格布尔：漏掉它，13 个
+ *    `is_vl: true` 的模型在 DSH 里全都变成「不支持图片」，用户一发图就被
+ *    准入闸门拒掉（DSH 默认模型 `dfmodel` 正是其中之一）。
  *
  * 同时保留对旧/变体形状（`models` / `config_info_list` …）的兼容，全部走
  * 「取不到就跳过」，绝不因为一个字段缺失让整个目录变成空 —— 空目录会让
  * provider 直接下线，比少几个模型严重得多。
  *
- * @returns {Array<{id:string,name?:string,contextWindow?:number,maxTokens?:number}>}
+ * @returns {Array<{id:string,name?:string,contextWindow?:number,maxTokens?:number,supportsImages?:boolean}>}
  */
 export function parseQoderModelList(body) {
   let doc = body;
@@ -626,6 +730,17 @@ export function parseQoderModelList(body) {
     if (typeof output === 'number' && Number.isFinite(output) && output > 0) {
       entry.maxTokens = Math.floor(output);
     }
+    // 图片能力：真机字段是 `is_vl`（vision-language）。**必须是严格布尔** ——
+    // 缺失、`null`、"true" 之类一律当「上游没说」→ 纯文本。
+    //
+    // ⚠️ 这条判据的方向不能反：漏标（少发图片）顶多少发一张图，改上游标记或
+    // `imageModelIds` 就能补回来；错标（对纯文本模型声明 image）会让 DSH 把图片
+    // 原样发出去，由上游在准入之后拒绝 —— 那时错误发生在提示词已经被接受之后，
+    // 用户看到的是「模型不收图片」而不是「插件标错了」，一次额度也已经扣掉。
+    // 上游 14 个 chat 模型里只有 `mmodel`（MiniMax-M2.7）是 `false`，其余 13 个
+    // 都是 `true`。
+    const vl = item.is_vl ?? item.isVL;
+    if (typeof vl === 'boolean') entry.supportsImages = vl;
     out.push(entry);
   }
   return out;

@@ -3,9 +3,12 @@
  *
  * # 为什么必须有静态兜底
  *
- * DSH 会因为 `INVALID_MODEL_CONTEXT` **拒掉整个 provider**，而且判据是
- * **per-provider 的** —— 一行模型没有可用的 `contextWindow`，整个 region 下线
- * （`lib/trae.js` 的注释原文：one bad row takes the whole region offline）。
+ * DSH 对每一行模型都要求一个正整数 `contextWindow`（判据在宿主的
+ * `normalizeModelInfo`：`INVALID_MODEL_CONTEXT`），拿不到窗口的那一行**自己**
+ * resolve 失败。它不会让整个 provider 下线（pi-ai 有
+ * `entry.contextWindow ?? base?.contextWindow ?? request.defaultContextWindow`
+ * 三级兜底，本 provider 也设了 `defaultContextWindow`），但一行坏掉就是一行
+ * 用不了。
  *
  * 于是目录有两条硬规则：
  *
@@ -27,7 +30,9 @@
 
 import {
   QODER_CN_CHAT_BASE,
+  buildQoderFingerprintedModelsRequest,
   buildQoderModelsRequest,
+  classifyQoderRelayFailure,
   parseQoderModelList,
   qoderIdentityOf,
   sendQoderRequest,
@@ -51,30 +56,58 @@ export const QODER_FALLBACK_MAX_TOKENS = 32_000;
  * ⚠️ **id 必须是上游的 `key`**（如 `qmodel_38max`），不是显示名
  * （`Qwen3.8-Max`）—— 前者才是请求参数，拿显示名发请求是 404。
  *
- * 这张表在 2026-10-11 用真机目录**校准过**：此前填的是显示名（旧版按公开资料
- * 猜的），已全部改成真实的 `key`。上下文窗口也按真机的 `max_input_tokens` 填。
+ * 这张表在 2026-10-11 用真机目录**校准过**：`id`、`name`、`contextWindow`
+ * （取 `max_input_tokens`）与 **`supportsImages`（取 `is_vl`）** 全部按真机
+ * `chat` 组填写，14 行一个不少 —— 表比真机少行时，首拉失败的用户会看不到
+ * 那些模型（此前只有 9 行，缺 `qmodel_latest` / `qmodel` / `q37fmodel` /
+ * `gm51model` / `kmodel`）。
+ *
  * 只要上游目录能拉到，就**以拉取结果为准**，本表完全不参与；它只在拉取失败时
  * 让 provider **不至于下线**，而不是假装这些模型一定可用。
  */
 export const QODER_FALLBACK_MODELS = [
-  { id: 'auto', name: 'Auto', contextWindow: 200000 },
-  { id: 'qfmodel', name: 'Qwen3.8-Flash', contextWindow: 180000 },
-  { id: 'qmodel_38max', name: 'Qwen3.8-Max', contextWindow: 180000 },
-  { id: 'dmodel', name: 'DeepSeek-V4-Pro', contextWindow: 96000 },
-  { id: 'dfmodel', name: 'DeepSeek-Flash', contextWindow: 180000 },
-  { id: 'gfmodel', name: 'GLM-5.3-Flash', contextWindow: 1000000 },
-  { id: 'gmodel', name: 'GLM-5.3', contextWindow: 180000 },
-  { id: 'kmodel_latest', name: 'Kimi-K3', contextWindow: 180000 },
-  { id: 'mmodel', name: 'MiniMax-M2.7', contextWindow: 180000 },
+  { id: 'auto', name: 'Auto', contextWindow: 200000, supportsImages: true },
+  { id: 'qmodel_38max', name: 'Qwen3.8-Max', contextWindow: 180000, supportsImages: true },
+  { id: 'qfmodel', name: 'Qwen3.8-Flash', contextWindow: 180000, supportsImages: true },
+  { id: 'qmodel_latest', name: 'Qwen3.7-Max', contextWindow: 180000, supportsImages: true },
+  { id: 'qmodel', name: 'Qwen3.7-Plus', contextWindow: 180000, supportsImages: true },
+  { id: 'q37fmodel', name: 'Qwen3.7-Flash', contextWindow: 180000, supportsImages: true },
+  { id: 'dmodel', name: 'DeepSeek-V4-Pro', contextWindow: 96000, supportsImages: true },
+  { id: 'dfmodel', name: 'DeepSeek-Flash', contextWindow: 180000, supportsImages: true },
+  { id: 'gmodel', name: 'GLM-5.3', contextWindow: 180000, supportsImages: true },
+  { id: 'gfmodel', name: 'GLM-5.3-Flash', contextWindow: 1000000, supportsImages: true },
+  { id: 'gm51model', name: 'GLM-5.2', contextWindow: 180000, supportsImages: true },
+  { id: 'kmodel_latest', name: 'Kimi-K3', contextWindow: 180000, supportsImages: true },
+  { id: 'kmodel', name: 'Kimi-K2.8-Preview', contextWindow: 180000, supportsImages: true },
+  // 唯一的纯文本模型：真机 `is_vl: false`。**不要**顺手改成 true。
+  { id: 'mmodel', name: 'MiniMax-M2.7', contextWindow: 180000, supportsImages: false },
 ];
 
-/** 给条目补上 DSH 要求的必填字段。 */
+/**
+ * 给条目补上 DSH 要求的必填字段，并把能力位归一成**严格布尔**。
+ *
+ * `supportsImages` 归一成布尔（缺失 = 纯文本）而不是保留 `undefined`：目录是
+ * 「这张表能不能收图」的唯一事实来源，下游的 `toPiModel.input` 与 discovery 的
+ * `inputModalities` 都直接读它，留 `undefined` 会让两处各自解释。
+ */
 function withRequirements(entry) {
   return {
     ...entry,
     contextWindow: entry.contextWindow ?? QODER_FALLBACK_CONTEXT_WINDOW,
     maxTokens: entry.maxTokens ?? QODER_FALLBACK_MAX_TOKENS,
+    supportsImages: entry.supportsImages === true,
   };
+}
+
+/**
+ * 模型能否收图 —— **全链路唯一的判据**。
+ *
+ * ⚠️ `toPiModel`（推理链）与 `registerModelDiscovery`（DSH 目录）必须共用它。
+ * Trae 半边就是靠这个函数收敛了同一个坑（`traeInputModalities`）；Qoder 此前
+ * 在两处各写一个字面量 `['text']`，图片能力因此永远无法生效。
+ */
+export function qoderInputModalities(model) {
+  return model?.supportsImages === true ? ['text', 'image'] : ['text'];
 }
 
 /**
@@ -89,11 +122,25 @@ export class QoderCatalog {
   #usingFallback = true;
   #lastError = undefined;
   #lastFetchAtMs = 0;
+  /** 同刻只跑一次上游请求（见 `refresh`）。 */
+  #inflight = undefined;
 
   constructor(options = {}) {
     this.fetcher = options.fetcher;
     this.base = options.base ?? QODER_CN_CHAT_BASE;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    /**
+     * 官方指纹器（可选注入）。
+     *
+     * 可以是**指纹对象**，也可以是返回它的**函数**（`qoder.js` 传的是懒加载
+     * 函数：本机没装 Qoder 时首次解析得到 `undefined`，不该把这件事永久钉死）。
+     *
+     * 有它就走官方同形的目录请求（`Encode=1` + `auth` 签名 + `oo()` 的
+     * `Cosy-*` 头），没有就用早期探测出来的那条（也能取到目录，只是不同形）。
+     */
+    this.fingerprint = options.fingerprint;
+    /** 机器 id 取值器（与登录同一个）。指纹路径需要，手写路径不需要。 */
+    this.machineId = options.machineId;
   }
 
   /** 当前目录。**永不为空** —— 空目录会让 provider 下线。 */
@@ -110,12 +157,77 @@ export class QoderCatalog {
   }
 
   /**
-   * 从上游拉一次目录。
+   * 上次**成功**拉取的时间戳（毫秒），从未成功过则为 `0`。
+   *
+   * 管理页用它显示「目录是刚拉的还是兜底的」。
+   */
+  lastFetchAtMs() {
+    return this.#lastFetchAtMs;
+  }
+
+  /**
+   * 解析指纹器实例。
+   *
+   * 注入的可能是对象，也可能是返回它的函数（懒加载）。解析失败一律当
+   * 「没有指纹器」处理 —— 调用方据此退回手写路径。
+   */
+  async #resolveFingerprint() {
+    const raw = this.fingerprint;
+    if (raw === undefined || raw === null) return undefined;
+    try {
+      const value = typeof raw === 'function' ? await raw() : raw;
+      return value !== undefined && value !== null ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 解析指纹路径要用的 machine id。
+   *
+   * 与登录共用同一个值（`~/.qoder-cn/.auth/machine_id`）。拿不到就返回
+   * `undefined`，此时 `buildQoderFingerprintedModelsRequest` 会返回
+   * `undefined`，调用方自动退回手写路径 —— **不让目录拉取因为机器 id 缺失而失败**。
+   */
+  async #resolveMachineId() {
+    if (typeof this.machineId !== 'function') return undefined;
+    try {
+      const value = await this.machineId();
+      return typeof value === 'string' && value !== '' ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 从上游拉一次目录（同刻只打一次上游）。
+   *
+   * # 为什么要合并并发
+   *
+   * 现在有**三个**触发点会拉目录：启动种子、登录成功后的补拉、管理页的手动
+   * 刷新。它们完全可能撞在同一刻（用户登录完顺手点刷新、或页面加载即触发）。
+   * 不合并的后果不只是浪费一次请求 —— 两个请求返回顺序无法保证，
+   * **先发的慢响应会把后发的快响应用旧数据覆盖掉**。
+   *
+   * 与 WorkBuddy 半边的 `modelRefreshInflight`（`lib/index.js`）同款：后来的
+   * 调用直接复用进行中的 promise。它不抛错（见 `#refreshOnce`），所以复用是安全的。
    *
    * @param {object} credential 号池账号的凭据（需含 `userId` 与 `accessToken`）
    * @returns {Promise<{ok:boolean, models:Array, message?:string}>}
    */
   async refresh(credential) {
+    if (this.#inflight !== undefined) return this.#inflight;
+    const task = this.#refreshOnce(credential).finally(() => {
+      this.#inflight = undefined;
+    });
+    this.#inflight = task;
+    return task;
+  }
+
+  /**
+   * 真正打上游的那一次。**永不抛错** —— 所有失败都回落成 `ok:false`。
+   */
+  async #refreshOnce(credential) {
     const identity = qoderIdentityOf(credential);
     if (identity === undefined) {
       // uid / 令牌拿不到就没法签名。这**不是**目录的问题，回落兜底但不覆盖
@@ -139,7 +251,28 @@ export class QoderCatalog {
         : sendQoderRequest;
 
     try {
-      const request = buildQoderModelsRequest({ identity: identity, base: this.base });
+      // 指纹优先：与官方客户端同形（`Encode=1` + `auth` 签名 + `oo()` 的
+      // `Cosy-*` 头）。指纹器不可用（没装 Qoder）时才退回早期探测那条。
+      //
+      // ⚠️ 指纹链**会抛错**（wasm 提取/实例化失败、版本不匹配等，
+      // `qoder-fingerprint.mjs` 的 `prepareRequest failed`），而 `??` 只兜
+      // `undefined`。不套 try 的话一次指纹故障就把整轮目录拉取带走 —— 而手写
+      // 链是实测可用的（真机 HTTP 200），没有任何理由不用它。
+      const resolvedFingerprint = await this.#resolveFingerprint();
+      const machineId = await this.#resolveMachineId();
+      let request;
+      try {
+        request = buildQoderFingerprintedModelsRequest({
+          fingerprint: resolvedFingerprint,
+          machineId,
+          uid: credential?.userId ?? credential?.uid,
+          securityToken: identity.securityToken,
+          base: this.base,
+        });
+      } catch {
+        request = undefined;
+      }
+      request ??= buildQoderModelsRequest({ identity: identity, base: this.base });
       const { status, text } = await send({
         url: request.url,
         method: request.method,
@@ -153,9 +286,17 @@ export class QoderCatalog {
       }
       const models = parseQoderModelList(text);
       if (models.length === 0) {
-        // 拉到了但解析不出条目 —— 形状变了。**保留旧目录**而不是清空，
-        // 同样是「不要让 provider 下线」。
-        this.#lastError = '目录响应里没有可识别的模型条目（上游形状可能已变）';
+        // 拉到了但解析不出条目。先分清是**谁的**问题：签名/登录态失效（用户能
+        // 自己修：重新登录）与上游形状变了（只能等插件适配）在排查上完全是两个
+        // 方向，混成一句话会把人带偏。上游的业务错误是「HTTP 200 + 信封里
+        // code:101」，只判状态码看不出任何东西。
+        const { kind } = classifyQoderRelayFailure({ status, body: text });
+        this.#lastError =
+          kind === 'signature' || kind === 'session_dead'
+            ? `目录端点拒绝了本次请求（${kind}）：登录态可能已过期，请重新登录 —— ${text.slice(0, 200)}`
+            : kind === 'hard_credit'
+              ? `目录端点报告额度/配额问题（${kind}）—— ${text.slice(0, 200)}`
+              : '目录响应里没有可识别的模型条目（上游形状可能已变）';
         return { ok: false, models: this.current(), message: this.#lastError };
       }
       this.#models = models.map(withRequirements);

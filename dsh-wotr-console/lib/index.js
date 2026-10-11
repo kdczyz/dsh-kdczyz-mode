@@ -42,7 +42,11 @@ import * as wbAuth from './wb-auth.mjs';
 import * as traeAuth from './trae-auth.mjs';
 import * as qoderAuth from './qoder-auth.mjs';
 import { QoderAccountPool, QoderCredentialStore } from './qoder-pool.mjs';
-import { refreshQoderPoolCredits } from './qoder-credits.mjs';
+import { refreshQoderPoolCredits, resolveQoderServingCredits } from './qoder-credits.mjs';
+// 跨 Loader 入口取 Qoder provider 的句柄（目录刷新）。这里只是**读**那个模块的
+// 模块级状态，不改 `lib/qoder.js` 的 `apply` 引用同一性 —— 它作为独立入口注册
+// 的约束不受影响。
+import { currentQoderApi } from './qoder.js';
 
 export const name = 'wotr-console';
 
@@ -367,10 +371,37 @@ export function resetQoderCreditsInFlight() {
   qoderCreditsInFlight = null;
 }
 
+/**
+ * 只给**回退单例**用的 logger（`apply` 时从宿主 ctx 取一次）。
+ *
+ * provider 就绪时 `qoderPool()` 返回的是 provider 的池，那边已经带了
+ * `ctx.logger`（见 lib/qoder.js）—— 这里管的只是「provider 还没就绪」那条
+ * 极早路径：那时池仍要能说出「谁被限流 / 为什么让位」，不能因为少个 logger
+ * 就把唯一的可观测痕迹丢掉。
+ */
+let qoderPoolLogger;
+
 export function qoderPool() {
+  /**
+   * **优先复用 provider 入口那个池。**
+   *
+   * 这里曾经无条件新建自己的池实例，于是同一个进程里有两个池：管理页在 A 上
+   * 切「当前账号」，请求路径（provider 入口）用的是 B —— B 的 `selectedId`
+   * 一直是 undefined，`acquire()` 便按池内顺序取第一个账号。用户看到的现象
+   * 就是「固定了账号，请求还是打到别的号上」。
+   *
+   * `currentQoderApi()` 是本模块与 provider 入口之间**既有的**模块级句柄
+   * （见 lib/qoder.js 顶部的说明），provider 注册成功后才可用。它可用时两边
+   * 就是**同一个对象**：选择、冷却、停用、保留额度、使用时刻全部一份，不存在
+   * 对不上的可能。只有 provider 还没就绪（极早的路由调用、或单测没装 provider）
+   * 时才退回自建实例。
+   */
+  const shared = currentQoderApi()?.pool;
+  if (shared !== undefined && shared !== null) return shared;
   if (qoderPoolSingleton === null) {
     qoderPoolSingleton = new QoderAccountPool({
       store: new QoderCredentialStore({ dshHome: dshHomeDir() }),
+      logger: qoderPoolLogger,
     });
   }
   return qoderPoolSingleton;
@@ -381,7 +412,52 @@ export function resetQoderPool() {
   qoderPoolSingleton = null;
 }
 
-function mountConsoleRoutes(ctx, config) {
+/**
+ * 「Qoder 现在是谁在被调用，它还剩多少积分」。
+ *
+ * 实现整体在 `lib/qoder-credits.mjs` 的 `resolveQoderServingCredits()` 里 ——
+ * 那是纯函数（只依赖池与 fetch），因此能在单测里直接跑；这里只负责宿主侧的
+ * 两件事：拿到单例池、把「显示侧节流窗口」传下去。
+ *
+ * 节流的理由：界面上（账号页 / Qoder 号池页 / 额度胶囊）都是 30 秒一拍，而
+ * Qoder 的额度查询是**真的打上游**。若每拍都真读，「谁在被调用」这个纯显示
+ * 需求就会变成「开着设置面板的窗口稳定地每 30 秒打一次额度接口」。余额是
+ * 分钟级变化的东西，30 秒的精度毫无意义，所以显示侧只在「没读到过」或
+ * 「上次读到已经超过 QODER_DISPLAY_CREDIT_FRESH_MS」时才真读。
+ *
+ * **手动刷新不受它限制**：人点了「刷新积分」走 `refreshQoderPoolCredits`
+ * （不带 sinceMs 即全读），点了就该看到新数字。
+ */
+const QODER_DISPLAY_CREDIT_FRESH_MS = 180000;
+
+/** 从 `?model=` 里取模型 id；缺失或畸形都返回 undefined（按不带模型处理）。 */
+function modelIdOf(req) {
+  try {
+    const raw = new URL(req?.url ?? '/', 'http://127.0.0.1').searchParams.get('model');
+    return typeof raw === 'string' && raw !== '' ? raw : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveQoderServing(pool, options = {}) {
+  return resolveQoderServingCredits(pool, {
+    now: options.now,
+    modelId: options.modelId,
+    freshMs: QODER_DISPLAY_CREDIT_FRESH_MS,
+    fetch,
+  });
+}
+
+/**
+ * 挂载管理页的只读路由。
+ *
+ * 导出它**只为测试**：路由表（尤其 `/qoder/pool` 快照里那几个字段）是这个包
+ * 的对外契约，而先前只有「拿夹具渲染」这一层覆盖 —— 快照少一个字段、或者旧的四条
+ * 写路由被谁加回来，渲染测试全绿也照样发布出去。加回来恰恰是本 bug 的形状
+ * （写的地方与用的地方不是同一个池），所以这里必须有直接对着路由的断言。
+ */
+export function mountConsoleRoutes(ctx, config) {
   if (!ctx || typeof ctx.inject !== 'function') return null;
 
   const disposers = [];
@@ -762,16 +838,38 @@ function mountConsoleRoutes(ctx, config) {
             if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' });
             if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
             try {
+              /**
+               * 出快照前先把设置里的号池配置推给池。
+               *
+               * 用户点「切换到此账号」→ 写设置 → 这里读快照，中间只差一次
+               * `loader/volatile-update` 事件；不等它就先推一次，页面刷新出来
+               * 的「当前使用」就一定是刚点的那一个。
+               */
+              currentQoderApi()?.syncPoolConfig?.();
               const pool = qoderPool();
               await pool.scan();
               const now = Date.now();
+              // `?model=` 只影响「还没有任何请求时」的预告选号（逐模型冷却会
+              // 让不同模型落到不同账号上）；解析失败就按不带模型处理。
+              const modelId = modelIdOf(req);
+              /**
+               * 界面上标「当前使用」的那一个 —— Trae 同款规则：显式选中且还在
+               * 池里就是它，否则是池里第一个账号（见
+               * `QoderAccountPool.effectiveSelectedAccountId`）。
+               *
+               * 刻意**不是**「本次调用」那一个：`serving` 回答的是「这一轮真的
+               * 扣了谁的钱」（可能因为限流让位而变成备用账号），两者都要如实
+               * 展示，混成一个字段就再也说不清「我选的」和「实际用的」。
+               */
+              const effectiveSelected = pool.effectiveSelectedAccountId() ?? null;
               json(res, 200, {
                 ok: true,
-                distribution: pool.currentDistribution(),
                 disabledIds: pool.disabledIdsInOrder(),
                 creditReserves: pool.creditReservesInOrder(),
-                // 「当前账号」：请求固定用它（不可用才回退到轮换）。
+                // 用户**显式**选中的账号（null = 没选过，界面按第一个账号算）。
                 selectedAccountId: pool.selectedAccountId() ?? null,
+                // 实际会显示成「当前使用」的那一个（含上面那条默认值）。
+                effectiveSelectedAccountId: effectiveSelected,
                 lastServedId: pool.lastServedId() ?? null,
                 status: pool.status(),
                 accounts: pool.list().map((account) => ({
@@ -781,7 +879,7 @@ function mountConsoleRoutes(ctx, config) {
                   expiresAtMs: account.credential.expiresAtMs ?? 0,
                   expired: (account.credential.expiresAtMs ?? 0) > 0 && (account.credential.expiresAtMs ?? 0) <= now,
                   disabled: pool.isDisabled(account.id),
-                  selected: pool.selectedAccountId() === account.id,
+                  selected: effectiveSelected === account.id,
                   creditReserve: pool.creditReserveOf(account.id),
                   credits: pool.creditsOf(account.id) ?? null,
                   cooldownUntilMs: account.cooldownUntilMs,
@@ -789,6 +887,9 @@ function mountConsoleRoutes(ctx, config) {
                   modelCooldowns: account.modelCooldowns,
                   rateLimitHits: account.rateLimitHits,
                 })),
+                // 「谁在被调用 + 它还剩多少」—— 界面与额度胶囊**唯一**该读的字段。
+                // 见 resolveQoderServing 的注释（为什么要单独算、为什么要按需读一次）。
+                serving: await resolveQoderServing(pool, { now, modelId }),
               });
             } catch (e) {
               json(res, 500, { ok: false, error: e?.message ?? String(e) });
@@ -797,192 +898,28 @@ function mountConsoleRoutes(ctx, config) {
         }),
       );
 
-      // —— 池配置：分配策略 / 冷却时长 / 停用 / 保留额度 ——
-      disposers.push(
-        webServer.register({
-          kind: 'exact',
-          path: `${BASE}/qoder/pool/config`,
-          handler: async (req, res) => {
-            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
-            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
-            let body;
-            try {
-              const chunks = [];
-              for await (const c of req) chunks.push(c);
-              const raw = Buffer.concat(chunks).toString('utf8').trim();
-              body = raw === '' ? {} : JSON.parse(raw);
-            } catch {
-              return json(res, 400, { error: 'invalid JSON body' });
-            }
-            try {
-              const pool = qoderPool();
-              await pool.scan();
-
-              const patch = {};
-              if (body?.distribution !== undefined) {
-                if (!['priority', 'round-robin', 'balanced'].includes(body.distribution)) {
-                  return json(res, 400, { error: 'distribution 必须是 priority / round-robin / balanced' });
-                }
-                patch.distribution = body.distribution;
-              }
-              if (body?.cooldownMs !== undefined) patch.cooldownMs = Number(body.cooldownMs);
-              if (body?.exhaustCooldownMs !== undefined) patch.exhaustCooldownMs = Number(body.exhaustCooldownMs);
-              if (body?.disabledAccountIds !== undefined) {
-                if (!Array.isArray(body.disabledAccountIds)) {
-                  return json(res, 400, { error: 'disabledAccountIds 必须是数组' });
-                }
-                patch.disabledAccountIds = body.disabledAccountIds.filter((v) => typeof v === 'string');
-              }
-              if (body?.creditReserves !== undefined) {
-                if (typeof body.creditReserves !== 'object' || body.creditReserves === null) {
-                  return json(res, 400, { error: 'creditReserves 必须是对象' });
-                }
-                patch.creditReserves = body.creditReserves;
-              }
-              // 「当前账号」：null / 空字符串 = 清除选择，回到号池轮换。
-              if (body?.selectedAccountId !== undefined) {
-                const value = body.selectedAccountId;
-                if (value !== null && typeof value !== 'string') {
-                  return json(res, 400, { error: 'selectedAccountId 必须是字符串或 null' });
-                }
-                patch.selectedAccountId = value ?? '';
-              }
-              pool.applyConfig(patch);
-              json(res, 200, {
-                ok: true,
-                distribution: pool.currentDistribution(),
-                disabledIds: pool.disabledIdsInOrder(),
-                creditReserves: pool.creditReservesInOrder(),
-                selectedAccountId: pool.selectedAccountId() ?? null,
-              });
-            } catch (e) {
-              json(res, 500, { ok: false, error: e?.message ?? String(e) });
-            }
-          },
-        }),
-      );
-
-      // —— 启停单个账号 ——
-      disposers.push(
-        webServer.register({
-          kind: 'exact',
-          path: `${BASE}/qoder/pool/account`,
-          handler: async (req, res) => {
-            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
-            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
-            let body;
-            try {
-              const chunks = [];
-              for await (const c of req) chunks.push(c);
-              const raw = Buffer.concat(chunks).toString('utf8').trim();
-              body = raw === '' ? {} : JSON.parse(raw);
-            } catch {
-              return json(res, 400, { error: 'invalid JSON body' });
-            }
-            const accountId = typeof body?.accountId === 'string' ? body.accountId : '';
-            if (accountId === '') return json(res, 400, { error: '缺少 accountId' });
-            try {
-              const pool = qoderPool();
-              await pool.scan();
-              if (!pool.list().some((account) => account.id === accountId)) {
-                return json(res, 404, { error: 'account not found' });
-              }
-              const next = new Set(pool.disabledIdsInOrder());
-              if (body?.disabled === true) next.add(accountId);
-              else next.delete(accountId);
-              pool.applyConfig({ disabledAccountIds: [...next] });
-              json(res, 200, { ok: true, disabledIds: [...next] });
-            } catch (e) {
-              json(res, 500, { ok: false, error: e?.message ?? String(e) });
-            }
-          },
-        }),
-      );
-
-      // —— 切换「当前账号」——
+      // —— 池配置（分配策略 / 停用 / 保留额度 / 当前账号）**没有路由** ——
       //
-      // 与启停不同：这是**选谁服务请求**，不是「谁参与池子」。请求固定走
-      // selectedId 指向的账号（它不可用时才回退到轮换，见 qoder-pool.mjs）。
-      // `accountId: null` 或空字符串 = 清除选择，回到号池轮换。
-      disposers.push(
-        webServer.register({
-          kind: 'exact',
-          path: `${BASE}/qoder/pool/select`,
-          handler: async (req, res) => {
-            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
-            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
-            let body;
-            try {
-              const chunks = [];
-              for await (const c of req) chunks.push(c);
-              const raw = Buffer.concat(chunks).toString('utf8').trim();
-              body = raw === '' ? {} : JSON.parse(raw);
-            } catch {
-              return json(res, 400, { error: 'invalid JSON body' });
-            }
-            // null / '' = 清除选择；其余必须是非空字符串。
-            const raw = body?.accountId;
-            if (raw !== null && raw !== undefined && typeof raw !== 'string') {
-              return json(res, 400, { error: 'accountId 必须是字符串或 null' });
-            }
-            const accountId = typeof raw === 'string' ? raw : '';
-            try {
-              const pool = qoderPool();
-              await pool.scan();
-              // 只允许切到池里真实存在的账号：否则一个拼错的 id 会让所有请求
-              // 静默回退到轮换，而 UI 显示「已选中」。
-              if (accountId !== '' && !pool.list().some((account) => account.id === accountId)) {
-                return json(res, 404, { error: 'account not found' });
-              }
-              pool.selectAccount(accountId);
-              json(res, 200, { ok: true, selectedAccountId: pool.selectedAccountId() ?? null });
-            } catch (e) {
-              json(res, 500, { ok: false, error: e?.message ?? String(e) });
-            }
-          },
-        }),
-      );
-
-      // —— 设置单个账号的保留额度 ——
-      disposers.push(
-        webServer.register({
-          kind: 'exact',
-          path: `${BASE}/qoder/pool/credit-reserve`,
-          handler: async (req, res) => {
-            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
-            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
-            let body;
-            try {
-              const chunks = [];
-              for await (const c of req) chunks.push(c);
-              const raw = Buffer.concat(chunks).toString('utf8').trim();
-              body = raw === '' ? {} : JSON.parse(raw);
-            } catch {
-              return json(res, 400, { error: 'invalid JSON body' });
-            }
-            const accountId = typeof body?.accountId === 'string' ? body.accountId : '';
-            if (accountId === '') return json(res, 400, { error: '缺少 accountId' });
-            const value = Number(body?.credits);
-            if (!Number.isFinite(value) || value < 0) {
-              return json(res, 400, { error: 'credits 必须是非负数字' });
-            }
-            try {
-              const pool = qoderPool();
-              await pool.scan();
-              if (!pool.list().some((account) => account.id === accountId)) {
-                return json(res, 404, { error: 'account not found' });
-              }
-              const reserves = { ...pool.creditReservesInOrder() };
-              if (value <= 0) delete reserves[accountId];
-              else reserves[accountId] = Math.floor(value);
-              pool.applyConfig({ creditReserves: reserves });
-              json(res, 200, { ok: true, creditReserves: reserves });
-            } catch (e) {
-              json(res, 500, { ok: false, error: e?.message ?? String(e) });
-            }
-          },
-        }),
-      );
+      // 这四件事以前各有 POST 路由（`/qoder/pool/config`、`/pool/account`、
+      // `/pool/select`、`/pool/credit-reserve`），但它们改的只是**本入口**这个
+      // 池实例：provider 入口是另一个 Loader 入口、另一个池，请求路径根本不读
+      // 这里写下的值。于是「固定了账号，请求还是打到别的号上」——写的地方与用的
+      // 地方不是同一个对象，而且重启即丢。
+      //
+      // 现在与 Trae 半边**同一条链**：
+      //
+      //   设置页写 `dsh-connect-qoder` 的 `selectedAccountId` /
+      //   `disabledAccountIds` / `creditReserves`（见 lib/console.mjs 的
+      //   qoder* 写入助手，读回确认落地）
+      //     → 宿主发 `loader/volatile-update`
+      //     → lib/qoder.js 重新解引用配置并 `pool.applyConfig()`
+      //     → `pool.acquire()` 用新的「当前账号」
+      //
+      // 三件套因此都**持久化**（重启后仍是它），并且只有一个真相来源。
+      // 管理页这边只读不写：上面的 `/qoder/pool` 快照会先调
+      // `syncPoolConfig()` 再出数据，所以点完按钮刷新看到的立刻是新值。
+      // 运行时状态（冷却 / 使用时刻）与池配置的区别照旧：前者不落盘，
+      // 由「重置冷却」那条路由单独清。
 
       // —— 刷新上游积分额度 ——
       //
@@ -1029,6 +966,10 @@ function mountConsoleRoutes(ctx, config) {
                   cooldownUntilMs: account.cooldownUntilMs,
                   cooling: account.cooldownUntilMs > now,
                 })),
+                // 「谁在被调用 + 它还剩多少」。刷新刚写过余额，所以这里不会再
+                // 打上游（新鲜窗口内直接复用），只是把口径统一到同一个字段上，
+                // 免得前端一半读 `pool[].credits`、一半读 `serving.credits`。
+                serving: await resolveQoderServing(pool, { now }),
               });
             } catch (e) {
               json(res, 500, { ok: false, error: e?.message ?? String(e) });
@@ -1084,6 +1025,69 @@ function mountConsoleRoutes(ctx, config) {
               json(res, 200, { ok: true, accounts: pool.list().length });
             } catch (e) {
               json(res, 500, { ok: false, error: e?.message ?? String(e) });
+            }
+          },
+        }),
+      );
+
+      // —— 刷新模型目录 ——
+      //
+      // Qoder 的目录由**另一个 Loader 入口**（`lib/qoder.js`）持有，本文件拿不到
+      // 它的实例，只能通过模块级句柄 `currentQoderApi()` 请求刷新。并发合并放在
+      // 目录自己那侧（`QoderCatalog.refresh` 的 inflight），这里不必再挡一层。
+      disposers.push(
+        webServer.register({
+          kind: 'exact',
+          path: `${BASE}/qoder/models/refresh`,
+          handler: async (req, res) => {
+            // GET  = 只读当前目录（打开面板时用，不触上游、不花额度）
+            // POST = 先刷上游再回读（「从 Qoder 刷新」按钮：拉取即落盘，见
+            //        lib/console.mjs 的 refreshFromUpstream）
+            if (req.method !== 'POST' && req.method !== 'GET') {
+              return json(res, 405, { error: 'method not allowed' });
+            }
+            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
+            const api = currentQoderApi();
+            if (api === undefined) {
+              return json(res, 503, { ok: false, error: 'Qoder provider 尚未就绪，稍后再试' });
+            }
+            /**
+             * 回给前端的目录快照。
+             *
+             * 用 `directory()`（上游原样）而**不是** `models()`（已按勾选过滤）：
+             * 卡片要能列出被取消勾选的模型，否则一取消就从列表里消失、再也勾不
+             * 回来。过滤态由 `enabledModelIds` 自己表达。
+             */
+            const snapshot = () => ({
+              models: api.directory().map((m) => ({
+                id: m.id,
+                name: m.name,
+                contextWindow: m.contextWindow,
+                ...(m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens }),
+                supportsImages: m.supportsImages === true,
+              })),
+              usingFallback: api.catalog.usingFallback(),
+              lastFetchAtMs: api.catalog.lastFetchAtMs(),
+              // 接线自述（`imageAttachments` = 图片链路第二层是否接上）。部署后
+              // 要重启 DSH 才生效，这个字段让「跑的是哪一版代码」直接从回执里
+              // 读出来，不必靠「试发一张图」判断。
+              capabilities: api.capabilities?.() ?? {},
+            });
+            if (req.method === 'GET') return json(res, 200, { ok: true, ...snapshot() });
+            try {
+              const result = await api.refreshCatalog();
+              if (result?.ok !== true) {
+                // 拉取失败**不等于**没有目录：`models` 仍是当前可用的那份（兜底或
+                // 上一次成功的），照旧回给前端，让它能把「失败了但仍能用哪些」画出来。
+                return json(res, 502, {
+                  ok: false,
+                  error: result?.message ?? '刷新模型目录失败',
+                  ...snapshot(),
+                });
+              }
+              json(res, 200, { ok: true, ...snapshot() });
+            } catch (e) {
+              json(res, 502, { ok: false, error: e?.message ?? String(e) });
             }
           },
         }),
@@ -1156,6 +1160,15 @@ function mountConsoleRoutes(ctx, config) {
                 accounts = pool.list().length;
               } catch {
                 /* 扫描失败不影响本次登录结果 */
+              }
+              // 顺带补拉一次模型目录：provider 启动时如果池里还没账号，会一直停在
+              // 静态兜底表上（表只有 14 行真机快照，且没有上游的新增/改名）—— 这就是
+              // 「登录了但模型不对」的来源。放 `await` 是为了让面板紧接着拿到的就是
+              // 真目录；失败与登录无关，只记不报。
+              try {
+                await currentQoderApi()?.refreshCatalog();
+              } catch (e) {
+                ctx.logger?.warn?.('[wotr-console] 登录后刷新 Qoder 模型目录失败', e);
               }
               json(res, 200, { status: 'done', accountId: saved.accountId, accounts });
             } catch (e) {
@@ -1259,6 +1272,10 @@ export function apply(ctx, config = {}) {
   //
   // 按需自注入 webServer，与 vendored 账号池路由同样做法。挂不上就跳过：
   // 管理页会显示"暂无记录"，provider 功能完全不受影响。
+  //
+  // 先给回退单例备好 logger：`/qoder/pool` 可能在 provider 就绪前就被调到，
+  // 那时池仍要能说出「为什么让位」（见 qoderPoolLogger 的说明）。
+  qoderPoolLogger = ctx.logger;
   const pageDispose = mountConsoleRoutes(ctx, config);
 
   ctx.logger?.info?.('[wotr-console] WorkBuddy provider 已注册（管理页在设置面板）');

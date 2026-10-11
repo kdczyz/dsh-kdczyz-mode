@@ -31,16 +31,16 @@
 
 | 入口 | 管什么 |
 |---|---|
-| **WOTR 管理** 管理页 | 六个标签页：两个**配置**（XD Pool / Trae 配置）+ 四个**查看/管理**（账号 / Qoder 号池 / 积分 / 使用记录） |
+| **WOTR 管理** 管理页 | 六个标签页：三个**配置**（XD Pool / Trae 配置 / Qoder 配置）+ 三个**查看/管理**（账号 / 积分 / 使用记录） |
 
 管理页的 tab：
 
 | Tab | 内容 |
 |---|---|
-| XD Pool | WorkBuddy 池配置：模型勾选 + **「从 WorkBuddy 刷新」**（拉实时目录并自动全启用，无需再点保存）、账号分配策略、积分自动化 |
-| Trae 配置 | Trae 配置：供应商开关、账号绑定、模型勾选与测试（含「从 Trae 刷新」）、**号池管理**（分配策略 / 冷却 / 停用 / 保留积分） |
+| XD Pool | WorkBuddy 池配置：**「账号」区**（分配策略、清除冷却、每账号「参与轮换 / 保留额度 / 移出池子」）+ **「模型」区**（「从 WorkBuddy 刷新」拉实时目录并自动全启用、Max 模式、逐模型启用勾选、底部保存条）+ 该页独有的「已移出账号池」「积分自动化」两个分区 |
+| Trae 配置 | Trae 配置：供应商开关（页头）、区域切换、「账号」区（分配策略 / 清除冷却 / 参与轮换 / 保留额度）、「模型」区（勾选与「一键测试启用模型」、**「从 Trae 刷新」**） |
 | 账号 | **三列，同一套模块样式**：WorkBuddy、Trae、Qoder。每列都是「列头（标题+区域切换+操作）」+「4 张统计小卡」+**「账号使用方式」分配策略**+「账号卡（名称+状态标签+KV 明细+操作按钮）」。窄屏按 `auto-fit minmax(300px,1fr)` 自动折行 |
-| Qoder 号池 | 与「账号」页第三列**是同一个面板**（`QoderPoolPanel`）：**浏览器设备流登录逐个入池**、账号列表（状态/令牌到期/冷却/限流次数/**积分余额，每 30 秒自动刷新**）、分配策略、停用、保留额度、移出池子 |
+| Qoder 配置 | **单列**（与另两个配置页同一条骨架）：页头（刷新 / 添加账号）→ 四格统计 → **「账号」区**（浏览器设备流登录逐个入池、状态/令牌到期/冷却/限流次数/**积分余额，每 30 秒自动刷新**、清除冷却、参与轮换、保留额度、移出池子）→ **「模型」区**（`QoderModelsPanel`：逐模型启用勾选 + **「从 Qoder 刷新」**，图片与上下文跟随上游，见下文「Qoder 模型」）。账号区与「账号」页第三列是**同一个面板**（`QoderPoolPanel`） |
 | 积分 | 当前总积分、每账号额度与积分包明细 |
 | 使用记录 | 每日净变化 + 按账号的首次/最新对比（本地落盘数据） |
 
@@ -53,29 +53,41 @@
 > settingsScope 写入路径，路由只负责「取目录」。
 
 > **模型卡上只有「启用」一个勾选。** 原先挂在卡上的「支持图片」（checkbox）与
-> 「限制到 200K」（radio）**已移除** —— 两者看着能勾，其实都改不动结果：
+> 「限制到 200K」（radio / number）**已移除** —— 两者看着能勾，其实都改不动结果：
 > 图片能力在上游是 `supportsImages || imageSet.has(id)`（**或**），目录说不支持
 > 时勾上也不生效；上下文上限则是服务端每次拉目录都会重写 selection，手工写入的
 > `contextBudgets` 会被下一次刷新覆盖。现在两项一律跟随上游：保存时
 > `imageModelIds` 按目录的 `supportsImages` 生成，`contextBudgets` 整段清空
 > （每个模型都用满原生窗口）。
+>
+> 这条对**三家都成立**（WorkBuddy / Trae / Qoder）。Qoder 侧曾经多留了一版
+> 「补勾图片 + 上下文上限」（理由是想给上游漏标的模型留个口子），现已与另两家
+> 对齐删除：`lib/console.mjs` 的 `QoderModelsPanel` 里两个控件都拆掉了，
+> 「从 Qoder 刷新」也改成拉取即落盘。图片与上下文在模型卡上照旧看得见 ——
+> 名字后面的「图片」标记、meta 里的「上下文 180K」（上游 `max_input_tokens`）。
 
-> **两个配置页（XD Pool / Trae 配置）共用同一套前端样式。** 它们由 `console.mjs`
-> 的 `PoolConfigTab` 与 `TraeConfigTab` 各自实现，但页内骨架全部走共用模块
-> （`ColumnHead` / `StatsRow` / `AccountCard` / `ModelCard` / `EmptyBox`）：
+> **三个配置页（XD Pool / Trae 配置 / Qoder 配置）共用同一套骨架与控件。** 它们由
+> `console.mjs` 的 `PoolConfigTab` / `TraeConfigTab` / `QoderPoolPanel` +
+> `QoderModelsPanel` 各自实现，但自上而下是同一个形状：
 >
-> | 位置 | 两页统一的形态 |
+> | 位置 | 三页统一的形态 |
 > |---|---|
-> | 列头 | `ColumnHead`：标题 + 区域切换 + 可选插件 + 右侧操作按钮 |
-> | 统计 | `StatsRow`：自适应网格的统计小卡 |
-> | 账号卡 | `AccountCard`：名称 + 状态标签 + KV 明细 + `extra` 内嵌控件 + 底部操作按钮 |
-> | 模型列表 | `ModelCard`：`wbc-cols` 网格，每模型一个单元（勾选 / 元信息 / 附加控件 / 测试徽章） |
-> | 保存条 | `wbc-model-actions`：列表底部 sticky，勾完最后一项就够得着 |
+> | 页头 | `ColumnHead`：标题 + 区域切换（Qoder 无区域）+ 右侧按钮（都是「刷新」，Qoder 另有「添加账号」）。**按钮文案固定**，状态变化用禁用态与下面的说明行表达 |
+> | 状态行 | 固定顺序：只读提示（`READONLY_NOTE`）→ `读取失败：` → `保存失败：` → 已保存 → 正在读取 → 空态 `EmptyBox` |
+> | 统计 | `StatsRow`：**四格** —— 账号 / 可用 / 冷却中 / 当前使用（每页第三、四格的事实各按本页数据措辞） |
+> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子） |
+> | 「模型」区 | `Section` 收尾 + `wbc-cols` 网格的 `ModelCard`（勾选 / 元信息 / 附加控件 / 测试徽章）+ 底部 sticky 保存条 `wbc-model-actions` |
 >
-> 两页**功能集**不同（Trae 有供应商开关；XD Pool 有「已移出账号池」与「积分自动化」），
-> 这些差异保留 —— 统一的是骨架与控件排布，不是内容。`test/console-render.test.mjs`
-> 结尾有一组「两页样式一致性」断言守着这件事（列头骨架、账号卡骨架、模型网格），
-> 因为它不会让任何功能测试失败，只能显式断言。
+> 三页**功能集**不同（Trae 页头有供应商开关；XD Pool 多「已移出账号池」「积分自动化」两个分区；Qoder 页头有「添加账号」、账号卡多「令牌到期 / 余额」行），
+> 这些差异保留 —— 统一的是骨架、控件与措辞，不是内容。`test/console-render.test.mjs`
+> 里有「三页样式一致性」与「页头按钮文案不随状态变」「号池快照为空时主要按钮仍在」
+> 几组断言守着它，因为这类退化不会让任何功能测试失败，只能显式断言。
+>
+> 补充两点实现细节：`Section`（分区）与 `CardActions`（卡片操作）也是共用模块里的
+> 原语，新增分区/卡片控件请直接用它们，别在页面里另起一套；「Qoder 配置」页的两个
+> 面板用 `flat` 平铺（`.wbc-flat{display:contents}`）直接成为页面 `wbc-body` 的子项，
+> 这样它与另两页的分区间距一致（16px），而同一个 `QoderPoolPanel` 在「账号」页第三列
+> 里仍是自带 `wbc-col` 的一列（12px）。
 >
 > XD Pool 的 vendored 客户端（`vendor/xdpool/lib/client.js`）仍被内联执行，但只用于
 > 两件事：注册它那份 locale 文案，以及解析它原本绑定的 settings 作用域 ——
@@ -223,17 +235,45 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 234 项：真正渲染六个 tab（含账号页三列、Trae 配置页与号池区、Qoder 号池页），空/坏数据与边界值、自动刷新定时器、分配策略读写
+node test/console-render.test.mjs   # 341 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）
+node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
-node test/wb-auth.test.mjs          # 64 项：WorkBuddy 浏览器登录（state 轮询）、凭据落盘
 node test/trae-auth.test.mjs        # 71 项：Trae 浏览器登录（PKCE+回环回调，自动回调）、凭据落盘
+node test/wb-auth.test.mjs          # 64 项：WorkBuddy 浏览器登录（state 轮询）、凭据落盘
+node test/wb-pool-selected.test.mjs # 35 项：WorkBuddy「选中的账号」语义（空串/undefined 都算清除）
+node test/wb-fingerprint.test.mjs   # 38 项：WorkBuddy 指纹头（Message-ID / X-Request-ID 同值）
 node test/qoder-auth.test.mjs       # 70 项：Qoder 设备流登录（PKCE、404 继续轮询、machine_id、逐账号落盘）
-node test/qoder-pool.test.mjs       # 93 项：Qoder 号池（磁盘为唯一真相、分配策略、逐模型冷却、停用、保留额度）
-node test/qoder-credits.test.mjs    # 65 项：Qoder 积分额度（三池解析、查不到≠余额0、负数 clamp、逐账号刷新、保留额度联动）
-node test/qoder-relay.test.mjs      # 98 项：Qoder 反代请求（COSY 签名公式、路径归一、dt- 原样可用、SSE 信封判据、失败回灌号池）
-node test/qoder-catalog.test.mjs    # 66 项：Qoder 模型目录（**失败时目录永不为空**、每条必带 contextWindow、解析不出不倒退）
+node test/qoder-pool.test.mjs       # 156 项：Qoder 号池（磁盘为唯一真相、分配策略、逐模型冷却、停用、保留额度）
+node test/qoder-credits.test.mjs    # 100 项：Qoder 积分额度（三池解析、查不到≠余额0、负数 clamp、逐账号刷新、保留额度联动）
+node test/qoder-relay.test.mjs      # 112 项：Qoder 反代请求（COSY 签名公式、路径归一、dt- 原样可用、SSE 信封判据、失败回灌号池）
+node test/qoder-catalog.test.mjs    # 86 项：Qoder 模型目录（**失败时目录永不为空**、每条必带 contextWindow、解析不出不倒退、`is_vl` → 图片能力、并发刷新只打一次上游）
+node test/qoder-provider.test.mjs   # 52 项：Qoder provider 注册、白名单/图片（与上游取并集）/上下文预算真的生效、discovery 与 toPiModel 判据一致、含图 stream() 必过附件服务（含负向对照）
+node test/qoder-chat.test.mjs       # 28 项：Qoder 推理链（内层业务码、成功判据）
+node test/qoder-payload.test.mjs    # 32 项：Qoder 请求体构造（手写/官方两条路径的 body 与 Content-Length 一致）+ **图片块逐字透传**
+node test/qoder-streaming.test.mjs  # 18 项：Qoder SSE（双层信封还原成裸哨兵）
+node test/qoder-dedup.test.mjs      # 25 项：Qoder 请求去重（18 次调用只打 1 次上游）
+node test/qoder-fingerprint.test.mjs # 50 项：Qoder 官方 wasm 指纹器提取与实例化
 node test/qoder-shim.test.mjs       # 52 项：loopback shim（loopback/bearer/Content-Type 防护、timingSafeEqual 长度坑、SSE 头）
 ```
+
+一次跑完（21 个文件）：`for f in test/*.test.mjs; do node "$f" || break; done`。
+
+> **跑测试前先解决宿主包的解析**。三个 Loader 入口在模块顶层 import 只存在于 DSH
+> 宿主里的包（`@earendil-works/pi-ai`、`@deepseek-ai/dsh-llm-pi-ai`、
+> `@deepseek-ai/schemastery`），而本仓库的 `node_modules` 是空的 —— 凡是要
+> `import` 三个入口的测试（`qoder-*` 全部、`trae-*`、`wb-*`）都会直接
+> `ERR_MODULE_NOT_FOUND`，**不是测试坏了**。两条路二选一：
+>
+> ```sh
+> # A) 没有 profile 时：正常装依赖（会拉 177 MB）
+> pnpm install
+>
+> # B) 有已部署的 profile 时：直接把它的 node_modules 链过来（零下载）
+> ln -sfn ~/.dsh/profiles/desktop/node_modules node_modules
+> ```
+>
+> B 那条正是 `tools/apply-wotr.sh` 第 1 步「源码门禁」跑测试时依赖的环境；
+> 部署本身不需要它（部署后插件在 profile 里，往上就能解析到宿主包）。
 
 后两层各对应一次真实事故，**不能省**：
 
@@ -390,9 +430,10 @@ GET  /v2/plugin/accounts                        → 账号身份（uin/uid/nickn
 时会覆盖 —— 所以同 region 重复登录是**替换当前绑定账号**（与官方客户端一致），
 不是并存多账号。
 
-## Qoder 号池（当前只到「登录入池」）
+## Qoder 号池与模型列
 
-Qoder 半边目前**只实现了 token 获取 + 登录号池**，还没接成 provider（见文首说明）。
+Qoder 半边**已接成 provider**（`qoder`，见文首说明与下文「已完成：池已接成
+`qoder` provider」）；本节讲号池本身，模型列见下一节。
 
 ### 为什么不能像 WorkBuddy / Trae 那样「扫本机登录态」
 
@@ -489,8 +530,119 @@ Qoder 面板（`QoderPoolPanel`）同时渲染在**两个 tab** 下：「账号�
 | `POST …/qoder/pool/remove` | 移出池子（删除插件凭据，**不碰桌面端登录态**） |
 | `POST …/qoder/credits/refresh` | **刷新上游积分额度**（逐账号查 `quota/usage` 并记回池）；前端每 30 秒自动调用，多窗口共享同一发在途请求 |
 | `POST …/qoder/cooldowns/reset` | 重置全部冷却 |
+| `GET  …/qoder/models/refresh` | **只读模型目录快照**（模型 id/名称/上下文窗口/是否支持图片 + 是否在用兜底表 + 上次拉取时间 + `capabilities` 接线自述）。**不触上游、不花额度** —— 面板打开时走这条 |
+| `POST …/qoder/models/refresh` | **拉一次上游目录**（`model/list`）后返回同一份快照。卡片的「从 Qoder 刷新」按钮走这条（拉取即落盘，见下节） |
+
+> **`capabilities.imageAttachments` 是「跑的是哪一版代码」的判据。** 部署
+> （`tools/apply-wotr.sh`）之后**必须整个退出重开 DSH** 才生效，而没接上
+> `resolveAttachments` 时的报错（`pi-ai image input requires the durable
+> attachment service`）与「模型不支持图片」长得几乎一样 —— 只看现象分不清
+> 「代码没加载」还是「代码不对」。所以回执里带了这个自述字段：**为 `true`
+> 才说明当前进程加载的这一版把图片链路第二层接上了**。
+
+`OK` 之外的细节：`POST …/qoder/models/refresh` 拉取失败时返回 **502**，但 body 里
+**仍然带那份快照**（`ok:false` + `message` + 兜底/旧目录）—— 面板因此能同时显示
+「刷新失败了」和「当前可用的是哪些模型」。前端读它用裸 `fetch` 而不是
+`fetchJson`（后者对非 2xx 直接抛错，会把 body 丢掉）。
 
 全部带本机 Origin 校验（非 loopback 返回 `403 origin-not-trusted`）。
+
+### Qoder 模型（「Qoder 配置」页的「模型」区）
+
+这一区与 WorkBuddy / Trae 的模型列**逐条同款**：每张卡只有一个「启用」勾选，图片
+能力与上下文窗口都跟随上游目录，没有任何手动开关。三个字段仍会被写入，但值由
+设置页按**当次目录**推导（`lib/console.mjs` 的 `upstreamFieldsOf`）：
+
+| 设置字段 | 语义 |
+|---|---|
+| `enabledModelIds` | 下发给 DSH 的模型白名单。**空 = 不限制**（目录里所有模型都可用）。⚠️ 这是与 WorkBuddy 侧刻意不同的一处：那边把空列表当成「一个都不用」，于是新装的机器上「一个模型都看不到」；这里按 schema 的自然语义处理，界面上也把这种状态画成「全部已勾选」并提示「保存后将成为固定白名单（不再自动跟随上游新增）」 |
+| `imageModelIds` | 图片能力，由目录里 `supportsImages`（上游 `is_vl`）的 id 组成 —— **随上游刷新而重写，页面上没有勾选框**。provider 侧与上游取并集（`lib/qoder.js` 的 `selectModels`），所以这个字段只会**加**、不会把上游已给的图片能力撤掉 |
+| `contextBudgets` | 逐模型的上下文窗口，**只下调**；页面写入的永远是 `{}` = 每个模型都用满上游原生窗口（`max_input_tokens`，兜底表见 `lib/qoder-catalog.mjs`）。调大无效：上游按档位选窗口，本插件不改请求档位 |
+
+#### 为什么这两个控件被删掉了
+
+它们曾经挂在这里（另两家更早就删了）：
+
+- **补勾图片**：对上游已声明图片的模型它是「撤销」——做不到，只能画成禁用；对
+  上游标漏的模型它是**猜**：猜错了 DSH 会把图片原样发出去、由上游在**准入之后**
+  拒绝，用户看到的是「模型不收图片」，而一次额度已经扣掉了。两种情况下都不是一个
+  诚实的开关。（标错的代价仍然不对称：漏标只是少发图片。）
+- **上下文上限**：`contextBudgets` 只能压低上游窗口，而每次拉目录都会被按上游
+  重写 —— 手填的数字下一次刷新就没了。留着它等于让用户维护一份随时被覆盖的副本。
+
+图片与上下文在模型卡上**照旧看得见**：名字后面有「图片」标记，meta 里有
+「上下文 180K」和「输出 …」。
+
+#### 「从 Qoder 刷新」= 拉取即落盘
+
+与「从 Trae 刷新」「从 WorkBuddy 刷新」同一语义：**一次点击**拉上游目录 → 目录里
+的模型全部启用 → 图片/上下文按上游写回 → 逐字段读回确认，**不需要再点保存**
+（写完才丢草稿，所以不会出现「拉到了新目录、选择还是旧的」这种半截状态）。
+
+⚠️ **拉取失败时一个字段都不写。** `POST …/qoder/models/refresh` 在失败时仍回一份
+兜底目录（`ok:false` + `usingFallback:true`，502），照它写下去等于把内置兜底表
+固化成用户的白名单 —— 而兜底表里的图片标记、模型集合都可能与他的账号实际可用的
+不一样，他看到的提示却只是「刷新失败」。所以面板只显示错误 + 当前目录，不落盘。
+
+手动勾选仍然保留（改完点底部的保存栏）：保存写的是同一条 `writeSelection`
+路径，图片/上下文同样按目录推导，只有 `enabledModelIds` 来自勾选。
+
+#### 面板打的两条路由
+
+打开面板走 **GET**（只读快照，不触上游、不花额度），只有点「从 Qoder 刷新」才走
+**POST**。写反了会变成「一进设置页就替你打一次上游」。
+
+#### 保存写不进去时会发生什么
+
+保存是**逐字段写 + 读回确认**：写完一个字段立刻读回作用域，值没落地就抛错并
+在面板上显示「`qoder`: settings 字段 \"xxx\" 未能写入」。这条护栏是必需的 ——
+宿主的写入闸门可以拒绝写入而 `set()` 仍然正常 resolve，没有读回确认就会表现为
+「提示保存成功、值自己弹回去」。
+
+最典型的成因是**该入口的 schema 里一个 volatile 字段都没有**：
+`dsh-settings` 的 `volatileForm(schema)` 返回 `undefined` 时，`describe()` 会
+**整个跳过这个入口**（而写入闸门抛 `Plugin entry \"<ns>\" has no volatile fields`）。
+症状是：profile 的 `cordis.patch.yml` 里这个入口**永远不出现 `config:` 块**，
+管理页上则显示「设置作用域不可写（本页只读）」。排查步骤：
+
+1. 看 profile 的 `cordis.patch.yml` 里 `dsh-connect-qoder` 有没有 `config:` 块；
+2. 确认 `lib/qoder.js` 的 `Config` 里至少有一个字段是 volatile（`asVolatile(...)`）；
+3. 重启 DSH 让 Loader 重新 describe 一次（`describe()` 的结果是启动期缓存的）。
+
+#### 图片能发出去要**两处**接线（少一处就报「不支持图片」）
+
+模型层声明 `image` 只是第一层。含图消息真正发出去还要过 pi-ai 适配器里的第二层，
+两层的报错长得几乎一样 —— **只测模型层是测不出来的**：
+
+| 层 | 判定处 | 判据 | 缺了会看到 |
+|---|---|---|---|
+| 1 | 准入闸门 `dsh-api-session-controller/src/commands.ts` | `resolveModelInfo().inputModalities` 含 `image` | 横幅「当前模型不支持图片」 |
+| 2 | pi-ai 适配器 `streamWithSnapshot`（`dsh-llm-pi-ai`） | `this.config.resolveAttachments?.()` 拿到宿主的 `attachments` 服务 | `pi-ai image input requires the durable attachment service` |
+
+第 2 层靠 `new PiAiAdapter({ resolveAttachments: () => ctx.get('attachments') })` 接线。
+Trae（`lib/trae.js`）与 WorkBuddy（`vendor/xdpool/lib/index.js`）一直有这一行，
+**Qoder 漏了**（2026-10-11 补上，见 `lib/qoder.js` 的 `createQoderAdapter`）。
+`test/qoder-provider.test.mjs` 的 2c 段用「替身附件服务 + 摘掉接线的负向对照」把它
+钉住：负向对照必须复现上面那句报错，否则说明这段测试根本没走到那层判定。
+
+另外每条 route 的 profile 要带图片预算三件套
+（`maxRequestImageBytes` / `requestImagePixelBudget` / `requestImageMaxBytes`，
+与 Trae 的 `REQUEST_IMAGE_BUDGETS` 逐字同值）：前两个 pi-ai 侧有同值兜底、
+缺了不崩，第三个缺了就是**完全没有总量闸门**。
+
+图片块本身在本插件里逐字透传：pi-ai 会把它转成 OpenAI 形状的
+`{type:'image_url', image_url:{url:'data:image/png;base64,…'}}`，
+`normalizeQoderPayload` 只改 `content:null + tool_calls` 的 assistant 消息，
+两条发包路径（手写 COSY / 官方 wasm 指纹）都带着完整 data URL
+（`test/qoder-payload.test.mjs` 第 7 段逐字断言，含 `Content-Length`）。
+
+#### 为什么图片勾选只能在这个页面做
+
+宿主自己的「模型」设置页（`dsh-client-ui-settings-models`）只认
+`llm-deepseek` / `llm-pi-ai` 两个 layout，其它 namespace 一律判成 `unknown`，
+于是**逐模型的「图片」勾选框和提交按钮都不会出现**。三个插件 provider
+（`llm-workbuddy-xdpool` / `dsh-connect-trae` / `dsh-connect-qoder`）因此都只能
+用本插件自己的管理页改模型配置。
 
 ### 积分额度（上游 `quota/usage`）
 
@@ -676,18 +828,25 @@ CustomBase64Util$CustomBase64.decode0(:202) → decode(:92) → decodeV1(:24)
 所以只要**不声明 `Encode`**，服务端就按明文处理。官方那个编码器（细节在 wasm 里、
 一直拿不到）**不是接通推理的必要条件**。
 
-**② 目录链是 GET + `{}` body，且必须显式带 `Content-Length`。**
+**② 目录链是 GET + 空 body（官方同形），且必须显式带 `Content-Length`。**
 
-| 方法 | 结果 |
+| 方法 / body | 结果 |
 |---|---|
 | POST | `400 Request method 'POST' not supported` |
 | GET，不带 `Content-Length` | `403 / 101 Signature invalid` |
-| GET，带 `Content-Length: 2` | **200，正常返回 14 个模型** |
+| GET，空 body + `Content-Length: 0`（`?Encode=1`） | **200，正常返回 14 个模型（官方形态，现用这条）** |
+| GET，`{}` body + `Content-Length: 2` | 200（早期探测的形态，仍可用，已降级为兼容路径） |
 
 第二行是最阴的坑：GET 发 body 时 Node 的 `http` 走 chunked 而**不自动加**
-`Content-Length`，服务端读到空 body，与签名用的 `{}` 不一致 → 摘要对不上 → 101。
+`Content-Length`，服务端读到空 body，与签名用的 body 不一致 → 摘要对不上 → 101。
 更麻烦的是 Node 的 `fetch` **禁止** GET 带 body（直接抛错），所以这条链只能用
 `node:http` 发（`sendQoderRequest`）。
+
+> **为什么从 `{}` 换成了空 body**：`?Encode=1` 是「请用官方自定义 Base64 解码
+> 请求体」的开关，发一个明文的 `{}` 时服务端会去解它并触发 Java 异常 —— 之前
+> 之所以能过，是因为当时没带 `Encode`。现在查询串与官方 worker 一致
+> （`Encode=1`），body 也必须跟着变成**空串**（`buildQoderModelsRequest` 里显式
+> `body = ''`、`Content-Length: 0`），两边配套才对得上。
 
 **③ 真机目录形状与兜底表完全不同。**
 

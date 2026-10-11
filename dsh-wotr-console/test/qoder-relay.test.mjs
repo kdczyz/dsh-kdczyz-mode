@@ -30,6 +30,7 @@ import {
   classifyQoderRelayFailure,
   isQoderDoneFrame,
   buildQoderModelsRequest,
+  QODER_CN_LEGACY_MODELS_QUERY,
   isQoderSigningReady,
   parseQoderModelList,
   qoderChatUrl,
@@ -290,23 +291,46 @@ ok('not_found 不重试', qoderRelayRetryable('not_found') === false);
   const id = qoderIdentityOf({ accessToken: 'dt-xyz', userId: 'u-1' });
   const req = buildQoderModelsRequest({ identity: id });
   ok('目录 URL 是签名的 /algo/api/v2/model/list', req.url.includes('/algo/api/v2/model/list'));
-  ok('目录 URL 不带 Encode', !req.url.includes('Encode'));
+  /**
+   * 这一组曾经断言「不带 Encode、body 是 `{}`、Content-Length 为 2」。
+   *
+   * 那是**早期探测**的形态：本插件自己试出来的、能拿到目录的一条路。后来在官方
+   * worker（`qoder-worker-runtime.obf.mjs`）里逐字取到了它自己发的那一条：
+   * `/api/v2/model/list?Encode=1`，**body 是空串**。既然能照抄官方，就不该再发
+   * 自己的那套 —— 探测出来的形态只有「能跑通」这一个证据，官方形态还有「上游
+   * 就是这么发的」这一层，且少了被指纹识别的风险。
+   *
+   * 于是断言跟着搬到官方形态上。真正**必须**守住的契约不是 `{}` 这个字面量，
+   * 而是下面这两条（与 body 具体是什么无关）：
+   *   1. GET 也必须显式带 `Content-Length`：Node 的 `http` 在 GET 带 body 时会
+   *      走 chunked 而**不自动加**，服务端读到空 body → 与签名摘要不一致 →
+   *      `403 / 101 Signature invalid`（2026-10-11 真机踩过）；
+   *   2. 签名必须与**实际发出的 body** 逐字一致。body 从 `{}` 换成 `''` 之后，
+   *      签名若还按 `{}` 算，症状同样是 403 且完全看不出原因 —— 所以这里不是
+   *      写死 `''`，而是拿 `req.body` 本身重算一遍。
+   */
+  ok('目录 URL 用官方那条查询串（Encode=1）', req.url.includes('Encode=1'));
   ok('目录走 GET（POST 回 400 method not supported）', req.method === 'GET');
-  // 2026-10-11 真机：GET 发 body 时 Node 默认走 chunked 不加 Content-Length，
-  // 服务端读到空 body → 签名对不上 → 403 / 101 Signature invalid。必须显式带。
-  ok('目录请求带 Content-Length（缺了服务端读不到 {} body）', req.headers['Content-Length'] === 2);
-  ok('目录 GET 也带 body（否则官方回 403）', req.body === '{}');
+  ok(
+    '目录请求显式带 Content-Length（且等于实际 body 长度）',
+    req.headers['Content-Length'] === Buffer.byteLength(req.body),
+    `Content-Length=${req.headers['Content-Length']} body=${JSON.stringify(req.body)}`,
+  );
+  ok('目录 GET 也带 body 字段（官方是空串，不是没有 body）', typeof req.body === 'string');
   ok('目录请求带 Authorization', typeof req.headers.Authorization === 'string');
-  // 关键：签名必须是用同一个 '{}' body 算的（漏了就是 403 且看不出原因）
+  // 关键：签名必须是用**实际发出的那个 body** 算的（漏了/写死旧值就是 403）
   const payloadB64 = req.headers.Authorization.split('.')[1];
   const expected = crypto
     .createHash('md5')
     .update(
-      `${payloadB64}\n${req.headers['Cosy-Key']}\n${req.headers['Cosy-Date']}\n{}\n${qoderSigningPath(req.url)}`,
+      `${payloadB64}\n${req.headers['Cosy-Key']}\n${req.headers['Cosy-Date']}\n${req.body}\n${qoderSigningPath(req.url)}`,
       'utf8',
     )
     .digest('hex');
-  ok('签名是用同一个 {} body 算的（防 403）', req.headers.Authorization.split('.')[2] === expected);
+  ok('签名是用实际发出的 body 算的（防 403）', req.headers.Authorization.split('.')[2] === expected);
+  // 旧形态仍要能显式发出来（保留它是为了让既有调用方与诊断脚本还能复现）
+  const legacy = buildQoderModelsRequest({ identity: id, query: QODER_CN_LEGACY_MODELS_QUERY });
+  ok('旧的探测形态仍可按需显式指定', legacy.url.includes('FetchKeys=llm_model_result'));
 }
 
 /* —— 14) 目录解析（上游形状不保证，多处兼容）—— */

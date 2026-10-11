@@ -74,7 +74,36 @@ export const QODER_QUOTA_USAGE_PATH = '/api/v2/quota/usage';
 /** 控制面请求超时（毫秒）。 */
 export const QODER_REQUEST_TIMEOUT_MS = 30_000;
 
-/** 出站 User-Agent：官方 CLI 实测值，两区同值。 */
+/** 额度链的 `Cosy-Version`（官方 worker 硬编码 `s5="1.1.64"`）。 */
+export const QODER_QUOTA_COSY_VERSION = '1.1.64';
+
+/** 额度链的 `Cosy-ClientType`（官方 `sg()` 默认值 `LZe="5"`）。 */
+export const QODER_QUOTA_CLIENT_TYPE = '5';
+
+/**
+ * 官方 `noe` —— `Cosy-MachineOS` 的值（worker @3060084 逐字）：
+ * `` `${arch}_${platform}` ``，arm64→`aarch64`、x64→`x86_64`。
+ *
+ * 与 `lib/qoder-fingerprint.mjs` 的 `qoderMachineOs()` 同语义。这里内联一份是
+ * 刻意的：本模块是纯控制面（额度/活动），不该因为要加载 33 MB 的 wasm 源码而
+ * 被拖慢 —— 一次额度查询没有理由等 wasm 提取。
+ */
+export function qoderMachineOs(arch = process.arch, platform = process.platform) {
+  const mapped = arch === 'arm64' ? 'aarch64' : arch === 'x64' ? 'x86_64' : arch;
+  return `${mapped}_${platform}`;
+}
+
+/**
+ * 出站 User-Agent。
+ *
+ * ⚠️ **官方额度链不设 UA**：worker 里 `fetchQuotaUsage()` 的 init 只有
+ * `{ Accept, Authorization }`（`qoder-worker-runtime.obf.mjs` @19118094），
+ * 之后经 `oo()` 包装时也**只补 `Cosy-*`，不补 UA**，最终发出去的是 Node fetch
+ * 的默认头（`user-agent: node`）。
+ *
+ * 所以这个常量**不再用于额度请求**；保留它只为兼容既有导出与测试引用。
+ * 想发官方同形的额度请求请用 {@link qoderQuotaHeaders}（它不设 UA）。
+ */
 export const QODER_USER_AGENT = 'qoder/1.1.16';
 
 /**
@@ -223,16 +252,53 @@ export function qoderQuotaHasAddOnOnly(usage) {
 /**
  * 构造额度请求头。
  *
- * 只需 `Authorization` / `Accept` / `User-Agent` —— 实证「该端点只需 Bearer，
- * 不需要模型目录那样的 WASM 签名」。`/sash/` 活动线才需要 `Cosy-ClientType`，
- * quota 线**不带**（加了会怎样未验证，属出站协议值红线）。
+ * # 官方形态（worker @19118094）
+ *
+ * ```js
+ * fetchWithTrace({ operation:"getQuotaUsage", endpointType:"openapi", method:"GET",
+ *   path:"/api/v2/quota/usage", url:`${lu("openapi")}${t}`,
+ *   init:{ method:"GET", headers:{ Accept:"application/json",
+ *                                  Authorization:`Bearer ${A}` } } })
+ * ```
+ *
+ * `fetchWithTrace` 就是 `oo()`，而 `oo()` 对**所有**请求（只要
+ * `injectClientIdentityHeaders !== false`）都补这三个头：
+ *
+ * ```js
+ * pGA(Q,"Cosy-Version", roe);          // "1.1.64"
+ * pGA(Q,"Cosy-ClientType", sg().client_type);  // "5"
+ * pGA(Q,"Cosy-MachineOS", noe);        // "aarch64_darwin"
+ * // Cosy-MachineHostname 只在 requestClass === "infer-sse" 时补 → 额度链不补
+ * ```
+ *
+ * `pGA` 是 **set-if-absent**（大小写不敏感），所以显式传了就不覆盖。
+ *
+ * # 两处此前的误判（都已按官方改正）
+ *
+ * 1. **不发 `User-Agent`**：官方不设它，实际发的是 Node fetch 默认头。
+ *    此前发 `qoder/1.1.16` 是一个官方客户端产生不出来的形态。
+ * 2. **要发 `Cosy-*`**：此前注释判断「quota 线不带 Cosy-ClientType」——
+ *    那只对 `init` 里显式写的头成立，`oo()` 包装层照样补。
+ *
+ * @param {string} bearer 设备令牌
+ * @param {object} [machine] `{ machineToken, machineType }`（native 可用时）
  */
-export function qoderQuotaHeaders(bearer) {
-  return {
+export function qoderQuotaHeaders(bearer, machine) {
+  const headers = {
     Authorization: `Bearer ${bearer}`,
     Accept: 'application/json',
-    'User-Agent': QODER_USER_AGENT,
+    'Cosy-Version': QODER_QUOTA_COSY_VERSION,
+    'Cosy-ClientType': QODER_QUOTA_CLIENT_TYPE,
+    'Cosy-MachineOS': qoderMachineOs(),
   };
+  // 官方 K5A() 的语义：native 拿得到才发这两个（否则整个不发）。
+  if (typeof machine?.machineToken === 'string' && machine.machineToken !== '') {
+    headers['Cosy-MachineToken'] = machine.machineToken;
+    if (typeof machine.machineType === 'string' && machine.machineType !== '') {
+      headers['Cosy-MachineType'] = machine.machineType;
+    }
+  }
+  return headers;
 }
 
 /**
@@ -335,7 +401,15 @@ export async function fetchQoderQuotaUsage(credential, options = {}) {
  * 账号 id 直接取池里的 `account.id`，不另算一份 —— 迭代池自己的账号列表，
  * 保证 `noteCredits` 必然命中（算错 id 会让它因「池里没这个账号」静默不记）。
  *
- * @returns `{ refreshed, failed, accounts: [{ id, ok, total?, message? }] }`
+ * @param options.sinceMs - **新鲜窗口的时长（毫秒）**，可选：「余额是在这个时长
+ *        之内读到的就别再读」。号池会连同「读到的时刻」一起记（`pool.creditsAt()`），
+ *        本函数据此判断。不传 = 每个账号都真读一次（管理页的「刷新」按钮就该是
+ *        这个语义：人点了就该看到新数字）。
+ *
+ *        刻意收「时长」而不是「时间戳」：时间戳要求调用方自己算 `Date.now() - 窗口`，
+ *        看起来一样，但一旦有人传了 `Date.now()`（很自然的手误）就会恒真、
+ *        永远跳过 —— 界面上的余额再也不会更新，而且不报任何错。
+ * @returns `{ refreshed, failed, skipped, accounts: [{ id, ok, total?, message?, skipped? }] }`
  */
 export async function refreshQoderPoolCredits(pool, options = {}) {
   // 迭代**池自己的账号**（而不是重新读盘）：id 与凭据都来自同一份 `scan()`
@@ -344,12 +418,36 @@ export async function refreshQoderPoolCredits(pool, options = {}) {
   const results = [];
   let refreshed = 0;
   let failed = 0;
+  /** 已知余额仍然新鲜而**跳过**的账号数（既不是成功也不是失败）。 */
+  let skipped = 0;
+  const now = Date.now();
+  const sinceMs =
+    typeof options.sinceMs === 'number' && Number.isFinite(options.sinceMs) && options.sinceMs >= 0
+      ? options.sinceMs
+      : undefined;
+  // 只把**网络层**选项透传给单账号读取：`sinceMs` 是本函数的节流参数，
+  // 透传下去会变成无人读取的噪声。
+  const fetchOptions = {
+    ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }),
+    ...(options.openapiBase === undefined ? {} : { openapiBase: options.openapiBase }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
 
   for (const account of accounts) {
-    const result = await fetchQoderQuotaUsage(account.credential, options);
+    // 余额够新就跳过：省一次上游调用，且**不覆盖**已显示的数字。
+    // `now - creditsAt <= sinceMs`：`creditsAt` 为 0（从没读过）时左边是个
+    // 巨大的正数，必然大于窗口 ⇒ 照常真读一次，不会把「从没读过」当成新鲜。
+    if (sinceMs !== undefined && now - pool.creditsAt(account.id) <= sinceMs) {
+      skipped += 1;
+      results.push({ id: account.id, ok: true, skipped: true, total: pool.creditsOf(account.id) });
+      continue;
+    }
+    const result = await fetchQoderQuotaUsage(account.credential, fetchOptions);
     if (result.ok) {
       refreshed += 1;
-      pool.noteCredits(account.id, result.total);
+      // 走 rememberCredits（而不是 noteCredits）才能同时更新「读到的时刻」，
+      // 否则下一次显示侧又会因为「从没读过」而重读一遍。
+      pool.rememberCredits(account.id, result.total);
       results.push({ id: account.id, ok: true, total: result.total, usage: result.usage });
     } else {
       failed += 1;
@@ -357,5 +455,60 @@ export async function refreshQoderPoolCredits(pool, options = {}) {
     }
   }
 
-  return { refreshed, failed, accounts: results };
+  return { refreshed, failed, skipped, accounts: results };
+}
+
+/* ------------------------------------------------------------------ *
+ * 单账号读取（界面用）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 「现在是哪个账号在服务请求、它还剩多少」——**界面唯一该读的那个**。
+ *
+ * ## 三层语义，缺一层就会显示错
+ *
+ * 1. **谁**：`pool.servingAccount()`。优先取「刚刚真的服务过请求的账号」
+ *    （`lastServedId`，含跨实例槽位，所以 provider 池服务过的也算），本进程
+ *    还没服务过任何请求时才回退成 `resolveNext()` 的预告。
+ *    **刻意不用「固定选中的当前账号」**：那只是「下一次用谁」，与刚刚扣了谁
+ *    的额度是两件事（轮换模式下更是完全无关）。
+ * 2. **多少**：已知余额够新（`freshMs`）就直接用，**不打上游**；否则读一次并
+ *    记回号池。界面上是 30 秒一拍，真读一次的开销必须落在这个窗口上。
+ * 3. **读不到**：`credits` 保持 `null`，原因放 `error`。绝不退化成 0 ——
+ *    把「读不到」显示成「没有余额」，用户会去删一个本来健康的账号。
+ *
+ * @param pool - `QoderAccountPool`
+ * @param options.now / options.modelId / options.freshMs / options.fetcher
+ * @returns `{ accountId, label, source, credits, error, atMs }`
+ *   `source`: `'served'`（真被调用过）/ `'next'`（预告下一个）/ `'none'`（池空）
+ */
+export async function resolveQoderServingCredits(pool, options = {}) {
+  const now = typeof options.now === 'number' && Number.isFinite(options.now) ? options.now : Date.now();
+  const freshMs = Number.isFinite(options.freshMs) ? Math.max(0, options.freshMs) : 0;
+  const { account, source } = pool.servingAccount(now, options.modelId);
+  if (account === undefined) {
+    return { accountId: null, label: '', source: 'none', credits: null, error: null, atMs: 0 };
+  }
+
+  let credits = pool.creditsOf(account.id);
+  let error = null;
+  const stale = credits === undefined || now - pool.creditsAt(account.id) > freshMs;
+  if (stale) {
+    try {
+      const result = await fetchQoderQuotaUsage(account.credential, options);
+      if (result.ok) credits = pool.rememberCredits(account.id, result.total, Date.now());
+      else error = result.message ?? '额度查询失败';
+    } catch (e) {
+      error = e?.message ?? String(e);
+    }
+  }
+
+  return {
+    accountId: account.id,
+    label: account.label ?? '',
+    source,
+    credits: typeof credits === 'number' ? credits : null,
+    error,
+    atMs: pool.creditsAt(account.id) || now,
+  };
 }

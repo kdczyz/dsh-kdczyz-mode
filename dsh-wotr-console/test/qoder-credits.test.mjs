@@ -24,7 +24,6 @@ import {
   QODER_QUOTA_POOL_KEYS,
   QODER_QUOTA_POOL_LABELS,
   QODER_QUOTA_USAGE_PATH,
-  QODER_USER_AGENT,
   fetchQoderQuotaUsage,
   parseQoderQuotaPool,
   parseQoderQuotaUsage,
@@ -32,9 +31,15 @@ import {
   qoderQuotaHeaders,
   qoderQuotaRemainingTotal,
   refreshQoderPoolCredits,
+  resolveQoderServingCredits,
   summarizeQoderErrorBody,
 } from '../lib/qoder-credits.mjs';
-import { QoderAccountPool, qoderAccountId } from '../lib/qoder-pool.mjs';
+import {
+  QoderAccountPool,
+  _resetQoderServedSlot,
+  lastServedQoderAccountId,
+  qoderAccountId,
+} from '../lib/qoder-pool.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -134,8 +139,28 @@ console.log('\n== 请求头 ==');
   const headers = qoderQuotaHeaders('dt-xyz');
   ok('Authorization 是 Bearer 令牌', headers.Authorization === 'Bearer dt-xyz');
   ok('Accept 是 JSON', headers.Accept === 'application/json');
-  ok('带官方 UA', headers['User-Agent'] === QODER_USER_AGENT);
-  ok('不带 Cosy-ClientType（那是 /sash/ 活动线的头）', !('Cosy-ClientType' in headers));
+  /**
+   * 这两条曾经断言「带官方 UA」+「不带 Cosy-ClientType」，与实现恰好相反
+   * （实现早就改成官方额度链的形态了，断言没跟上，于是长期是红的）。
+   *
+   * 取证的结论是：官方额度链（`fetchQuotaUsage()` → `oo()` 包装）**不设 UA**，
+   * 只补 `Cosy-*`；`Cosy-ClientType` 是额度链自己的头，与 `/sash/` 活动线**同名
+   * 但不同值**。所以这里按取证结果断言，并顺手钉住「UA 不参与」这个事实 ——
+   * 反过来的断言会逼着实现去发一个官方不发的头，反而被上游按指纹认出来。
+   */
+  ok('额度链不设 User-Agent（照官方：留给 Node fetch 的默认头）', !('User-Agent' in headers));
+  ok('带上 Cosy-ClientType（额度链自己的值，不是 /sash/ 那个）', headers['Cosy-ClientType'] === '5');
+  ok('带上 Cosy-Version', typeof headers['Cosy-Version'] === 'string' && headers['Cosy-Version'] !== '');
+  ok('带上 Cosy-MachineOS（形如 aarch64_darwin）', /^[a-z0-9]+_[a-z0-9]+$/i.test(headers['Cosy-MachineOS'] ?? ''));
+  ok(
+    '没有设备指纹时**整个不发** Cosy-MachineToken / Cosy-MachineType',
+    !('Cosy-MachineToken' in headers) && !('Cosy-MachineType' in headers),
+  );
+  const withMachine = qoderQuotaHeaders('dt-xyz', { machineToken: 'mt', machineType: 'mac' });
+  ok(
+    '有设备指纹时两个一起发（官方 K5A 的语义）',
+    withMachine['Cosy-MachineToken'] === 'mt' && withMachine['Cosy-MachineType'] === 'mac',
+  );
   ok(
     '设备令牌原样当 Bearer，不做换取',
     qoderQuotaHeaders('dt-设备令牌').Authorization === 'Bearer dt-设备令牌',
@@ -342,6 +367,158 @@ console.log('\n== 与号池保留额度的联动 ==');
     '刷新后：低于保留值的账号被挡在轮转外，另一个照常可用',
     pool.available(Date.now()).map((a) => a.id).join(',') === highId,
   );
+}
+
+console.log('\n== 只为显示而读：节流判据 sinceMs ==');
+{
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await pool.scan();
+  const [aliceId, bobId] = pool.list().map((account) => account.id);
+  const fetcher = fakeFetcher(fakeResponse(200, THREE_POOL_BODY));
+
+  const first = await refreshQoderPoolCredits(pool, { fetcher });
+  ok('首轮两个账号都真读了', first.refreshed === 2 && fetcher.calls.length === 2);
+  ok('读到余额会记录「读到的时刻」', pool.creditsAt(aliceId) > 0 && pool.creditsAt(bobId) > 0);
+
+  // 界面上每 30 秒一拍。没有这个判据，一个开着设置面板的窗口就会稳定地
+  // 每 30 秒打一次上游额度接口 —— 这是纯浪费，而且会被上游当成异常流量。
+  // 调用方表达「3 分钟内读到过的别再读」的方式就是传 3 分钟这个**时长**。
+  const throttled = await refreshQoderPoolCredits(pool, { fetcher, sinceMs: 180_000 });
+  ok('sinceMs 过滤掉仍然新鲜的账号', throttled.refreshed === 0 && throttled.skipped === 2, JSON.stringify(throttled));
+  ok('跳过的账号不再发请求', fetcher.calls.length === 2);
+  ok('跳过条目带 skipped 标记', throttled.accounts.every((a) => a.skipped === true && a.ok === true));
+  ok('跳过条目仍带上已知余额（界面要能继续显示）', throttled.accounts.every((a) => a.total === 300));
+
+  // 余额本身不能被跳过动作改掉 —— 跳过只是「不重读」，不是「清空」。
+  ok('跳过不动已有余额', pool.creditsOf(aliceId) === 300 && pool.creditsOf(bobId) === 300);
+
+  // 窗口收得比「刚才那次读」更短 ⇒ 陈旧 ⇒ 必须重新读，否则界面会永远停在
+  // 旧数字上。先睡一拍保证「读到的时刻」确实已经过去了。
+  //
+  // ⚠️ 至少要 10ms：判据是 `now - creditsAt <= sinceMs`，而 `Date.now()` 只有
+  // 毫秒粒度 —— 睡 2ms 时定时器可能在 1.9ms 触发、`Date.now()` 只前进 1ms，
+  // 于是 `1 <= 1` 命中「还算新鲜」，测试随机变红（本套件实测出现过）。
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const stale = await refreshQoderPoolCredits(pool, { fetcher, sinceMs: 1 });
+  ok('超过新鲜窗口后重新读', stale.refreshed === 2 && stale.skipped === 0 && fetcher.calls.length === 4, JSON.stringify(stale));
+
+  // sinceMs 传成一个**时间戳**（`Date.now()`，很自然的手误）时不再恒真：
+  // 把「窗口」当时间戳比会永远跳过，界面上的余额再也不会更新且不报错。
+  const misused = await refreshQoderPoolCredits(pool, { fetcher, sinceMs: Date.now() });
+  ok('sinceMs 被误传成时间戳也只是「窗口极大」，行为可预期', misused.skipped === 2, JSON.stringify(misused));
+}
+
+console.log('\n== resolveQoderServingCredits：显示的就是被调用的那个账号 ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await pool.scan();
+  const alice = pool.list().find((a) => a.label === 'alice');
+  const bob = pool.list().find((a) => a.label === 'bob');
+
+  // 余额**按令牌**区分（100 是 bob 的、300 是 alice 的）：这样断言掉的不是
+  // 「读到了数字」，而是「读到的是这个账号的数字」——把 A 的余额显示成 B 的
+  // 是这类界面上最难发现的错误。
+  const fetcher = fakeFetcher((_n, url, init) =>
+    fakeResponse(200, String(init?.headers?.Authorization ?? '').includes('dt-u2') ? ADDON_BODY : THREE_POOL_BODY),
+  );
+
+  pool.noteServed(bob.id);
+  const served = await resolveQoderServingCredits(pool, { fetcher, freshMs: 180_000 });
+  ok('报告被调用的账号', served.accountId === bob.id, served.accountId);
+  ok('source 标记为 served', served.source === 'served', served.source);
+  ok('带上账号名（界面要显示是谁）', served.label === 'bob', served.label);
+  ok('余额是被调用账号自己的余额', served.credits === 100, String(served.credits));
+  ok('只读了被调用的那个账号（读的是它的令牌）', fetcher.calls.length === 1 && String(fetcher.calls[0].init.headers.Authorization).includes('dt-u2'));
+  ok('顺带记下读到的时刻', typeof served.atMs === 'number' && served.atMs > 0);
+
+  // 新鲜窗口内再问一次：不能再打上游（界面每 30 秒一拍）。
+  const again = await resolveQoderServingCredits(pool, { fetcher, freshMs: 180_000 });
+  ok('新鲜窗口内复用已知余额', again.credits === 100 && fetcher.calls.length === 1, String(fetcher.calls.length));
+  ok('复用时不重复写时钟', again.atMs === served.atMs);
+
+  // 窗口过期必须真的重读（否则用户永远看不到余额下降）。把「现在」往后推
+  // 5 分钟，跨过 3 分钟的窗口；比改系统时间稳。
+  const refreshed = await resolveQoderServingCredits(pool, {
+    fetcher,
+    freshMs: 180_000,
+    now: Date.now() + 5 * 60 * 1000,
+  });
+  ok('窗口过期后重新读', fetcher.calls.length === 2 && refreshed.credits === 100);
+
+  // 没有任何调用记录时如实说「这是下一个会用的」，而不是假装它已经服务过。
+  _resetQoderServedSlot();
+  const virgin = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
+  await virgin.scan();
+  const nextFetcher = fakeFetcher(fakeResponse(200, ADDON_BODY));
+  const preview = await resolveQoderServingCredits(virgin, { fetcher: nextFetcher });
+  ok('没有调用记录时给出预告', preview.source === 'next', preview.source);
+  ok('预告也带账号与余额（用户至少知道下一个会花谁的钱）', preview.accountId !== undefined && preview.credits === 100);
+
+  // 空池：不能编造账号，也不能抛。
+  const emptyPool = new QoderAccountPool({ store: fakeStore([]) });
+  await emptyPool.scan();
+  const emptyFetcher = fakeFetcher(fakeResponse(200, THREE_POOL_BODY));
+  const none = await resolveQoderServingCredits(emptyPool, { fetcher: emptyFetcher });
+  // accountId 刻意是 null 而不是 undefined：这个值会被 JSON 序列化后发给界面，
+  // undefined 会在 JSON 里整个消失，留下的键就查不到了。
+  ok('空池给出 source=none', none.source === 'none' && none.accountId === null, JSON.stringify(none));
+  ok('空池不发请求', emptyFetcher.calls.length === 0);
+  ok('空池余额为 null 而不是 0', none.credits === null, String(none.credits));
+
+  // 共享槽位会过期：否则一个长期闲置的池实例会一直指着一个早就换掉的账号说
+  // 「就是它扣的费」。这里必须用**第二个实例**来复现 —— 第一个实例自己的
+  // `lastUsedAt` 里有记录，只有「从没服务过、只能靠共享槽位」的那个才会踩到。
+  _resetQoderServedSlot();
+  const credentials = [cred('u1', 'alice'), cred('u2', 'bob')];
+  const providerPool = new QoderAccountPool({ store: fakeStore(credentials) });
+  const adminPool = new QoderAccountPool({ store: fakeStore(credentials) });
+  await providerPool.scan();
+  await adminPool.scan();
+  providerPool.noteServed(adminPool.list().find((a) => a.label === 'bob').id, Date.now() - 60 * 60 * 1000);
+  const staleServing = await resolveQoderServingCredits(adminPool, {
+    fetcher: fakeFetcher(fakeResponse(200, ADDON_BODY)),
+  });
+  ok('过期的共享记录不再冒充「本次调用」', staleServing.source !== 'served', staleServing.source);
+
+  // 反向：新鲜的共享记录必须能跨实例读到（这正是这次改动的核心目的）。
+  _resetQoderServedSlot();
+  const provider2 = new QoderAccountPool({ store: fakeStore(credentials) });
+  const admin2 = new QoderAccountPool({ store: fakeStore(credentials) });
+  await provider2.scan();
+  await admin2.scan();
+  const bobId = admin2.list().find((a) => a.label === 'bob').id;
+  provider2.noteServed(bobId);
+  const crossServing = await resolveQoderServingCredits(admin2, {
+    fetcher: fakeFetcher(fakeResponse(200, ADDON_BODY)),
+  });
+  ok('新鲜的共享记录跨实例生效', crossServing.source === 'served' && crossServing.accountId === bobId, crossServing.source);
+
+}
+
+console.log('\n== resolveQoderServingCredits：读失败绝不伪造成 0 ==');
+{
+  _resetQoderServedSlot();
+  const pool = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice')]) });
+  await pool.scan();
+  const [only] = pool.list();
+  pool.noteServed(only.id);
+
+  const failing = await resolveQoderServingCredits(pool, {
+    fetcher: fakeFetcher(new Error('network down')),
+  });
+  // 显示 0 会让用户以为账号空了并把它删掉 —— 这是本文件开头就写明的红线。
+  ok('读失败时 credits 为 null（不是 0）', failing.credits === null, String(failing.credits));
+  ok('读失败时给出原因', typeof failing.error === 'string' && failing.error !== '', failing.error);
+  ok('读失败时仍然知道是谁被调用了', failing.accountId === only.id && failing.source === 'served');
+  ok('读失败不写余额（不污染号池的保留额度判据）', pool.creditsOf(only.id) === undefined);
+  ok('读失败不推进「读到的时刻」（下次还会重试）', pool.creditsAt(only.id) === 0);
+
+  // 上游返回 401：同样是失败，不能当成「余额 0」。
+  const unauthorized = await resolveQoderServingCredits(pool, {
+    fetcher: fakeFetcher(fakeResponse(401, { error: 'invalid token' })),
+  });
+  ok('HTTP 401 也算失败', unauthorized.credits === null && typeof unauthorized.error === 'string', unauthorized.error);
 }
 
 console.log(`\nqoder-credits: ${pass} 通过, ${fail} 失败\n`);
