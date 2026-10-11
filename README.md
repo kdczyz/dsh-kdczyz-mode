@@ -117,6 +117,11 @@ DSH 会在**内存里**把它们路由给每个 profile：`@deepseek-ai/dsh-app-
 `tools/link-host-deps.mjs` 留着给上面这条本机开发部署用 —— 它让脱离 DSH 的裸 Node
 也能解析到宿主内包，本仓库的自检与单测依赖这一点。）
 
+**不装 git、只想把插件文件拿到手**：`backup/` 里有一份**整体快照**
+（`dsh-wotr-console-1.1.0-20261011.tar.gz`，1.1 MB，插件本体 + 安装壳 + 全部说明），
+raw 直链可直接下载，见 [backup/README.md](backup/README.md)。
+它是应急/留档用的死文件，不是第二条维护中的安装路 —— 正常仍走方式一。
+
 ---
 
 ## 一、目录结构
@@ -152,6 +157,9 @@ dsh-workbuddy-mode/
 │   └── originals/                   官方 2.0.48 原文（回滚/对照用）
 ├── docs/
 │   └── upstream-issue-workbuddy.md 给插件作者的问题报告草稿（复现步骤 + 根因 + 修复建议，可直接粘贴）
+├── backup/                        ← **整体快照**：一个压缩包把插件全部文件整合在一起
+│   ├── dsh-wotr-console-1.1.0-20261011.tar.gz  插件本体 + 安装壳 + README（解包即用，含 sha256）
+│   └── README.md                    快照说明：raw 直链下载、怎么校验、里面没有什么
 ├── tools/                         ← 部署与验证工具
 │   ├── apply-wotr.sh                 **合并版：一键部署（含门禁 + 备份 + 清旧包）**
 │   ├── apply.sh                     合并前的 WorkBuddy 单插件部署脚本
