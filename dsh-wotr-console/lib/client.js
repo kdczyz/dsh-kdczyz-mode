@@ -1147,16 +1147,22 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                           /**
                            * 卡片底部一排主操作：**切换账号 + 签到领取**。
                            *
-                           * 另两页的底部是单个「切换到此账号」，这一页多一个逐账号的
-                           * 上游动作（签到领取），所以底部是两个按钮并排 —— 位置与
-                           * 那两页相同（卡片最后一行），切换按钮的措辞也逐字相同。
-                           * 先前这一页的底部只有签到领取，于是「想让请求固定用某张
-                           * 卡」在这页做不到，只能绕到「账号」页去点。
+                           * 与另两页同一条规矩：**当前使用的那张卡不给「切换到此账号」**
+                           * —— 它已经是当前了，再摆一个「切换到此账号」在三页里就是两
+                           * 种样子（Trae / Qoder 的当前卡下面什么都没有）。先前这里给
+                           * 了，理由是「在服务 ≠ 已固定，想钉住它得有地方点」；但那个
+                           * 缺口有别的出口：真要钉住正在服务的那个，「账号」页左列每张
+                           * 卡都有「设为当前」。
                            *
-                           * 当前使用的那张**也给**「切换到此账号」：池子此刻在服务它，
-                           * 但「在服务」不等于「已固定」（轮换模式下每次请求都可能换人），
-                           * 想让它一直用下去只能靠固定。已经固定的那张改成「取消固定」，
-                           * 把路由交回分配策略。
+                           * 已经**固定**的那张仍然是例外：它的按钮是「取消固定」
+                           * （`accountId: null`，把路由交回分配策略）。Trae / Qoder 的池
+                           * 要求池里永远有一个当前账号，所以那两页没有这个按钮；WorkBuddy
+                           * 允许「未固定」，就必须留一条退回轮换的路，否则固定之后在这一
+                           * 页再也退不出来。
+                           *
+                           * 签到领取在每张卡上都在（WorkBuddy 的签到路由是**按账号**的，
+                           * 见 `POST /checkin {accountId}`）—— 这也是它与 Trae 的差别：
+                           * Trae 的签到按区域结算当前绑定账号，所以那边只有当前卡有签到。
                            */
                           extra: [
                             jsx(
@@ -1189,14 +1195,16 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                                         onClick: () => onSelectAccount(null),
                                         children: busy === 'select-none' ? '取消中…' : '取消固定',
                                       })
-                                    : jsx('button', {
-                                        type: 'button',
-                                        className: 'wbc-btn',
-                                        disabled: !writable || busy === `select-${a.id}`,
-                                        onClick: () => onSelectAccount(a.id),
-                                        children:
-                                          busy === `select-${a.id}` ? '切换中…' : '切换到此账号',
-                                      }),
+                                    : isCurrent
+                                      ? null
+                                      : jsx('button', {
+                                          type: 'button',
+                                          className: 'wbc-btn',
+                                          disabled: !writable || busy === `select-${a.id}`,
+                                          onClick: () => onSelectAccount(a.id),
+                                          children:
+                                            busy === `select-${a.id}` ? '切换中…' : '切换到此账号',
+                                        }),
                                   // 冷却中的账号不给签到按钮：签到是一次真实的上游调用，
                                   // 冷静期内点它只会再吃一次拒绝。切换按钮照给 —— 固定
                                   // 一个正在冷却的账号是合法的选择（冷却结束后自然用它）。
@@ -1205,6 +1213,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                                     : jsx('button', {
                                         type: 'button',
                                         className: 'wbc-btn',
+                                        title: checkinNoteOf(a),
                                         disabled: busy === `checkin-${a.id}`,
                                         onClick: () => onCheckin(a.id),
                                         children: busy === `checkin-${a.id}` ? '签到中…' : '签到领取',
@@ -1848,6 +1857,39 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       const current = accounts.find((a) => a.selected === true) ?? null;
 
       /**
+       * 签到：Trae 的签到路由是**按区域**结算当前绑定账号的
+       * （`POST /checkin?region=…`，上游 `checkin_credits/claim`），没有「给某个
+       * 账号签到」的参数 —— 所以这一页也只能在**当前绑定**的那张卡上给按钮，
+       * 与「账号」页右列一致。备用卡上摆一个按不动的签到按钮比不给更糟。
+       */
+      const [checkining, setCheckining] = useState(false);
+      const onCheckin = async () => {
+        setCheckining(true);
+        setWriteError(null);
+        setSavedNote(null);
+        try {
+          await fetchJson(`${TRAE_API}/checkin?region=${region}`, { method: 'POST' });
+          setSavedNote('签到完成');
+          await loadUsage(region);
+        } catch (e) {
+          setWriteError(e?.message ?? String(e));
+        } finally {
+          setCheckining(false);
+        }
+      };
+      // 「今日已签到 / 无签到活动 / 可签到」——与「账号」页右列的列头副标题同一套词。
+      const checkin = usage?.checkin ?? null;
+      const checkinEnabled = checkin?.enabled !== false;
+      const checkinNote =
+        checkin === null
+          ? undefined
+          : checkin.checkedIn === true
+            ? `今日已签到${checkin.credits !== undefined ? ` · 已领 +${fmtNum(checkin.credits)}` : ''}`
+            : checkinEnabled
+              ? '可签到'
+              : '这边没有签到活动';
+
+      /**
        * 号池状态与余额合并成**一张**卡。
        *
        * /usage 一次给两张表：`accounts`（每个登录 + 各自的 credits）与
@@ -2070,14 +2112,26 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             'actions',
                           ),
                         ],
+                        // 当前绑定的那张给「签到」（Trae 的签到按区域结算当前账号，
+                        // 备用卡给了也点不动）；其余卡给「切换到此账号」。
+                        // 两边都只在有 `account` 行（= 真登录着的账号）时给按钮。
                         action:
-                          account === null || account === undefined || isCurrent
+                          account === null || account === undefined
                             ? null
-                            : {
-                                label: switching === id ? '切换中…' : '切换到此账号',
-                                disabled: switching !== null || !writable,
-                                onClick: () => onSwitchAccount(id),
-                              },
+                            : isCurrent
+                              ? signedIn
+                                ? {
+                                    label: checkining ? '签到中…' : '签到',
+                                    title: checkinNote,
+                                    disabled: checkining || usageLoading || !checkinEnabled,
+                                    onClick: onCheckin,
+                                  }
+                                : null
+                              : {
+                                  label: switching === id ? '切换中…' : '切换到此账号',
+                                  disabled: switching !== null || !writable,
+                                  onClick: () => onSwitchAccount(id),
+                                },
                       },
                       id,
                     );
@@ -2348,6 +2402,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             : jsx('button', {
                 type: 'button',
                 className: 'wbc-btn',
+                // 可选的原生 tooltip：按钮上放不下的状态说明（例如「今日已签 · 连签 9 天」
+                // —— 卡片高度有限，这类「解释」挂在悬停里，数字仍照常显示）。
+                ...(typeof action.title === 'string' && action.title !== ''
+                  ? { title: action.title }
+                  : {}),
                 disabled: action.disabled === true,
                 onClick: action.onClick,
                 children: action.label,
@@ -4251,6 +4310,30 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       const text = typeof name === 'string' ? name.trim() : '';
       if (text === '') return '';
       return text.length <= 12 ? text : `${text.slice(0, 8)}…`;
+    }
+
+    /**
+     * 账号卡上「签到领取」按钮的悬停说明：今天签没签、连签几天。
+     *
+     * 这条信息在「账号」页左列是**一行 KV**（签到 / 今日已签 · 连签 9 天），但配置页
+     * 的账号卡只有三行（冷却至 / 通用余额 / 保留额度），再加一行只为一句状态不值当。
+     * 挂在按钮的原生 tooltip 上，既看得见又不占高度。读不到时说明原因（`checkinError`），
+     * 与「没签到」区分开 —— 这和余额那条是同一个原则。
+     *
+     * 返回 undefined 表示「没有可说的」，调用方据此**不写 title 属性**：空 title 会在
+     * 悬停时弹一个空框，比没有还糟。
+     */
+    function checkinNoteOf(row) {
+      const checkin = row?.checkin;
+      if (checkin === undefined || checkin === null) {
+        return typeof row?.checkinError === 'string' && row.checkinError !== ''
+          ? `签到状态读不到：${row.checkinError}`
+          : undefined;
+      }
+      const streak = fmtNum(checkin.streakDays ?? 0);
+      return checkin.todayCheckedIn === true
+        ? `今日已签 · 连签 ${streak} 天`
+        : `未签 · 连签 ${streak} 天`;
     }
 
     /**

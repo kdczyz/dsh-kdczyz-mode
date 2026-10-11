@@ -244,6 +244,42 @@ function textOfNode(node) {
   return out.join(' ');
 }
 
+/**
+ * 按按钮文案收集 `onClick`（渲染顺序），并连带收集按钮本身的 props。
+ *
+ * 「按钮画出来了、点下去打到别处」这类退化不会让任何别的断言变红，只能真点一次，
+ * 所以需要一个能从渲染树里把按钮掏出来的口子。返回的每一项形如
+ * `{ label, onClick, disabled, title, node }`；文案相同的按钮可能不止一个（每张账号
+ * 卡各一颗），顺序就是渲染顺序。
+ */
+function collectButtons(node, label, out = [], depth = 0) {
+  if (node === null || node === undefined || typeof node !== 'object' || depth > 40) return out;
+  if (Array.isArray(node)) {
+    for (const child of node) collectButtons(child, label, out, depth);
+    return out;
+  }
+  if (typeof node.type === 'function') {
+    try {
+      collectButtons(node.type(node.props ?? {}), label, out, depth + 1);
+    } catch {
+      /* 渲染失败的子树跳过：别为了找按钮把整个用例带崩 */
+    }
+    return out;
+  }
+  const children = node.props?.children;
+  if (node.type === 'button' && (label === undefined || children === label)) {
+    out.push({
+      label: children,
+      onClick: node.props?.onClick,
+      disabled: node.props?.disabled === true,
+      title: node.props?.title,
+      node,
+    });
+  }
+  collectButtons(children, label, out, depth + 1);
+  return out;
+}
+
 //#endregion
 
 console.log('管理页渲染层测试\n');
@@ -3138,8 +3174,10 @@ await (async () => {
  * 但想换人只能绕到「账号」页左列去点 —— 同一个池子的两个界面，能力不一样。
  * 补齐之后盯三件事（都属于「按钮画出来了但点下去写错地方」这类不会让别的测试变红的退化）：
  *
- *   1. 每张**未固定**的卡都有「切换到此账号」，**包括正在服务的那张** —— 轮换模式下
- *      「在服务」不等于「已固定」，不让用户把它钉住，下一次请求就可能换人；
+ *   1. 每张**非当前**的卡都有「切换到此账号」，**当前使用的那张没有** —— 与另两页
+ *      同一条规矩（Trae / Qoder 的当前卡下面什么都不摆）。先前这里也给当前卡，理由
+ *      是「在服务 ≠ 已固定，想钉住它得有地方点」；但三页里两张样子就是不一致，而
+ *      真要钉住正在服务的那个，「账号」页左列每张卡都有「设为当前」；
  *   2. 已固定的那张换成「取消固定」（与「账号」页同一个词），固定之后仍有一条
  *      退回号池轮换的路（Trae / Qoder 的池没有这条路，所以那两页不给这个按钮）；
  *   3. 点下去真的 `POST …/accounts/select?region=…`，body 是 `{accountId}`；
@@ -3181,31 +3219,10 @@ await (async () => {
       return Page({});
     };
     /** 按渲染顺序收集按钮文案匹配的 onClick（同一文案可能出现在多张卡上） */
-    const buttonsOf = (tree, label) => {
-      const found = [];
-      (function walk(n, d = 0) {
-        if (d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (type === 'button' && props?.children === label) {
-          found.push(props.onClick);
-          return;
-        }
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略渲染失败的子树 */
-          }
-          return;
-        }
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(tree);
-      return found;
-    };
+    const buttonsOf = (tree, label) =>
+      collectButtons(tree, label)
+        .map((b) => b.onClick)
+        .filter((f) => typeof f === 'function');
 
     // ① 没固定任何账号（真机默认状态：selectedAccountId 为 null，但 u1 正在服务）
     const unpinned = await render({
@@ -3216,24 +3233,29 @@ await (async () => {
     });
     const cardsA = collectByClass(unpinned, 'wbc-card').map((c) => textOfNode(c));
     ok(
-      'XD Pool 没固定账号时两张卡都给「切换到此账号」',
-      cardsA.length === 2 && cardsA.filter((t) => t.includes('切换到此账号')).length === 2,
+      'XD Pool 没固定账号时只有非当前的那张给「切换到此账号」',
+      cardsA.length === 2 && cardsA.filter((t) => t.includes('切换到此账号')).length === 1,
       cardsA.join(' || '),
     );
     ok('XD Pool 没固定账号时不出现「取消固定」', textOfNode(unpinned).includes('取消固定') === false);
     ok(
-      '正在服务的那张卡也能被钉住（「在服务」≠「已固定」）',
-      cardsA[0].includes('切换到此账号') === true,
+      '当前使用的那张卡不给「切换到此账号」（与另两页同一条规矩）',
+      cardsA[0].includes('当前使用') === true && cardsA[0].includes('切换到此账号') === false,
+      cardsA[0],
+    );
+    ok(
+      '当前使用的那张仍留着「签到领取」（签到是按账号的，不该跟着切换按钮一起消失）',
+      cardsA[0].includes('签到领取') === true,
       cardsA[0],
     );
     const switches = buttonsOf(unpinned, '切换到此账号');
     ok(
-      '两张「切换到此账号」都拿得到 onClick',
-      switches.length === 2 && switches.every((f) => typeof f === 'function'),
+      '「切换到此账号」拿得到 onClick',
+      switches.length === 1 && typeof switches[0] === 'function',
       `n=${switches.length}`,
     );
     const beforeCalls = statusCalls;
-    await switches[1](); // 第二张卡 = 备用号 u2
+    await switches[0](); // 唯一那颗在备用号 u2 的卡上
     ok(
       '点「切换到此账号」POST 到 /accounts/select',
       posts.length === 1 && posts[0].url.includes('/plugins/dsh-workbuddy-xdpool/accounts/select'),
@@ -3278,13 +3300,157 @@ await (async () => {
       { 1: 'global' },
     );
     const globalSwitches = buttonsOf(globalPage, '切换到此账号');
-    ok('国际版也渲染出「切换到此账号」', globalSwitches.length === 2, `n=${globalSwitches.length}`);
+    ok('国际版也渲染出「切换到此账号」', globalSwitches.length === 1, `n=${globalSwitches.length}`);
     posts.length = 0;
     await globalSwitches[0]();
     ok(
       '国际版的切换请求带 region=global',
       posts[0]?.url.includes('region=global') === true && posts[0]?.url.includes('region=cn') === false,
       posts[0]?.url,
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+})();
+
+/**
+ * —— 2g-3d) Trae 配置页的「签到」：只长在当前绑定那张卡上，且真打签到路由 ——
+ *
+ * Trae 的签到是**按区域**结算当前绑定账号的（`POST /checkin?region=…` → 上游
+ * `checkin_credits/claim`），没有「给任意账号签到」这个参数。所以这一页与「账号」页
+ * 右列同款：只有当前那张卡给按钮 —— 备用卡上摆一颗点不动的签到按钮比不给更糟。
+ *
+ * 三条断言各守一处退化：
+ *   1. 按钮长错卡（长到备用卡上）—— 点下去会悄悄给**另一个账号**签到；
+ *   2. `region` 写错（最典型的是写死一个区域）—— 签到落到另一个区域，界面看就是
+ *      点了没反应。这里不去点列头切区域（那要按游标手工展开，读到的还是上一拍），
+ *      改为钉住「签到与取数同源」这条不变量；
+ *   3. 签完不重新拉 usage —— 余额与「今日已签到」停在旧值，用户以为没生效。
+ *
+ * 另外钉住按钮上的说明文案：卡片只有三行，「今天签没签」放在原生 `title` 里，
+ * 状态词与「账号」页右列的列头副标题同一套。
+ *
+ * 断言**只在 collectByClass 拿到的卡片子树里找按钮**，不要在整页树上再走一遍：
+ * 配置页每次重新展开都会跑一次 `useEffect`，而那一次 `loadUsage` 会同步把
+ * `usageLoading` 置回 true，于是「再展开一次整页」拿到的是加载态（内容成片为
+ * null），按钮全都不见了 —— 卡片子树已经是展开好的实节点，不受这一拍影响。
+ */
+await (async () => {
+  const prevFetch = globalThis.fetch;
+  const posts = [];
+  const usageUrls = [];
+  let fixture = traeFixture;
+  globalThis.fetch = (url, init) => {
+    const u = String(url);
+    if (u.includes('/plugins/dsh-connect-trae/usage')) {
+      usageUrls.push(u);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(fixture) });
+    }
+    if (u.includes('/plugins/dsh-connect-trae/checkin')) {
+      posts.push({ url: u, method: init?.method });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+    }
+    return new Promise(() => {});
+  };
+  try {
+    /**
+     * 挂载一页，并给出「再渲染一遍」的口子（同一棵 hook store）。
+     *
+     * 换上游回执要**重新挂载**而不是原地改状态再展开：这一层的手工展开会把 hook
+     * 游标错位，第二次展开读到的还是上一拍的 usage。
+     */
+    const mount = async () => {
+      const react = makeReact({ 0: 'trae-config' }, true);
+      const Page = createConsoleSection({
+        react,
+        jsxRuntime: makeJsxRuntime(),
+        embedded: makeEmbedded(),
+      });
+      collectText(Page({}), []);
+      await new Promise((r) => setTimeout(r, 0));
+      return () => {
+        react.reset();
+        return Page({});
+      };
+    };
+    /** 卡片子树里的按钮文案 + 第 i 张卡上的「签到」按钮 */
+    const cardsOf = (tree) => {
+      const nodes = collectByClass(tree, 'wbc-card');
+      return {
+        nodes,
+        texts: nodes.map((c) => textOfNode(c)),
+        labels: nodes.map((c) => collectButtons(c).map((b) => b.label)),
+        checkin: (i) => collectButtons(nodes[i], '签到')[0],
+      };
+    };
+
+    const rerender = await mount();
+    const page = rerender();
+    const cards = cardsOf(page);
+    ok(
+      'Trae 配置页两张卡都渲染出来了',
+      cards.nodes.length === 2,
+      `n=${cards.nodes.length} ${cards.texts.join(' || ')}`,
+    );
+    ok(
+      '「签到」只长在当前绑定那张卡上（cards[0]），备用卡上没有',
+      cards.labels[0]?.includes('签到') === true &&
+        cards.labels[1]?.includes('签到') === false &&
+        cards.labels[1]?.includes('切换到此账号') === true,
+      JSON.stringify(cards.labels),
+    );
+    const checkin = cards.checkin(0);
+    ok('「签到」按钮拿得到 onClick', typeof checkin?.onClick === 'function');
+    ok(
+      '「签到」按钮的说明是「今日已签到 · 已领 +50」（与账号页同款词）',
+      checkin?.title === '今日已签到 · 已领 +50',
+      String(checkin?.title),
+    );
+    ok('「签到」可点（有签到活动且没在忙）', checkin?.disabled === false);
+
+    const beforeUsage = usageUrls.length;
+    posts.length = 0;
+    await checkin.onClick();
+    ok(
+      '点「签到」POST 到 /plugins/dsh-connect-trae/checkin',
+      posts.length === 1 && posts[0].url.includes('/plugins/dsh-connect-trae/checkin'),
+      JSON.stringify(posts),
+    );
+    ok('签到请求用的是 POST', posts[0]?.method === 'POST', String(posts[0]?.method));
+    ok('签到请求带上本区域 region=cn', posts[0]?.url.includes('region=cn') === true, posts[0]?.url);
+    ok(
+      '签到成功后重新拉了 usage',
+      usageUrls.length > beforeUsage && usageUrls.at(-1).includes('region=cn'),
+      `${beforeUsage} → ${usageUrls.length} ${usageUrls.at(-1)}`,
+    );
+
+    // 没有签到活动时：换一份上游回执**重新挂载**再取卡。
+    //
+    // 不在这棵树上改状态再展开：这一层的手工展开会把 hook 游标错位，第二次展开
+    // 拿到的还是上一拍的 usage（先前这里就是这么写的，断言读到的是旧回执而变红）。
+    fixture = { ...traeFixture, checkin: { checkedIn: false, enabled: false } };
+    const off = cardsOf((await mount())()).checkin(0);
+    ok('没有签到活动时按钮仍在（而不是凭空消失）', off !== undefined);
+    ok('没有签到活动时按钮按不动', off?.disabled === true);
+    ok(
+      '没有签到活动时说明写的是「这边没有签到活动」',
+      off?.title === '这边没有签到活动',
+      String(off?.title),
+    );
+
+    // 区域参数：签到用的必须是**同一拍取数用的那个区域**。
+    //
+    // 这里刻意不去点列头切国际版：Trae 配置页自己持有一份 region 状态（不像
+    // XD Pool 页的 region 来自父组件），而这一层的手工展开会按游标错位读 hook 槽 ——
+    // 点完再展开拿到的其实还是上一拍的区域，断言就成了自我安慰（先前那版就是这么
+    // 写的，绿着但什么也没verify）。改成钉住「两边同源」这条不变量：签到打错区域
+    // 最典型的原因就是 URL 里写死了区域，那样取数走 ai、签到走 cn，这条会红。
+    const regionOf = (u) => String(u).match(/region=([a-z]+)/)?.[1];
+    const lastUsage = usageUrls.at(-1);
+    ok(
+      '签到与取数用的是同一个 region（写死区域的退化会在这里红）',
+      regionOf(posts[0]?.url) !== undefined && regionOf(posts[0]?.url) === regionOf(lastUsage),
+      `checkin=${posts[0]?.url} usage=${lastUsage}`,
     );
   } finally {
     globalThis.fetch = prevFetch;
