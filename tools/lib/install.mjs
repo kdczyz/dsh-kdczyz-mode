@@ -110,10 +110,16 @@ export function patchProfilePackageJson(pkg, opts = {}) {
  * 就是用户的设置（Trae 那条实测近 500 行：账号绑定、区域开关、模型勾选）。
  * 删掉等于把用户配置清零。
  *
- * 三个动作：
- *   1. `name: dsh-workbuddy-console` → `name: dsh-wotr-console`
- *   2. `name: dsh-connect-trae`       → `name: dsh-wotr-console/trae`
- *   3. 缺 `dsh-wotr-console/qoder` 时补一条（Qoder 半边没有 profile 条目就根本不会加载）
+ * 两个动作：
+ *   1. 旧包名 → 合并后的包名（`dsh-workbuddy-console` → 本包；
+ *      `dsh-connect-trae` → `dsh-wotr-console/trae`）
+ *   2. 三个 entry 缺哪个补哪个。
+ *
+ * 第 2 步**三个都要补**，不是只补 Qoder：插件自带的 `cordis.patch.yml`
+ * 里那三条 `- insert:` 确实能让条目**存在**，但实测本机 profile 是三个条目
+ * 都写在 profile 层（profile 层同名条目按 id 覆盖插件插入的那条，用户设置
+ * 也就落在这里）。新设备照本机验证过的形态装配，不靠「一半在插件、一半在
+ * profile」这种巧合。
  */
 export function patchCordisYaml(raw, opts = {}) {
   const pluginName = opts.pluginName ?? PLUGIN_NAME;
@@ -137,19 +143,17 @@ export function patchCordisYaml(raw, opts = {}) {
     }
   }
 
-  let addedQoder = false;
-  const qoderEntry = ENTRY_SPECS.find((e) => e.id === 'dsh-connect-qoder');
-  const qoderRe = new RegExp(`^\\s*name:\\s*${pluginName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/qoder\\s*$`, 'm');
-  if (!qoderRe.test(out)) {
-    // 补一条**不带 config** 的最小条目：插件自带的 insert 只保证条目存在，
-    // 而 Qoder 半边没有 profile 条目就根本不会被 Loader 加载。
-    const block = [`- id: ${qoderEntry.id}`, `  name: ${qoderEntry.name}`, ''].join('\n');
-    out = `${out.replace(/\n*$/, '\n')}${block}`;
-    addedQoder = true;
+  const added = [];
+  for (const entry of ENTRY_SPECS) {
+    const re = new RegExp(`^\\s*name:\\s*${entry.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
+    if (re.test(out)) continue;
+    // 补一条最小条目（不带 config）—— config 是用户设置，只有用户/界面写得出来
+    out = `${out.replace(/\n*$/, '\n')}${[`- id: ${entry.id}`, `  name: ${entry.name}`, ''].join('\n')}`;
+    added.push(entry.id);
   }
 
   out = out.replace(/\n{3,}/g, '\n\n');
-  return { yaml: out, changed: out !== before, renamed, addedQoder };
+  return { yaml: out, changed: out !== before, renamed, added, addedQoder: added.includes('dsh-connect-qoder') };
 }
 
 /**
@@ -339,7 +343,7 @@ export function install(options) {
     if (r.changed) {
       if (!dryRun) fs.writeFileSync(patchPath, r.yaml);
       log(`  cordis.patch.yml: 已更新${r.renamed.length > 0 ? `（${r.renamed.join('；')}）` : ''}`
-        + `${r.addedQoder ? '（补上 Qoder 条目）' : ''} —— 条目与 config 一律保留`);
+        + `${r.added.length > 0 ? `（补上条目 ${r.added.join(', ')}）` : ''} —— 条目与 config 一律保留`);
     } else {
       log('  cordis.patch.yml: 无需改动');
     }

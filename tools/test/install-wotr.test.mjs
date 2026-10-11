@@ -222,6 +222,7 @@ console.log('\n—— 2) profile 配置修补 ——');
   ok('**config 逐字保留**（WorkBuddy）', r.yaml.includes('selectedAccountId: abc'));
   ok('**config 逐字保留**（Trae 账号绑定）', r.yaml.includes('cn: user@example.com'));
   ok('补上 Qoder 条目', r.yaml.includes('- id: dsh-connect-qoder\n  name: dsh-wotr-console/qoder'));
+  eq('只补缺的那一条（另两条已存在）', r.added.join(','), 'dsh-connect-qoder');
   eq('改名了两条', r.renamed.length, 2);
 
   const again = patchCordisYaml(r.yaml);
@@ -232,10 +233,18 @@ console.log('\n—— 2) profile 配置修补 ——');
 }
 
 {
-  // 全新 profile：cordis.patch.yml 可能是空的 / 不存在条目
-  const r = patchCordisYaml('');
-  ok('空文件也能补出 Qoder 条目', r.yaml.includes('dsh-connect-qoder'));
-  ok('空文件时没有改名动作', r.renamed.length === 0);
+  // 全新 profile：cordis.patch.yml 可能不存在，或只有一个别的 preset
+  const fresh = patchCordisYaml('- id: preset-standard\n  name: "@deepseek-ai/dsh-preset-standard"\n  config:\n    persona: x\n');
+  eq('空 profile 补齐三个条目', fresh.added.join(','), 'llm-workbuddy-xdpool,dsh-connect-trae,dsh-connect-qoder');
+  for (const spec of [['llm-workbuddy-xdpool', 'dsh-wotr-console'],
+    ['dsh-connect-trae', 'dsh-wotr-console/trae'],
+    ['dsh-connect-qoder', 'dsh-wotr-console/qoder']]) {
+    ok(`三个条目都在（${spec[0]}）`, fresh.yaml.includes(`- id: ${spec[0]}\n  name: ${spec[1]}`));
+  }
+  ok('别人的 preset 原样保留', fresh.yaml.includes('persona: x'));
+  ok('空文件时没有改名动作', fresh.renamed.length === 0);
+  const freshAgain = patchCordisYaml(fresh.yaml);
+  ok('新 profile 二次跑也不改动', freshAgain.changed === false);
 }
 
 {
