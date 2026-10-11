@@ -81,9 +81,30 @@ node /tmp/install-wotr.mjs
 5. 补 `<profile>/cordis.patch.yml` 的三个条目 —— **只改名、只补条目，绝不删除**
    （条目下面的 `config:` 就是你的设置本身）；
 6. 写 `<profile>/.npmrc` 的 `auto-install-peers=false`（见下面的「peer 陷阱」）；
-7. 清掉 pnpm 可能装出来的同名副本，然后跑自检（真的 import 三个入口）。
+7. 清掉 pnpm 可能装出来的同名副本，并修掉管理页失败留下的 git 痕迹（见下）；
+8. 跑自检（真的 import 三个入口）。
 
-装前会备份 profile 配置到 `~/.dsh/wotr-install-backup/<时间戳>/`，装完**必须完全重启 DSH**。
+**它还会顺手修掉「插件管理页装失败」留下的坏状态。** 管理页那条路是 pnpm 解析
+`github:<owner>/<repo>` 规格，**必须要 git** —— 而 Windows 默认没有 git，于是：
+
+```
+pnpm: Command failed with ENOENT: git ls-remote 'https://github.com/kdczyz/dsh-workbuddy-mode.git' HEAD 'HEAD^{}'
+spawn git ENOENT
+```
+
+更麻烦的是**失败的痕迹留在 profile 里**（`package.json` 的依赖还是那个 git 规格），
+所以每次启动 DSH 都会再报一次同样的错。安装器会把三处一起清掉：
+
+| 位置 | 处理 |
+|---|---|
+| `package.json` 各依赖段 / `dsh.profile.bundles` | 指向本仓库的 git/URL 规格 → `link:.dsh-wotr-src` |
+| `pnpm-lock.yaml` | 那次失败写下的 `github:` / codeload 解析记录 → 与清单对齐（实测残留时 `pnpm install --frozen-lockfile` 会以「dependencies are mismatched」失败，那一步**什么都不装**） |
+| `pnpm-workspace.yaml` | 补 `autoInstallPeers: false`，与锁文件里记的设置一致（只在需要时动，健康 profile 一字不改） |
+
+> 所以：**Windows 上不要用插件管理页那条路**（它要 git）。直接跑这个安装器即可，
+> 它会把你之前失败留下的痕迹一并清干净。
+
+装前会备份 profile 配置到 `~/.dsh/wotr-install-backup/<时间戳>/`（5 个配置文件），装完**必须完全重启 DSH**。
 
 安装器是**幂等**的：重复跑只覆盖自己那几处（已装配且版本一致的宿主包直接沿用）。
 之后若又用插件管理页装/卸过别的插件（pnpm 会重建 profile 的 `node_modules`，

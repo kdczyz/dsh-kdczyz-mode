@@ -26,8 +26,25 @@
  * # 为什么不跑 pnpm install
  *
  * profile 的 `node_modules` 由 pnpm 管理，但本插件不在 npm 上（`link:` 或本地目录）。
- * 实测该 profile 的锁文件比 package.json 旧、手工放的实体目录也活得好好的 ——
- * DSH 启动时不会重跑 `pnpm install`。所以安装器自己装配，跑完即可用。
+ * 安装器自己装配，跑完即可用。**装完再跑 `pnpm install` 也验过**（pnpm 11.7.0，
+ * 把这个 profile 原样喂给它）：手工放的 9 个宿主内包软链原样保留，插件那条被
+ * 规范成 `node_modules/dsh-wotr-console -> ../.dsh-wotr-src`，全程不碰 git。
+ *
+ * # 为什么要清「插件管理页留下的 git 依赖」
+ *
+ * 管理页那条路是 pnpm 解析 `github:<owner>/<repo>` 规格 —— 它**必须先调
+ * `git ls-remote`**。Windows 默认没有 git，于是：
+ *
+ *     pnpm: Command failed with ENOENT: git ls-remote '…/dsh-workbuddy-mode.git' …
+ *     spawn git ENOENT
+ *
+ * 而且**失败的痕迹留在 profile 里**：`package.json` 的依赖仍然是那个 git 规格，
+ * 于是每次启动 DSH / 每次装插件都再报一次同样的错。安装器把三处一并清掉：
+ *
+ *   1. 各依赖段里任何指向本仓库的 git/URL 规格 → 换成 `link:.dsh-wotr-src`
+ *   2. `dsh.profile.bundles` 里同样的规格 → 换成包名
+ *   3. `pnpm-lock.yaml` 里同一条解析记录 → 与清单对齐（管理页回滚时会跑
+ *      `pnpm install --frozen-lockfile`，清单与锁文件不一致那一步会直接失败）
  *
  * # 备份与幂等
  *
@@ -84,23 +101,190 @@ export const defaultProfilePath = (home = os.homedir()) => path.join(home, '.dsh
  * `dependencies` 里删旧包名、加新包名；`dsh.profile.bundles` 同样替换。
  * 包名指向 `link:<相对路径>` —— 未发布到 npm，写版本号会解析失败。
  */
+/** 仓库名（出现它的 git/URL 规格就是「指向本仓库」）。 */
+export const REPO_HINT = 'dsh-workbuddy-mode';
+
+/** `github:` / `git+https:` / `git@` / 裸 URL —— 这些都要 git 或直接下载。 */
+const GIT_OR_URL_SPEC = /^(?:git\+|github:|git:|git@|ssh:\/\/|https?:\/\/)/i;
+
+/**
+ * 这个依赖规格是不是「指向本仓库的 git/URL 规格」。
+ *
+ * 判据两条**都要满足**：长得像 git/URL 规格，且提到本仓库名。
+ * 只看前半条会把用户别的 git 依赖也当成我们的（不能动别人的东西）。
+ */
+export function looksLikeRepoSpec(spec, opts = {}) {
+  if (typeof spec !== 'string') return false;
+  const trimmed = spec.trim();
+  if (!GIT_OR_URL_SPEC.test(trimmed)) return false;
+  return trimmed.includes(opts.repoHint ?? REPO_HINT);
+}
+
+const DEP_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+
 export function patchProfilePackageJson(pkg, opts = {}) {
   const pluginName = opts.pluginName ?? PLUGIN_NAME;
   const oldNames = opts.oldNames ?? OLD_PACKAGES;
   const linkTarget = opts.linkTarget ?? '.dsh-wotr-src';
+  const linkSpec = `link:${linkTarget.replace(/\\/g, '/')}`;
   const next = JSON.parse(JSON.stringify(pkg ?? {}));
+
+  // 先清 git 规格：插件名那一处留着重写成 link:，别名（管理页可能按仓库名写）
+  // 直接删掉 —— 清单里不需要两条指向同一个包的依赖。
+  const removedSpecs = [];
+  for (const section of DEP_SECTIONS) {
+    const deps = next[section];
+    if (deps === undefined || deps === null) continue;
+    for (const [key, value] of Object.entries(deps)) {
+      if (!looksLikeRepoSpec(value)) continue;
+      // 只有 `dependencies` 是插件的归属地；dev/optional/peer 段里出现它
+      // 一律删掉 —— 留着会让 profile 在两种解析结果之间摇摆。
+      if (section === 'dependencies' && key === pluginName) { deps[key] = linkSpec; continue; }
+      delete deps[key];
+      removedSpecs.push(`${section}.${key}`);
+    }
+  }
 
   next.dependencies = next.dependencies ?? {};
   for (const old of oldNames) delete next.dependencies[old];
-  next.dependencies[pluginName] = `link:${linkTarget.replace(/\\/g, '/')}`;
+  next.dependencies[pluginName] = linkSpec;
 
-  const bundles = next.dsh?.profile?.bundles ?? [];
+  const rawBundles = next.dsh?.profile?.bundles ?? [];
+  const bundles = [];
+  const fixedBundles = [];
+  for (const entry of rawBundles) {
+    if (looksLikeRepoSpec(entry)) {
+      if (!bundles.includes(pluginName)) bundles.push(pluginName);
+      fixedBundles.push(String(entry));
+      continue;
+    }
+    if (!bundles.includes(entry)) bundles.push(entry);
+  }
   const kept = bundles.filter((b) => !oldNames.includes(b));
   if (!kept.includes(pluginName)) kept.push(pluginName);
   next.dsh = next.dsh ?? {};
   next.dsh.profile = { ...(next.dsh.profile ?? {}), bundles: kept };
 
-  return { pkg: next, removed: oldNames.filter((o) => bundles.includes(o) || pkg?.dependencies?.[o] !== undefined), bundles: kept };
+  return {
+    pkg: next,
+    removed: oldNames.filter((o) => bundles.includes(o) || pkg?.dependencies?.[o] !== undefined),
+    bundles: kept,
+    removedSpecs,
+    fixedBundles,
+  };
+}
+
+/**
+ * 改 profile 的 `pnpm-lock.yaml`：把指向本仓库的 git/URL 解析记录对齐成 `link:`。
+ *
+ * **只在文件里出现本仓库名时才动它** —— 别的锁文件内容（用户其它插件的解析
+ * 记录）逐字保留。要清的是三处：
+ *
+ *   1. `importers` → `.` → 依赖块：`specifier:`/`version:` 都换成 `link:<目标>`
+ *   2. `importers` 下**别的** importer 里的同名依赖：整块删掉（相对 `link:`
+ *      只对 profile 根成立，装到别处就是错的）
+ *   3. `packages` / `snapshots` 里以 `<包名>@<codeload URL>` 为键的条目：整块删掉
+ *      （那是 pnpm 从 tar.gz 装出来的记录，与 `link:` 不再对应）
+ *
+ * 文本级改写而不是引 YAML 依赖：安装器要保持零依赖，且这个文件是 pnpm 生成的
+ * 固定形状，按缩进处理足够稳。
+ */
+export function patchProfileLockfile(raw, opts = {}) {
+  const pluginName = opts.pluginName ?? PLUGIN_NAME;
+  const linkTarget = opts.linkTarget ?? '.dsh-wotr-src';
+  const linkSpec = `link:${linkTarget.replace(/\\/g, '/')}`;
+  const hint = opts.repoHint ?? REPO_HINT;
+  const before = raw ?? '';
+  if (!before.includes(hint)) return { text: before, changed: false, rewrote: [], removed: [] };
+
+  const lines = before.split('\n');
+  const out = [];
+  const rewrote = [];
+  const removed = [];
+  let section = '';
+  let importer = '';
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    const sec = /^([A-Za-z][A-Za-z0-9_-]*):/.exec(line);
+    if (sec !== null) { section = sec[1]; importer = ''; out.push(line); i += 1; continue; }
+
+    if (section === 'importers' && /^ {2}\S.*:\s*$/.test(line)) { importer = line.trim().replace(/:$/, ''); out.push(line); i += 1; continue; }
+
+    // importers → <importer> → dependencies → 依赖块（键缩进 6，子项缩进 8）
+    if (section === 'importers' && /^ {6}[^\s:][^:]*:\s*$/.test(line)) {
+      const name = line.trim().replace(/:$/, '');
+      let j = i + 1;
+      const block = [];
+      while (j < lines.length && /^ {8}\S/.test(lines[j])) { block.push(lines[j]); j += 1; }
+      const body = block.join('\n');
+      const mentionsRepo = body.includes(hint);
+      if (name === pluginName && (mentionsRepo || !body.includes(linkSpec))) {
+        out.push(`      ${pluginName}:`);
+        out.push(`        specifier: ${linkSpec}`);
+        out.push(`        version: ${linkSpec}`);
+        const where = importer === '' || importer === '.' ? '' : `${importer}.`;
+        rewrote.push(`${where}${pluginName}`);
+        i = j; continue;
+      }
+      if (name !== pluginName && mentionsRepo) {
+        removed.push(`importers.${importer === '' ? '.' : importer}.${name}`);
+        i = j; continue;
+      }
+      out.push(line, ...block); i = j; continue;
+    }
+
+    // packages / snapshots 里指向本仓库的条目（键缩进 2，内容缩进 4）
+    if ((section === 'packages' || section === 'snapshots') && line.includes(hint)
+        && /^ {2}\S.*:(?:[ \t].*)?$/.test(line)) {
+      let j = i + 1;
+      // 内容缩进可能是 4（`resolution:`）也可能是 6（`peerDependencies:` 的子项），
+      // 所以按「>= 4 个空格」吃掉整块，遇到空行或回到缩进 2 的键为止。
+      while (j < lines.length && /^ {4,}\S/.test(lines[j])) j += 1;
+      removed.push(`${section}.${line.trim().replace(/(?::[ \t].*)?$/, '')}`);
+      i = j; continue;
+    }
+
+    out.push(line); i += 1;
+  }
+
+  // 删空了的 packages / snapshots 节连节头一起去掉（`packages:` 后面什么都没有
+  // 在 YAML 里是 null，pnpm 读它会当成空对象从而报解析错）。
+  const final = [];
+  const isHeader = (l) => /^([A-Za-z][A-Za-z0-9_-]*):\s*$/.test(l);
+  for (let k = 0; k < out.length; k += 1) {
+    const m = /^([A-Za-z][A-Za-z0-9_-]*):\s*$/.exec(out[k]);
+    if (m !== null && (m[1] === 'packages' || m[1] === 'snapshots')) {
+      let j = k + 1;
+      let hasEntry = false;
+      while (j < out.length && !isHeader(out[j])) { if (/^ {2}\S/.test(out[j])) { hasEntry = true; break; } j += 1; }
+      if (!hasEntry) {
+        let j2 = k + 1;
+        while (j2 < out.length && out[j2].trim() === '') j2 += 1;
+        removed.push(`${m[1]}（整节已空）`);
+        k = j2 - 1;
+        continue;
+      }
+    }
+    final.push(out[k]);
+  }
+
+  // 可选：补上 `settings:` 块。锁文件里那句 `autoInstallPeers: false` 是 pnpm
+  // 写在文件里的约定 —— 之后每次 `--frozen-lockfile` 都会拿当前配置跟它比，
+  // 不一致就以 ERR_PNPM_LOCKFILE_CONFIG_MISMATCH 失败。补上它，再由
+  // patchProfileWorkspace 把同样的值写进 pnpm-workspace.yaml，两边才自洽。
+  if (opts.ensureSettings === true && !/^settings:/m.test(final.join('\n'))) {
+    const at = final.findIndex((l) => /^lockfileVersion:/.test(l));
+    final.splice(at < 0 ? 0 : at + 1, 0, '',
+      'settings:', '  autoInstallPeers: false', '  excludeLinksFromLockfile: false');
+    removed.push('settings（补上 autoInstallPeers: false）');
+  }
+
+  // 连续空行压成一个，去掉尾部空行
+  const text = final.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s*$/, '') + '\n';
+  return { text, changed: rewrote.length > 0 || removed.length > 0, rewrote, removed };
 }
 
 /**
@@ -209,6 +393,37 @@ function assertInside(root, target) {
   return target;
 }
 
+/**
+ * 让 `pnpm-workspace.yaml` 与锁文件里记的设置一致。
+ *
+ * 实测（pnpm 11.7.0）：profile 里光有 `.npmrc` 的 `auto-install-peers=false` 不够 ——
+ * `pnpm install --frozen-lockfile` 仍会以
+ *
+ *     ERR_PNPM_LOCKFILE_CONFIG_MISMATCH: The current "settings.autoInstallPeers"
+ *     configuration doesn't match the value found in the lockfile
+ *
+ * 失败，而这一步**什么都不装**（插件就没了）。把同一个值写进
+ * `pnpm-workspace.yaml` 才作数 —— DSH 自己建的 profile 本来就是这么写的
+ * （`packages: ['.']` / `nodeLinker: hoisted` / `autoInstallPeers: false`），
+ * 所以这里通常是「一字不改」，只在新设备上 profile 被人动过时才补。
+ */
+export function patchProfileWorkspace(raw, opts = {}) {
+  const want = opts.autoInstallPeersOff !== false;
+  const before = raw ?? '';
+  if (!want) return { text: before, changed: false };
+  if (before.trim() === '') {
+    return { text: 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n', changed: true, created: true };
+  }
+  const lines = before.split('\n');
+  const at = lines.findIndex((l) => /^autoInstallPeers\s*:/.test(l));
+  if (at >= 0) {
+    if (/^autoInstallPeers\s*:\s*false\s*$/.test(lines[at])) return { text: before, changed: false };
+    lines[at] = 'autoInstallPeers: false';
+    return { text: lines.join('\n'), changed: true };
+  }
+  return { text: `${before.replace(/\s*$/, '')}\n\nautoInstallPeers: false\n`, changed: true };
+}
+
 /* ------------------------------------------------------------------ *
  * 主流程
  * ------------------------------------------------------------------ */
@@ -270,7 +485,7 @@ export function install(options) {
     log(`[dry-run] 将备份 profile 配置到 ${backupRoot}`);
   } else {
     fs.mkdirSync(backupRoot, { recursive: true });
-    for (const f of ['package.json', 'cordis.patch.yml', 'pnpm-lock.yaml', '.npmrc']) {
+    for (const f of ['package.json', 'cordis.patch.yml', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
       const from = path.join(profile, f);
       if (fs.existsSync(from)) fs.copyFileSync(from, path.join(backupRoot, f));
     }
@@ -335,6 +550,40 @@ export function install(options) {
   if (!dryRun) fs.writeFileSync(profilePkgPath, `${JSON.stringify(patched.pkg, undefined, 2)}\n`);
   log(`  dependencies: ${PLUGIN_NAME} → link:.dsh-wotr-src`);
   log(`  bundles:      ${patched.bundles.join(', ')}`);
+  if (patched.removedSpecs.length > 0) {
+    log(`  已清掉指向本仓库的 git 依赖：${patched.removedSpecs.join(', ')}（没装 git 的机器上它们必报 git ls-remote）`);
+  }
+  if (patched.fixedBundles.length > 0) {
+    log(`  已把 bundles 里的 git 规格换成包名：${patched.fixedBundles.join(', ')}`);
+  }
+
+  // 同一个失败还会在 pnpm-lock.yaml 里留下一条解析记录（`github:…` → codeload
+  // tar.gz）。清单已经改成 link:，锁文件不同步的话，管理页回滚时的
+  // `pnpm install --frozen-lockfile` 会直接失败。
+  const lockPath = path.join(profile, 'pnpm-lock.yaml');
+  if (fs.existsSync(lockPath)) {
+    const lockBefore = fs.readFileSync(lockPath, 'utf8');
+    const lock = patchProfileLockfile(lockBefore, { linkTarget: '.dsh-wotr-src', ensureSettings: true });
+    if (lock.changed) {
+      if (!dryRun) fs.writeFileSync(lockPath, lock.text);
+      log(`  pnpm-lock.yaml: 与清单对齐`
+        + `${lock.rewrote.length > 0 ? `（改为 link: ${lock.rewrote.join(', ')}）` : ''}`
+        + `${lock.removed.length > 0 ? `（处理 ${lock.removed.length} 处残留记录）` : ''}`);
+      summary.steps.push('清理 pnpm-lock.yaml 里的 git 残留');
+
+      // 锁文件里的 `settings.autoInstallPeers` 要能在 pnpm-workspace.yaml 里找到
+      // 同一个值，否则 `--frozen-lockfile`（插件管理页的修复路径）会以
+      // ERR_PNPM_LOCKFILE_CONFIG_MISMATCH 失败并且什么都不装。
+      const wsPath = path.join(profile, 'pnpm-workspace.yaml');
+      const ws = patchProfileWorkspace(fs.existsSync(wsPath) ? fs.readFileSync(wsPath, 'utf8') : '');
+      if (ws.changed) {
+        if (!dryRun) fs.writeFileSync(wsPath, ws.text);
+        const where = ws.created === true ? '写出' : '补上';
+        log(`  pnpm-workspace.yaml: ${where} autoInstallPeers: false（与锁文件一致）`);
+        summary.steps.push('对齐 pnpm-workspace.yaml 的 autoInstallPeers');
+      }
+    }
+  }
 
   /* —— 7) profile/cordis.patch.yml —— */
   const patchPath = path.join(profile, 'cordis.patch.yml');

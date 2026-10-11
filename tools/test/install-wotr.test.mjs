@@ -27,6 +27,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
@@ -36,10 +37,13 @@ import {
   PLUGIN_NAME,
   copyTree,
   install,
+  looksLikeRepoSpec,
   mergeNpmrc,
   neutralizePnpmCopies,
   patchCordisYaml,
+  patchProfileLockfile,
   patchProfilePackageJson,
+  patchProfileWorkspace,
 } from '../lib/install.mjs';
 import { PLUGIN_TOP_LEVEL, discoverHost, isPlatformNoise, linkTopLevel } from '../lib/host-deps.mjs';
 
@@ -50,6 +54,23 @@ import { download, describe as describeFetchError, parseArgs, tarballUrl } from 
 let pass = 0;
 let fail = 0;
 let skip = 0;
+
+/**
+ * 找本机的 pnpm（DSH 运行时自带的那份）。
+ *
+ * 只给「用真 pnpm 交叉验证」那一节用：本机没有就跳过 —— 纯净开发机上不该因此变红。
+ */
+function findPnpm() {
+  const candidates = [];
+  if (typeof process.env.DSH_PNPM === 'string' && process.env.DSH_PNPM !== '') candidates.push(process.env.DSH_PNPM);
+  const root = path.join(os.homedir(), '.dsh', 'dsh-runtimes');
+  if (fs.existsSync(root)) {
+    for (const entry of fs.readdirSync(root)) {
+      candidates.push(path.join(root, entry, 'dependencies', 'pnpm', 'bin', 'pnpm.cjs'));
+    }
+  }
+  return candidates.find((c) => fs.existsSync(c));
+}
 const ok = (name, cond, extra) => {
   if (cond) {
     pass += 1;
@@ -249,6 +270,129 @@ console.log('\n—— 2) profile 配置修补 ——');
   ok('空文件时没有改名动作', fresh.renamed.length === 0);
   const freshAgain = patchCordisYaml(fresh.yaml);
   ok('新 profile 二次跑也不改动', freshAgain.changed === false);
+}
+
+{
+  /* 插件管理页那条路留下的是 `github:<owner>/<repo>` 规格 —— 没装 git 的机器
+   * （Windows 默认没有）上 pnpm 解析它会直接失败：
+   *   pnpm: Command failed with ENOENT: git ls-remote '…/dsh-workbuddy-mode.git' …
+   * 而失败的痕迹留在清单里，于是每次启动都再报一次。安装器要把它清干净。 */
+  const dirty = {
+    name: 'desktop',
+    dependencies: {
+      'dsh-wotr-console': 'github:kdczyz/dsh-workbuddy-mode',
+      'dsh-workbuddy-mode': 'github:kdczyz/dsh-workbuddy-mode',
+      'left-pad': '^1.0.0',
+      'other-git-plugin': 'github:someone/other-plugin',
+    },
+    devDependencies: { 'dsh-wotr-console': 'git+https://github.com/kdczyz/dsh-workbuddy-mode.git' },
+    optionalDependencies: { 'wotr-alias': 'git@github.com:kdczyz/dsh-workbuddy-mode.git' },
+    dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'github:kdczyz/dsh-workbuddy-mode', 'dsh-wotr-console'] } },
+  };
+  const r = patchProfilePackageJson(dirty);
+  eq('github 规格 → link:.dsh-wotr-src', r.pkg.dependencies[PLUGIN_NAME], 'link:.dsh-wotr-src');
+  ok('按仓库名写的别名被删掉', r.pkg.dependencies['dsh-workbuddy-mode'] === undefined);
+  ok('devDependencies 里的 git 规格也清掉（插件不属于 devDeps）',
+    r.pkg.devDependencies[PLUGIN_NAME] === undefined, JSON.stringify(r.pkg.devDependencies));
+  ok('optionalDependencies 里的别名也删掉', r.pkg.optionalDependencies['wotr-alias'] === undefined);
+  eq('别人的 git 依赖不动', r.pkg.dependencies['other-git-plugin'], 'github:someone/other-plugin');
+  eq('普通依赖不动', r.pkg.dependencies['left-pad'], '^1.0.0');
+  eq('bundles 里的 git 规格换成包名', r.bundles.join(','), '@deepseek-ai/dsh-base,dsh-wotr-console');
+  eq('报告清掉了哪些', r.removedSpecs.sort().join(','),
+    'dependencies.dsh-workbuddy-mode,devDependencies.dsh-wotr-console,optionalDependencies.wotr-alias');
+  eq('报告替了哪些 bundle', r.fixedBundles.join(','), 'github:kdczyz/dsh-workbuddy-mode');
+  ok('重复跑不再有可清的东西',
+    patchProfilePackageJson(r.pkg).removedSpecs.length === 0
+    && patchProfilePackageJson(r.pkg).fixedBundles.length === 0);
+
+  ok('判据要同时满足「像 git 规格」和「提到本仓库」',
+    looksLikeRepoSpec('github:kdczyz/dsh-workbuddy-mode') === true
+    && looksLikeRepoSpec('github:someone/other-plugin') === false
+    && looksLikeRepoSpec('dsh-workbuddy-mode') === false
+    && looksLikeRepoSpec('^1.0.0') === false);
+}
+
+{
+  /* 同一条失败在 `pnpm-lock.yaml` 里留下解析记录（`github:…` → codeload tar.gz）。
+   * 底下用真 pnpm 验过：清单是 `link:`、锁文件是 `github:…` 时，
+   * `pnpm install --frozen-lockfile` 会以「dependencies are mismatched」失败 ——
+   * 那一步不装任何东西，插件就没了。所以安装器要顺手把锁文件对齐。 */
+  const stale = [
+    "lockfileVersion: '9.0'",
+    '',
+    'settings:',
+    '  autoInstallPeers: false',
+    '  excludeLinksFromLockfile: false',
+    '',
+    'importers:',
+    '',
+    '  .:',
+    '    dependencies:',
+    '      dsh-wotr-console:',
+    '        specifier: github:kdczyz/dsh-workbuddy-mode',
+    '        version: https://codeload.github.com/kdczyz/dsh-workbuddy-mode/tar.gz/bd810cf64f2640863272b087cdfd20346cccb16c',
+    '',
+    'packages:',
+    '',
+    '  dsh-wotr-console@https://codeload.github.com/kdczyz/dsh-workbuddy-mode/tar.gz/bd810cf64f2640863272b087cdfd20346cccb16c:',
+    '    resolution: {gitHosted: true, integrity: sha512-x, tarball: https://codeload.github.com/kdczyz/dsh-workbuddy-mode/tar.gz/bd810cf}',
+    '    version: 1.1.0',
+    '    engines: {node: \'>=20\'}',
+    '    peerDependencies:',
+    "      '@deepseek-ai/cordis': '>=4.0.4 <5.0.0'",
+    '',
+    'snapshots:',
+    '',
+    '  dsh-wotr-console@https://codeload.github.com/kdczyz/dsh-workbuddy-mode/tar.gz/bd810cf64f2640863272b087cdfd20346cccb16c: {}',
+    '',
+  ].join('\n');
+  const r = patchProfileLockfile(stale);
+  eq('锁文件：specifier 对齐成 link:', /specifier: link:\.dsh-wotr-src/.test(r.text), true);
+  eq('锁文件：version 对齐成 link:', /version: link:\.dsh-wotr-src/.test(r.text), true);
+  ok('锁文件：codeload 解析记录整块删掉', !r.text.includes('codeload.github.com'));
+  ok('锁文件：peerDependencies 那几行没有漏在文件里', !r.text.includes('@deepseek-ai/cordis'));
+  ok('锁文件：空掉的 packages / snapshots 节连节头一起去掉',
+    !/^packages:/m.test(r.text) && !/^snapshots:/m.test(r.text));
+  eq('锁文件：改完就是 pnpm 自己给 link 依赖写的形态（逐字节）',
+    r.text,
+    ["lockfileVersion: '9.0'", '', 'settings:', '  autoInstallPeers: false',
+      '  excludeLinksFromLockfile: false', '', 'importers:', '', '  .:', '    dependencies:',
+      '      dsh-wotr-console:', '        specifier: link:.dsh-wotr-src',
+      '        version: link:.dsh-wotr-src', ''].join('\n'));
+  eq('锁文件：报告改写了哪一条', r.rewrote.join(','), PLUGIN_NAME);
+  ok('锁文件：幂等（再跑一次无改动）', patchProfileLockfile(r.text).changed === false);
+
+  // 不含本仓库的锁文件**一个字都不许动**（别把用户别的插件记录改坏）
+  const other = "lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      foo:\n        specifier: ^1.0.0\n        version: 1.0.0\n";
+  const untouched = patchProfileLockfile(other);
+  eq('别的锁文件原样返回', untouched.text, other);
+  eq('别的锁文件 changed=false', untouched.changed, false);
+}
+
+{
+  /* 锁文件里那句 `settings.autoInstallPeers: false` 要能在 pnpm-workspace.yaml 里
+   * 找到同一个值 —— 实测只有 `.npmrc` 时 pnpm 仍以 ERR_PNPM_LOCKFILE_CONFIG_MISMATCH
+   * 失败（那一步什么都不装，插件就没了）。真 profile 本来就有这三行，所以这里是
+   * 「健康 profile 一字不改」。 */
+  eq('workspace：空文件补成 DSH 的规范内容',
+    patchProfileWorkspace('').text, 'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n');
+  eq('workspace：**健康 profile 一字不改**',
+    patchProfileWorkspace('packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n').changed, false);
+  eq('workspace：被改成 true 时纠回来',
+    patchProfileWorkspace('packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: true\n').text,
+    'packages:\n  - .\n\nnodeLinker: hoisted\nautoInstallPeers: false\n');
+  eq('workspace：缺这一行时补上（别的行照旧）',
+    patchProfileWorkspace('packages:\n  - .\n').text, 'packages:\n  - .\n\nautoInstallPeers: false\n');
+  eq('workspace：幂等', patchProfileWorkspace(patchProfileWorkspace('packages:\n  - .\n').text).changed, false);
+
+  const noSettings = `lockfileVersion: '9.0'\n\nimporters:\n\n  .:\n    dependencies:\n      ${PLUGIN_NAME}:\n        specifier: github:kdczyz/dsh-workbuddy-mode\n        version: https://codeload.github.com/kdczyz/dsh-workbuddy-mode/tar.gz/bd810cf\n`;
+  const got = patchProfileLockfile(noSettings, { ensureSettings: true });
+  ok('锁文件：没有 settings 块时补上 autoInstallPeers: false',
+    /^settings:\n  autoInstallPeers: false\n  excludeLinksFromLockfile: false$/m.test(got.text), got.text);
+  ok('锁文件：补上的 settings 紧跟在 lockfileVersion 后面',
+    got.text.startsWith("lockfileVersion: '9.0'\n\nsettings:\n"));
+  eq('锁文件：补过之后与 workspace 自洽（都 false）',
+    /autoInstallPeers: false/.test(got.text) && /autoInstallPeers: false/.test(patchProfileWorkspace('').text), true);
 }
 
 {
@@ -519,6 +663,77 @@ console.log('\n—— 5) peer 版本范围 ——');
     }
     ok('宿主实际版本全部落在声明范围内', bad.length === 0, bad.join('；'));
     console.log(`    （本机宿主：${seen.join(', ')}）`);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 5.5) 用**真 pnpm** 交叉验证锁文件对齐
+ *
+ * 这一节验的不是假想，而是 pnpm 的真实行为：
+ *   - 锁文件残留 `github:…` + 清单是 `link:` → `--frozen-lockfile` 报
+ *     「dependencies are mismatched」并且**什么都不装**（插件就没了）；
+ *   - 对齐之后同一命令通过，且**一次 git 都没调**（PATH 前面放一个假 git，
+ *     谁调它谁就在临时目录里留记号）。
+ *
+ * 本机没有 pnpm（纯净开发机）时跳过，不算失败。
+ * ------------------------------------------------------------------ */
+console.log('\n—— 5.5) 真 pnpm 交叉验证 ——');
+{
+  const pnpm = findPnpm();
+  if (pnpm === undefined) {
+    skipped('真 pnpm 交叉验证', '本机没有 DSH 运行时 pnpm（可用 DSH_PNPM 指定）');
+  } else {
+    const dir = path.join(tmpRoot, 'pnpm-check');
+    const staleLock = `lockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: false\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      ${PLUGIN_NAME}:\n        specifier: github:kdczyz/dsh-workbuddy-mode\n        version: https://codeload.github.com/kdczyz/dsh-workbuddy-mode/tar.gz/bd810cf\n`;
+    const write = (lock) => {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.mkdirSync(path.join(dir, '.dsh-wotr-src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'package.json'),
+        `${JSON.stringify({ name: 'dsh-profile-desktop', private: true, dependencies: { [PLUGIN_NAME]: 'link:.dsh-wotr-src' } }, undefined, 2)}\n`);
+      fs.writeFileSync(path.join(dir, '.dsh-wotr-src', 'package.json'),
+        `${JSON.stringify({ name: PLUGIN_NAME, version: '1.1.0' })}\n`);
+      fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), patchProfileWorkspace('').text);
+      fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), lock);
+    };
+
+    // 假 git：被调用就留下记号并失败 —— 于是「有没有调 git」变成可断言的
+    const binDir = path.join(tmpRoot, 'fake-bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    const marker = path.join(binDir, 'git-was-called');
+    for (const name of ['git', 'git.cmd']) {
+      fs.writeFileSync(path.join(binDir, name), `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`);
+      fs.chmodSync(path.join(binDir, name), 0o755);
+    }
+
+    const runFrozen = () => {
+      try {
+        execFileSync(process.execPath, [pnpm, 'install', '--frozen-lockfile', '--dir', dir], {
+          env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}` },
+          stdio: 'pipe',
+        });
+        return { ok: true, out: '' };
+      } catch (error) {
+        const out = `${error.stdout ?? ''}${error.stderr ?? ''}${error.message}`;
+        return { ok: false, out: String(out) };
+      }
+    };
+
+    write(staleLock);
+    const stale = runFrozen();
+    ok('真 pnpm：锁文件残留 github 规格时 --frozen-lockfile 失败（清单与锁文件不一致）',
+      stale.ok === false && /mismatched/i.test(stale.out), stale.out.split('\n').slice(0, 3).join(' | '));
+    ok('  而且它什么都没装（插件目录不存在）', !fs.existsSync(path.join(dir, 'node_modules', PLUGIN_NAME)));
+
+    const fixed = patchProfileLockfile(staleLock);
+    write(fixed.text);
+    const after = runFrozen();
+    ok('真 pnpm：对齐后的锁文件 --frozen-lockfile 通过', after.ok === true,
+      after.out.split('\n').slice(0, 3).join(' | '));
+    ok('  装出来的就是指向 .dsh-wotr-src 的软链',
+      fs.existsSync(path.join(dir, 'node_modules', PLUGIN_NAME))
+      && fs.lstatSync(path.join(dir, 'node_modules', PLUGIN_NAME)).isSymbolicLink());
+    ok('  全程没有调用 git（假 git 没留下记号）', !fs.existsSync(marker));
+    fs.rmSync(binDir, { recursive: true, force: true });
   }
 }
 
