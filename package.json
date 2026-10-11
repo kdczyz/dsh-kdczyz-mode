@@ -1,6 +1,7 @@
 {
   "name": "dsh-kdczyz-mode",
   "version": "1.1.0",
+  "private": true,
   "description": "Installable wrapper for the DSH plugin in dsh-kdczyz-mode/: WorkBuddy model pool + Trae connector + Qoder account pool as three independent providers, plus one settings page with six tabs (XD Pool / Trae config [provider switch, account binding, model selection, account pool] / accounts [WorkBuddy + Trae + Qoder, three columns] / Qoder pool [device-flow login, per-account credits, cooldown] / credits / usage history). This root manifest exists so `pnpm add github:kdczyz/dsh-kdczyz-mode` (DSH 插件管理页) installs a package that declares dsh.bundle.patch at its root.",
   "repository": {
     "type": "git",
