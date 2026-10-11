@@ -5080,6 +5080,14 @@ function registerTraeUsageRoute(ctx, deps) {
 		* POST only, loopback origin only, and the status read runs FIRST so a day
 		* the ACCOUNT has already been paid for never reaches the upstream claim.
 		*
+		* The body may carry `accountId` to target ONE named account. The upstream
+		* claim has no account parameter — it settles whatever account the
+		* credential belongs to — so targeting an account means running the same
+		* flow with a **throwaway client carrying that account's credential**
+		* (`deps.clientOfAccount`, same no-rebinding rule as
+		* {@link creditsOfAccount}). Without `accountId` the route keeps its
+		* original meaning: the region's currently bound account.
+		*
 		* `alreadyCheckedIn` and `deviceCheckedIn` are deliberately separate
 		* answers, because the two flags mean different things (see
 		* {@link TraeWebCheckin}): `checkedIn` is the account's reward for today
@@ -5088,6 +5096,15 @@ function registerTraeUsageRoute(ctx, deps) {
 		* was a shipped bug: after switching accounts the card said "claimed
 		* today" and disabled the button, which is the right call for the wrong
 		* reason and hides that the new account was never rewarded.
+		*
+		* For the same reason a TARGETED claim does not stop at `didCheckedIn`:
+		* that flag is about the machine, we are asking about one specific
+		* account, and whether the upstream really refuses a second account on
+		* the same device is a property of the upstream rather than something to
+		* assume. The refused attempt costs one call and answers the question
+		* (`code: 9095` ⇒ machine-wide gate, anything else ⇒ the account's answer);
+		* the account-level guard above it still means an already-paid day never
+		* turns into a second claim.
 		*
 		* The upstream is idempotent per Beijing day (verified 2026-09-24: a
 		* repeat claim answers `code: 0` with the entitlement total unchanged), but
@@ -5103,17 +5120,32 @@ function registerTraeUsageRoute(ctx, deps) {
 				const region = requestRegion(req, res);
 				if (region === void 0) return;
 				if (region !== "cn") return json(res, 404, { error: "check-in is not available for the international region" });
+				let accountId = "";
 				try {
-					const client = deps.client(region);
+					const text = await readJsonBody(req);
+					const body = text === "" ? void 0 : JSON.parse(text);
+					if (typeof body?.accountId === "string") accountId = body.accountId;
+				} catch {
+					return json(res, 400, { error: "invalid JSON body" });
+				}
+				try {
+					let client;
+					if (accountId === "") client = deps.client(region);
+					else {
+						client = await deps.clientOfAccount?.(region, accountId);
+						if (client === void 0) return json(res, 404, { error: "account not found" });
+					}
+					const targetedBody = accountId === "" ? {} : { accountId };
 					const current = await client.checkinStatus();
 					if (!current.enabled) return json(res, 409, { error: "check-in is not enabled for this account" });
 					if (current.checkedIn) return json(res, 200, {
+						...targetedBody,
 						claimed: false,
 						alreadyCheckedIn: true,
 						deviceCheckedIn: current.didCheckedIn,
 						checkin: toCheckin(current)
 					});
-					if (current.didCheckedIn) return json(res, 200, {
+					if (current.didCheckedIn && accountId === "") return json(res, 200, {
 						claimed: false,
 						alreadyCheckedIn: false,
 						deviceCheckedIn: true,
@@ -5125,6 +5157,7 @@ function registerTraeUsageRoute(ctx, deps) {
 					const checkin = await client.checkinStatus();
 					const deviceClaimed = claim.code === CHECKIN_DEVICE_ALREADY_CLAIMED;
 					json(res, 200, {
+						...targetedBody,
 						claimed: claim.claimed,
 						alreadyCheckedIn: false,
 						...deviceClaimed ? { deviceCheckedIn: true } : {},
@@ -5799,6 +5832,29 @@ function apply(ctx, config) {
 				if (credential === void 0) return void 0;
 				return toCredits(await new TraeUsageClient({ credential: async () => credential }).snapshot());
 			},
+			/**
+			* A throwaway upstream client for ONE named account, used by the
+			* per-account check-in.
+			*
+			* Same reasoning as {@link creditsOfAccount} above: the shared
+			* `usageClient` reads `store.resolve()` (the BOUND account), and
+			* `selectAccount` would both race concurrent chat requests and persist a
+			* switch the user never made — which is exactly what signing a backup
+			* account's card must NOT do. The device header is passed on purpose:
+			* the claim is device-scoped upstream, so a machine that already spent
+			* today's check-in has to be reported as such rather than silently
+			* looking like a fresh machine.
+			*
+			* `undefined` means "no usable credential for that id here".
+			*/
+			clientOfAccount: async (accountId) => {
+				const credential = await store.credentialOf(accountId);
+				if (credential === void 0) return void 0;
+				return new TraeUsageClient({
+					credential: async () => credential,
+					deviceId: async () => (await identity()).deviceId
+				});
+			},
 			discoverModels: async (signal) => {
 				const running = directoryInflight.get(region);
 				if (running !== void 0) return running;
@@ -5871,7 +5927,8 @@ function apply(ctx, config) {
 		discoverModels: (region, signal) => stacks[region].discoverModels(signal),
 		probeModels: (region, ids) => stacks[region].probeModels(ids),
 		rawDiagnostic: (region) => stacks[region].rawDiagnostic(),
-		creditsOfAccount: (region, accountId) => stacks[region].creditsOfAccount(accountId)
+		creditsOfAccount: (region, accountId) => stacks[region].creditsOfAccount(accountId),
+		clientOfAccount: (region, accountId) => stacks[region].clientOfAccount(accountId)
 	}));
 	/**
 	* Live registration handles per region, filled once the shim is listening.

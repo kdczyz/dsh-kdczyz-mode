@@ -1857,37 +1857,58 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       const current = accounts.find((a) => a.selected === true) ?? null;
 
       /**
-       * 签到：Trae 的签到路由是**按区域**结算当前绑定账号的
-       * （`POST /checkin?region=…`，上游 `checkin_credits/claim`），没有「给某个
-       * 账号签到」的参数 —— 所以这一页也只能在**当前绑定**的那张卡上给按钮，
-       * 与「账号」页右列一致。备用卡上摆一个按不动的签到按钮比不给更糟。
+       * 签到：**每张卡签自己那个账号**，不切换 Trae 正在服务的账号。
+       *
+       * 上游的 `checkin_credits/claim` 没有 accountId 参数 —— 它结算的是「这份凭证
+       * 属于谁」。所以「给备用账号签到」不是「把 id 传给上游」，而是**拿那个账号的
+       * 凭证造一个一次性 client** 走同一条流程（路由的 `accountId`，与
+       * `creditsOfAccount` 同一条不重绑 store 的路子）。先前这一页只有当前绑定那张
+       * 卡有按钮，理由是「签到按区域结算当前账号」—— 那只说对了一半：凭证是每账号
+       * 一份的，所以真的可以只签某个账号而不动绑定。
+       *
+       * 上游另有一道**设备**门禁（`did_checked_in` / `code: 9095`，同一台机器一天
+       * 只签一次），所以答复里「这个账号签过了」与「本机签过了」要分开说。
        */
-      const [checkining, setCheckining] = useState(false);
-      const onCheckin = async () => {
-        setCheckining(true);
+      const [checkining, setCheckining] = useState(null);
+      const [checkinResults, setCheckinResults] = useState({});
+      const onCheckin = async (accountId) => {
+        if (typeof accountId !== 'string' || accountId === '') return;
+        setCheckining(accountId);
         setWriteError(null);
         setSavedNote(null);
         try {
-          await fetchJson(`${TRAE_API}/checkin?region=${region}`, { method: 'POST' });
-          setSavedNote('签到完成');
+          const result = await fetchJson(`${TRAE_API}/checkin?region=${region}`, {
+            method: 'POST',
+            body: JSON.stringify({ accountId }),
+          });
+          setCheckinResults((prev) => ({ ...prev, [accountId]: result ?? {} }));
+          setSavedNote(checkinResultNote(result));
           await loadUsage(region);
         } catch (e) {
           setWriteError(e?.message ?? String(e));
         } finally {
-          setCheckining(false);
+          setCheckining(null);
         }
       };
-      // 「今日已签到 / 无签到活动 / 可签到」——与「账号」页右列的列头副标题同一套词。
       const checkin = usage?.checkin ?? null;
       const checkinEnabled = checkin?.enabled !== false;
-      const checkinNote =
-        checkin === null
-          ? undefined
-          : checkin.checkedIn === true
-            ? `今日已签到${checkin.credits !== undefined ? ` · 已领 +${fmtNum(checkin.credits)}` : ''}`
-            : checkinEnabled
-              ? '可签到'
-              : '这边没有签到活动';
+      /**
+       * 卡片说明（原生 title）：优先用这一页刚签过的答复，其次用 /usage 里**当前
+       * 绑定账号**的那份状态。其他账号的今日状态只有签一下才知道 —— 为它多发一次
+       * 上游读请求，代价与签一次一样，不值当。
+       */
+      const checkinTitleOf = (id, isCurrent) => {
+        const result = checkinResults[id];
+        const doc = result?.checkin ?? (isCurrent === true ? checkin : null);
+        // 没有状态可讲时：区域里根本没有签到活动就直说（备用那张也就不会假装能签），
+        // 否则说明这颗按钮与「切换到此账号」的区别 —— 它不换 Trae 正在服务的账号。
+        return checkinStateNote(
+          doc,
+          checkinEnabled
+            ? '点一下给这个账号签到（不会切换 Trae 正在服务的账号）'
+            : '这边没有签到活动',
+        );
+      };
 
       /**
        * 号池状态与余额合并成**一张**卡。
@@ -2111,27 +2132,53 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             },
                             'actions',
                           ),
+                          /* 卡片最后一行：与 XD Pool 页同款的两按钮排 —— 左边「切换
+                           * 到此账号」（**当前那张不给**：它已经是当前了），右边
+                           * 「签到」。签到这个按钮是**每张卡都有**的：它签的是卡片
+                           * 自己那个账号，Route 会拿该账号的凭证造一次性 client，
+                           * 不重绑 store，所以按下去不会把 Trae 正在服务的账号换掉
+                           * （这正是它与「先切换再签」的区别）。 */
+                          jsxs(
+                            'div',
+                            {
+                              className: 'wbc-card-foot',
+                              children: [
+                                account === null || account === undefined || isCurrent
+                                  ? null
+                                  : jsx('button', {
+                                      type: 'button',
+                                      className: 'wbc-btn',
+                                      disabled: switching !== null || !writable,
+                                      onClick: () => onSwitchAccount(id),
+                                      children:
+                                        switching === id ? '切换中…' : '切换到此账号',
+                                    }),
+                                account === null || account === undefined || !signedIn
+                                  ? null
+                                  : jsx('button', {
+                                      type: 'button',
+                                      className: 'wbc-btn',
+                                      title: checkinTitleOf(id, isCurrent),
+                                      // 没有签到活动 / 正在读 / 正在签 —— 三种都不该再点
+                                      disabled:
+                                        checkining !== null || usageLoading || !checkinEnabled,
+                                      onClick: () => onCheckin(id),
+                                      children: checkining === id ? '签到中…' : '签到',
+                                    }),
+                                account === null || account === undefined
+                                  ? jsx('div', {
+                                      className: 'wbc-note',
+                                      children: '这个账号只在号池快照里，没有可用于签到的登录。',
+                                    })
+                                  : null,
+                              ],
+                            },
+                            'foot',
+                          ),
                         ],
-                        // 当前绑定的那张给「签到」（Trae 的签到按区域结算当前账号，
-                        // 备用卡给了也点不动）；其余卡给「切换到此账号」。
-                        // 两边都只在有 `account` 行（= 真登录着的账号）时给按钮。
-                        action:
-                          account === null || account === undefined
-                            ? null
-                            : isCurrent
-                              ? signedIn
-                                ? {
-                                    label: checkining ? '签到中…' : '签到',
-                                    title: checkinNote,
-                                    disabled: checkining || usageLoading || !checkinEnabled,
-                                    onClick: onCheckin,
-                                  }
-                                : null
-                              : {
-                                  label: switching === id ? '切换中…' : '切换到此账号',
-                                  disabled: switching !== null || !writable,
-                                  onClick: () => onSwitchAccount(id),
-                                },
+                        // 底部两个按钮都在上面那一排里（与 XD Pool 页同款），
+                        // `action` 空着 —— 一页里不要有两种「卡片主按钮」。
+                        action: null,
                       },
                       id,
                     );
@@ -4334,6 +4381,50 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       return checkin.todayCheckedIn === true
         ? `今日已签 · 连签 ${streak} 天`
         : `未签 · 连签 ${streak} 天`;
+    }
+
+    /**
+     * Trae 的签到状态 → 卡片上的那一句话（无状态可讲时给 `fallback`）。
+     *
+     * `didCheckedIn` 要单独说：账号没签、但**这台机器**今天已经在别的账号上用掉
+     * 签到，是合法状态（上游按设备放行一次），此时说「可签到」只会让人白点一次。
+     * 词与「账号」页右列的列头副标题同一套。
+     */
+    function checkinStateNote(doc, fallback) {
+      if (doc === undefined || doc === null) return fallback;
+      if (doc.checkedIn === true) {
+        return `今日已签到${
+          doc.credits === undefined ? '' : ` · 已领 +${fmtNum(doc.credits)}`
+        }`;
+      }
+      if (doc.enabled === false) return '这边没有签到活动';
+      if (doc.didCheckedIn === true) return '本机今天已经签过了（一台机器一天只签一次）';
+      return '可签到';
+    }
+
+    /**
+     * 签到路由的答复 → 保存条上的一句话。
+     *
+     * 三件事必须分开说：`claimed`（这次真拿到了）、`alreadyCheckedIn`（**这个账号**
+     * 今天已经领过）、`deviceCheckedIn` / `code: 9095`（**这台机器**今天已经用掉，
+     * 可能是别的账号用掉的）。把后两者混成一句「已签到」，用户就会以为新账号拿到了
+     * 钱，而它一分没拿 —— 这正是当初修过的那个 bug 的说法。
+     *
+     * `9095` 是 Trae 上游的「本机今天已经签过」业务码，写在这里而不是从
+     * `trae.js` 引：控制台是独立打包的一份脚本，跨入口 import 会把宿主解析搅乱。
+     */
+    function checkinResultNote(result) {
+      if (result === undefined || result === null) return '签到未完成';
+      if (result.claimed === true) {
+        const gained = result.checkin?.credits;
+        return gained === undefined ? '签到完成' : `签到完成 · 已领 +${fmtNum(gained)}`;
+      }
+      if (result.alreadyCheckedIn === true) return '这个账号今天已经签过了';
+      if (result.deviceCheckedIn === true || result.code === 9095) {
+        return '本机今天已经签过了（一台机器一天只签一次）';
+      }
+      const message = typeof result.message === 'string' ? result.message.trim() : '';
+      return message === '' ? '签到未完成' : `签到未完成：${message}`;
     }
 
     /**

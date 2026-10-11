@@ -75,17 +75,19 @@
 > | 页头 | `ColumnHead`：标题 + 区域切换（Qoder 无区域）+ 右侧按钮（都是「刷新」，Qoder 另有「添加账号」）。**按钮文案固定**，状态变化用禁用态与下面的说明行表达 |
 > | 状态行 | 固定顺序：只读提示（`READONLY_NOTE`）→ `读取失败：` → `保存失败：` → 已保存 → 正在读取 → 空态 `EmptyBox` |
 > | 统计 | `StatsRow`：**四格** —— 账号 / 可用 / 冷却中 / 当前使用（每页第三、四格的事实各按本页数据措辞） |
-> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子）。**卡上的标签词汇、压暗规则、余额读法三页逐字同款**：首标签只有「当前使用 / 备用」（当前那张亮着，其余压暗；宿主没给「当前是谁」时一张都不压暗）；状态标签是「冷却中 / 已停用 / 已保留·暂停 / 限流 N 次」——**限流次数是标签，不是常驻的「触发限流 0 次」行**；余额统一走 `accountCreditsOf`（WorkBuddy 的 `credits` 是 `{total, packages…}` **对象**，曾经直接 `fmtNum` 渲染成「通用余额 –」，而数字就在响应体里）。三页的**卡片底部都是「切换账号」**，且**当前使用的那张都不给「切换到此账号」**（它已经是当前了）：Trae / Qoder 是单个「切换到此账号」，Trae 的当前卡换成「签到」；WorkBuddy 因为还要放「签到领取」，底部是并排的按钮 —— 位置相同、措辞相同，另外它多一个「取消固定」（`accountId: null`）把路由交回分配策略 |
+> | 「账号」区 | `Section`：标题 + 计数副标题 + 右上角分配策略与**「清除冷却」**；卡走 `AccountCard`，卡内控件走共用 `CardActions`（参与轮换 / 保留额度 / 保存 / 移出池子）。**卡上的标签词汇、压暗规则、余额读法三页逐字同款**：首标签只有「当前使用 / 备用」（当前那张亮着，其余压暗；宿主没给「当前是谁」时一张都不压暗）；状态标签是「冷却中 / 已停用 / 已保留·暂停 / 限流 N 次」——**限流次数是标签，不是常驻的「触发限流 0 次」行**；余额统一走 `accountCreditsOf`（WorkBuddy 的 `credits` 是 `{total, packages…}` **对象**，曾经直接 `fmtNum` 渲染成「通用余额 –」，而数字就在响应体里）。三页的**卡片底部都是「切换账号」**，且**当前使用的那张都不给「切换到此账号」**（它已经是当前了）：Trae / Qoder 是单个「切换到此账号」；Trae 与 WorkBuddy 因为还要放签到，底部是并排的按钮 —— 位置相同、措辞相同，另外 WorkBuddy 多一个「取消固定」（`accountId: null`）把路由交回分配策略 |
 > | 「模型」区 | `Section` 收尾 + `wbc-cols` 网格的 `ModelCard`（勾选 / 元信息 / 附加控件 / 测试徽章）+ 底部 sticky 保存条 `wbc-model-actions` |
 >
 > 三页**功能集**不同（Trae 页头有供应商开关；XD Pool 多「已移出账号池」「积分自动化」两个分区；Qoder 页头有「添加账号」、账号卡多「令牌到期 / 余额」行），
-> 签到也是这一层差异：**XD Pool 的签到按账号**（`POST /checkin {accountId}`，所以每张卡都能签、冷却中的除外），
-> **Trae 的签到按区域结算当前绑定账号**（`POST /checkin?region=…`，只有当前那张卡有按钮）；
+> 签到也是这一层差异：**XD Pool 与 Trae 的签到都按账号**（`POST /checkin {accountId}`，所以每张登录着的卡都能签自己那个账号，冷却中的不给），
+> 区别在上游：XD Pool 自己认 `accountId`，Trae 的 `checkin_credits/claim` **没有这个参数** —— 那一边靠「换一份凭证」实现（路由收 `accountId`，用 `clientOfAccount` 造一次性 client 走同一条流程，
+> `creditsOfAccount` 那条不重绑 store 的老路子），所以按下备用卡的「签到」签的是那个账号，Trae 正在服务的账号一动不动；Trae 另有一道**设备**门禁（`did_checked_in` / `code: 9095`：一台机器一天只签一次），
+> 界面因此把「这个账号今天已经签过了」与「本机今天已经签过了」分开说 —— 混成一句会让用户以为新账号拿到了钱，而它一分没拿；
 > **Qoder 没有签到接口**（上游只有 `GET /api/v2/quota/usage` 这条只读额度线，桌面端 bundle 里连「签到」这个词都没有），
 > 所以 Qoder 的当前卡底部是空的 —— 不是漏做，是上游没有这个动作，
 > 这些差异保留 —— 统一的是骨架、控件与措辞，不是内容。`test/console-render.test.mjs`
 > 里有「三页样式一致性」「账号卡标签词汇/压暗规则/余额读法逐字同款」「账号卡能切换账号
-> 并取消固定（连 region 参数一起断言）」「Trae 当前卡的签到只长在对的卡上、签到与取数同一个 region」「页头按钮文案不随状态变」「号池快照为空时主要按钮仍在」几组断言守着它，因为这类退化不会让任何功能测试失败，
+> 并取消固定（连 region 参数一起断言）」「Trae 的签到每张卡都在、带的是自己那张卡的 accountId、签到与取数同一个 region、设备拒签(9095)说成「本机已签」」「页头按钮文案不随状态变」「号池快照为空时主要按钮仍在」几组断言守着它，因为这类退化不会让任何功能测试失败，
 > 只能显式断言（而且整页文本断言不够 —— 卡上贴错的标签，整页搜词照样通过，得按卡片取文本）。
 >
 > 补充两点实现细节：`Section`（分区）与 `CardActions`（卡片操作）也是共用模块里的
@@ -240,9 +242,10 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 401 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）
+node test/console-render.test.mjs   # 407 项：真正渲染六个 tab（含账号页三列、三个配置页的同一套骨架与页头按钮、Qoder 单列），空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）
 node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
+node test/trae-checkin-route.test.mjs # 36 项：Trae 签到路由（指定账号走 clientOfAccount 且绝不碰绑定账号、设备门禁 9095 与「账号已签」分开、未知账号 404、方法/区域/来源/坏 JSON 边界）
 node test/trae-auth.test.mjs        # 71 项：Trae 浏览器登录（PKCE+回环回调，自动回调）、凭据落盘
 node test/wb-auth.test.mjs          # 64 项：WorkBuddy 浏览器登录（state 轮询）、凭据落盘
 node test/wb-pool-selected.test.mjs # 35 项：WorkBuddy「选中的账号」语义（空串/undefined 都算清除）

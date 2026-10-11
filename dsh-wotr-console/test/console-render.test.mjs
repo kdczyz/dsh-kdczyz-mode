@@ -3314,32 +3314,33 @@ await (async () => {
 })();
 
 /**
- * —— 2g-3d) Trae 配置页的「签到」：只长在当前绑定那张卡上，且真打签到路由 ——
+ * —— 2g-3d) Trae 配置页的「签到」：每张卡签**自己**那个账号，且不切换绑定 ——
  *
- * Trae 的签到是**按区域**结算当前绑定账号的（`POST /checkin?region=…` → 上游
- * `checkin_credits/claim`），没有「给任意账号签到」这个参数。所以这一页与「账号」页
- * 右列同款：只有当前那张卡给按钮 —— 备用卡上摆一颗点不动的签到按钮比不给更糟。
+ * 上游的 `checkin_credits/claim` 没有 accountId 参数 —— 它结算的是「这份凭证属于
+ * 谁」。所以「给备用账号签到」只能是**拿那个账号的凭证走同一条流程**：路由收
+ * `accountId`，用 `clientOfAccount` 造一个一次性 client（不重绑 store），于是签的是
+ * 卡片自己那个账号，而 Trae 正在服务的账号一动不动。这条路径最容易写坏的地方：
  *
- * 三条断言各守一处退化：
- *   1. 按钮长错卡（长到备用卡上）—— 点下去会悄悄给**另一个账号**签到；
- *   2. `region` 写错（最典型的是写死一个区域）—— 签到落到另一个区域，界面看就是
- *      点了没反应。这里不去点列头切区域（那要按游标手工展开，读到的还是上一拍），
- *      改为钉住「签到与取数同源」这条不变量；
- *   3. 签完不重新拉 usage —— 余额与「今日已签到」停在旧值，用户以为没生效。
+ *   1. 请求里没带 accountId（或带错 id）—— 钱签到了**另一个账号**头上；
+ *   2. `region` 写错（最典型的是写死一个区域）—— 界面看就是点了没反应；
+ *   3. 签完不重新拉 usage —— 余额与「今日已签到」停在旧值；
+ *   4. 把「本机今天签过」（code 9095）说成「这个账号签过了」—— 用户以为新账号拿到
+ *      了钱，而它一分没拿（当初修过的那个 bug 的说法）。
  *
- * 另外钉住按钮上的说明文案：卡片只有三行，「今天签没签」放在原生 `title` 里，
- * 状态词与「账号」页右列的列头副标题同一套。
+ * 按钮说明也一并钉住：当前那张的状态来自 /usage（今日已签到 · 已领 +N），备用那张
+ * 的今日状态只有签一下才知道，所以给中性说明而不是替它编一个状态。
  *
  * 断言**只在 collectByClass 拿到的卡片子树里找按钮**，不要在整页树上再走一遍：
- * 配置页每次重新展开都会跑一次 `useEffect`，而那一次 `loadUsage` 会同步把
- * `usageLoading` 置回 true，于是「再展开一次整页」拿到的是加载态（内容成片为
- * null），按钮全都不见了 —— 卡片子树已经是展开好的实节点，不受这一拍影响。
+ * 配置页每次重新展开都会跑一次 useEffect，而那一次 loadUsage 会同步把 usageLoading
+ * 置回 true，「再展开一次整页」拿到的是加载态（内容成片为 null，按钮全不见）——
+ * 卡片子树已经是展开好的实节点，不受这一拍影响。
  */
 await (async () => {
   const prevFetch = globalThis.fetch;
   const posts = [];
   const usageUrls = [];
   let fixture = traeFixture;
+  let checkinReply = {};
   globalThis.fetch = (url, init) => {
     const u = String(url);
     if (u.includes('/plugins/dsh-connect-trae/usage')) {
@@ -3347,8 +3348,8 @@ await (async () => {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(fixture) });
     }
     if (u.includes('/plugins/dsh-connect-trae/checkin')) {
-      posts.push({ url: u, method: init?.method });
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+      posts.push({ url: u, method: init?.method, body: init?.body });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(checkinReply) });
     }
     return new Promise(() => {});
   };
@@ -3373,69 +3374,145 @@ await (async () => {
         return Page({});
       };
     };
-    /** 卡片子树里的按钮文案 + 第 i 张卡上的「签到」按钮 */
+    /** 卡片子树里的按钮 / 文案 */
     const cardsOf = (tree) => {
       const nodes = collectByClass(tree, 'wbc-card');
       return {
         nodes,
-        texts: nodes.map((c) => textOfNode(c)),
         labels: nodes.map((c) => collectButtons(c).map((b) => b.label)),
         checkin: (i) => collectButtons(nodes[i], '签到')[0],
       };
     };
+    const bodyOf = (post) => {
+      try {
+        return JSON.parse(String(post?.body ?? ''));
+      } catch {
+        return {};
+      }
+    };
+    /**
+     * 点一下之后重新渲染（等一拍让 loadUsage 落地，再取整页文字）。
+     *
+     * `rerender` 必须与按钮来自**同一个** store：它是挂在某个 makeReact 上的闭包，
+     * 拿另一个 store 的 rerender 去看状态，只会看到那边什么也没发生。
+     */
+    const afterClick = async (rerender, button) => {
+      await button.onClick();
+      await new Promise((r) => setTimeout(r, 0));
+      return textOfNode(rerender());
+    };
 
     const rerender = await mount();
-    const page = rerender();
-    const cards = cardsOf(page);
+    const cards = cardsOf(rerender());
+    ok('Trae 配置页两张卡都渲染出来了', cards.nodes.length === 2, `n=${cards.nodes.length}`);
     ok(
-      'Trae 配置页两张卡都渲染出来了',
-      cards.nodes.length === 2,
-      `n=${cards.nodes.length} ${cards.texts.join(' || ')}`,
-    );
-    ok(
-      '「签到」只长在当前绑定那张卡上（cards[0]），备用卡上没有',
+      '每张卡都有「签到」（各签自己那个账号），只有备用卡多一颗「切换到此账号」',
       cards.labels[0]?.includes('签到') === true &&
-        cards.labels[1]?.includes('签到') === false &&
+        cards.labels[0]?.includes('切换到此账号') === false &&
+        cards.labels[1]?.includes('签到') === true &&
         cards.labels[1]?.includes('切换到此账号') === true,
       JSON.stringify(cards.labels),
     );
-    const checkin = cards.checkin(0);
-    ok('「签到」按钮拿得到 onClick', typeof checkin?.onClick === 'function');
+    const currentCard = cards.checkin(0);
+    const backupCard = cards.checkin(1);
     ok(
-      '「签到」按钮的说明是「今日已签到 · 已领 +50」（与账号页同款词）',
-      checkin?.title === '今日已签到 · 已领 +50',
-      String(checkin?.title),
+      '两张卡的「签到」都拿得到 onClick',
+      typeof currentCard?.onClick === 'function' && typeof backupCard?.onClick === 'function',
     );
-    ok('「签到」可点（有签到活动且没在忙）', checkin?.disabled === false);
+    ok(
+      '当前绑定那张的说明来自 /usage：今日已签到 · 已领 +50',
+      currentCard?.title === '今日已签到 · 已领 +50',
+      String(currentCard?.title),
+    );
+    ok(
+      '备用那张不替它编状态，说明写的是「点一下给这个账号签到（不会切换…）」',
+      backupCard?.title === '点一下给这个账号签到（不会切换 Trae 正在服务的账号）',
+      String(backupCard?.title),
+    );
+    ok(
+      '两张卡的「签到」都可点（有签到活动、没在忙）',
+      currentCard?.disabled === false && backupCard?.disabled === false,
+    );
 
+    // 点**备用**那张：请求里必须是它自己的 id（签到按凭证走，id 带错就签给别人）
+    checkinReply = {
+      claimed: true,
+      alreadyCheckedIn: false,
+      code: 0,
+      message: '',
+      checkin: { checkedIn: true, credits: 50, enabled: true },
+    };
+    const backupId = String(traeFixture.accounts[1].id);
     const beforeUsage = usageUrls.length;
     posts.length = 0;
-    await checkin.onClick();
+    let noteText = await afterClick(rerender, backupCard);
     ok(
-      '点「签到」POST 到 /plugins/dsh-connect-trae/checkin',
+      '点备用卡的「签到」POST 到 /plugins/dsh-connect-trae/checkin',
       posts.length === 1 && posts[0].url.includes('/plugins/dsh-connect-trae/checkin'),
       JSON.stringify(posts),
     );
     ok('签到请求用的是 POST', posts[0]?.method === 'POST', String(posts[0]?.method));
     ok('签到请求带上本区域 region=cn', posts[0]?.url.includes('region=cn') === true, posts[0]?.url);
     ok(
-      '签到成功后重新拉了 usage',
+      `请求体里带的是备用卡自己的 accountId（${backupId}）`,
+      bodyOf(posts[0]).accountId === backupId,
+      String(posts[0]?.body),
+    );
+    ok(
+      '签完重新拉了 usage',
       usageUrls.length > beforeUsage && usageUrls.at(-1).includes('region=cn'),
       `${beforeUsage} → ${usageUrls.length} ${usageUrls.at(-1)}`,
     );
-
-    // 没有签到活动时：换一份上游回执**重新挂载**再取卡。
-    //
-    // 不在这棵树上改状态再展开：这一层的手工展开会把 hook 游标错位，第二次展开
-    // 拿到的还是上一拍的 usage（先前这里就是这么写的，断言读到的是旧回执而变红）。
-    fixture = { ...traeFixture, checkin: { checkedIn: false, enabled: false } };
-    const off = cardsOf((await mount())()).checkin(0);
-    ok('没有签到活动时按钮仍在（而不是凭空消失）', off !== undefined);
-    ok('没有签到活动时按钮按不动', off?.disabled === true);
     ok(
-      '没有签到活动时说明写的是「这边没有签到活动」',
-      off?.title === '这边没有签到活动',
-      String(off?.title),
+      '签成功时保存条写「签到完成 · 已领 +50」',
+      noteText.includes('签到完成 · 已领 +50') === true,
+      noteText.replace(/\s+/g, ' ').slice(0, 200),
+    );
+
+    // 点**当前**那张：带的是当前账号的 id（不是上一次点过的那个）
+    posts.length = 0;
+    await afterClick(rerender, currentCard);
+    ok(
+      '点当前卡的「签到」带的是当前账号的 accountId（不会串到上一个账号）',
+      bodyOf(posts[0]).accountId === String(traeFixture.accounts[0].id),
+      String(posts[0]?.body),
+    );
+
+    // 上游按**设备**拒签：必须说成「本机今天已经签过了」，不能说成这个账号签过
+    checkinReply = {
+      claimed: false,
+      alreadyCheckedIn: false,
+      deviceCheckedIn: true,
+      code: 9095,
+      message: "this device already used today's check-in",
+      checkin: { checkedIn: false, didCheckedIn: true, enabled: true },
+    };
+    const rerender2 = await mount();
+    noteText = await afterClick(rerender2, cardsOf(rerender2()).checkin(1));
+    ok(
+      '本机今天签过时保存条写「本机今天已经签过了（一台机器一天只签一次）」',
+      noteText.includes('本机今天已经签过了（一台机器一天只签一次）') === true,
+      noteText.replace(/\s+/g, ' ').slice(0, 200),
+    );
+    ok(
+      '…并且不说成「这个账号今天已经签过了」',
+      noteText.includes('这个账号今天已经签过了') === false,
+      noteText.replace(/\s+/g, ' ').slice(0, 200),
+    );
+
+    // 没有签到活动时：按钮仍在但按不动，说明写清楚原因（换回执要重新挂载）
+    fixture = { ...traeFixture, checkin: { checkedIn: false, enabled: false } };
+    const off = cardsOf((await mount())());
+    ok('没有签到活动时按钮仍在（而不是凭空消失）', off.checkin(0) !== undefined);
+    ok(
+      '没有签到活动时两张卡的按钮都按不动',
+      off.checkin(0)?.disabled === true && off.checkin(1)?.disabled === true,
+    );
+    ok(
+      '没有签到活动时说明写的是「这边没有签到活动」（两张卡都写）',
+      off.checkin(0)?.title === '这边没有签到活动' &&
+        off.checkin(1)?.title === '这边没有签到活动',
+      `${off.checkin(0)?.title} / ${off.checkin(1)?.title}`,
     );
 
     // 区域参数：签到用的必须是**同一拍取数用的那个区域**。
