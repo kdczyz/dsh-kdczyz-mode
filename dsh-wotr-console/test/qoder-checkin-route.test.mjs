@@ -95,7 +95,9 @@ applyQoder(qoderCtx, {
   creditReserves: { get: () => ({}) },
 });
 {
-  const deadline = Date.now() + 20_000;
+  // 上限，不是断言：这一步包含异步注册（本机有真实凭据时还会真发一次目录请求），
+  // 20s 在并发/满载时会偶发不够 —— 实测门禁里红过一次，单独复跑却全绿。
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline && currentQoderApi() === before) {
     await new Promise((r) => setTimeout(r, 20));
   }

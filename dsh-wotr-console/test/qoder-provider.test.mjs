@@ -44,6 +44,21 @@ const ok = (name, cond, extra) => {
   }
 };
 
+/**
+ * 临时 DSH_HOME：这个套件**不读**用户真实的 `~/.dsh`，于是**不发外网请求**。
+ *
+ * 早先没隔离：本机有真实凭据时 `apply` 的 `ready` 链会真的去拉一次目录
+ * （`if (cred !== undefined) await catalog.refresh(cred)`），于是「等到注册
+ * 发生」的上限就被绑到了上游响应时间上 —— 三个套件并发跑时实测红过一次，
+ * 报的是「调用了 registerAdapter 一次 — 0」，看起来像注册被删了。
+ *
+ * 空号池时 `cred === undefined`，那条分支根本不走；拉目录这一层由
+ * qoder-catalog / qoder-relay 等套件用桩 fetch 专门覆盖，不需要这里再打真网。
+ * 副作用是好的：这个套件在任何机器上（包括没登录 Qoder 的机器）行为一致。
+ */
+const DSH_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wotr-qoder-provider-'));
+process.env.DSH_HOME = DSH_HOME;
+
 console.log('Qoder provider 注册\n');
 
 /* —— 1) 模块元数据 —— */
@@ -100,7 +115,7 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
    * 改成轮询等待「注册真的发生了」，并给一个足够宽的上限：正常的失败仍然只是
    * 让下面的断言变红，而不是把等待时间本身变成断言。
    */
-  const waitFor = async (cond, timeoutMs = 10_000) => {
+  const waitFor = async (cond, timeoutMs = 30_000) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (cond()) return true;
@@ -204,7 +219,9 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
     contextBudgets: volatile({ dfmodel: 50_000, mmodel: 999_999 }),
   });
 
-  const deadline = Date.now() + 20_000;
+  // 上限，不是断言：这一步包含异步注册（本机有真实凭据时还会真发一次目录请求），
+  // 20s 在并发/满载时会偶发不够 —— 实测门禁里红过一次，单独复跑却全绿。
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline && (calls.adapters.length === 0 || calls.discoveries.length === 0)) {
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -331,7 +348,9 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
   };
 
   apply(ctx, {});
-  const deadline = Date.now() + 20_000;
+  // 上限，不是断言：这一步包含异步注册（本机有真实凭据时还会真发一次目录请求），
+  // 20s 在并发/满载时会偶发不够 —— 实测门禁里红过一次，单独复跑却全绿。
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline && calls.adapters.length === 0) {
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -441,7 +460,7 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
   // 这里**不能**睡固定值：`apply` 是异步注册的，本机有真实凭据时它还会真发一次
   // 目录网络请求，满载的机器上 300ms 不够 —— 于是断言红的是「等待时间」而不是
   // 被验的兜底逻辑（实测在门禁里偶发过一次）。改成轮询「注册真的发生了」。
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 30_000;
   while (Date.now() < deadline && seen.length === 0) {
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -490,7 +509,9 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
     disabledAccountIds: { get: () => disabled },
     creditReserves: { get: () => reserves },
   });
-  const deadline = Date.now() + 20_000;
+  // 上限，不是断言：这一步包含异步注册（本机有真实凭据时还会真发一次目录请求），
+  // 20s 在并发/满载时会偶发不够 —— 实测门禁里红过一次，单独复跑却全绿。
+  const deadline = Date.now() + 60_000;
   while (Date.now() < deadline && currentQoderApi() === before) {
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -555,4 +576,6 @@ console.log(`\nqoder-provider: ${pass} 通过, ${fail} 失败`);
  * 表现为「断言全部打印完了但进程一直挂着」——在 CI 里就是一条永远不结束的
  * 测试。`process.exit` 是这里唯一可靠的做法（退出码照旧反映成败）。
  */
+fs.rmSync(DSH_HOME, { recursive: true, force: true });
+
 process.exit(fail > 0 ? 1 : 0);
