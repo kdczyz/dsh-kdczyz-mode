@@ -64,7 +64,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
    * 五个区域（第一个是**配置**，其余是**查看/配置**）：
    *   1. XD Pool        —— WorkBuddy 池配置（模型勾选 / 分配策略 / 积分自动化）
    *   2. Trae 配置      —— 供应商开关、账号绑定、模型勾选与测试（本文件自写）
-   *   3. 账号           —— 左右两列同一套模块样式：WorkBuddy / Trae
+   *   3. 账号           —— 三列同一套模块样式：WorkBuddy / Trae / Qoder
    *   4. 积分           —— 每个账号的额度总额与积分包明细
    *   5. 使用记录       —— 按天聚合的积分变化 + 明细表（来自 credit-store 的落盘数据）
    *
@@ -281,7 +281,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
   .wbc-probe{border-radius:4px;font-size:10px;padding:2px 6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary)}
   .wbc-probe-available{color:var(--dsw-alias-label-success,#30a46c)}
   .wbc-probe-auth,.wbc-probe-rate_limited{color:var(--dsw-alias-label-error,#e5484d)}
-  /* 列内账号卡片改为单列：两列布局下列宽约 300–500px，
+  /* 列内账号卡片改为单列：三列布局下列宽约 300–500px，
      沿用 auto-fill/minmax(240px) 会挤成两小张，卡片里的签到文案会折行 */
   .wbc-cols .wbc-cards{grid-template-columns:1fr}
   /* 统计小卡（余额/签到这类）在列内可以两两一行，比叠成四层高好得多 */
@@ -1480,7 +1480,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     /**
      * Trae 配置标签页 —— **本包自写**，替代上游 dsh-connect-trae 的浏览器卡片。
      *
-     * 结构与账号页右列同一套模块（列头 / 统计行 / 账号卡 / 空态都走共用组件），
+     * 结构与账号页中列同一套模块（列头 / 统计行 / 账号卡 / 空态都走共用组件），
      * 外加一块模型勾选区。功能与上游卡片逐项对齐：
      *
      *   - 供应商开关（`regions.<region>.enabled`，opt-out，关掉后该区域的模型
@@ -2032,7 +2032,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             ? jsx(EmptyBox, {
                 lines: [
                   `这边还没有检测到可用的 Trae ${region === 'ai' ? '国际版' : '国内版'}登录。`,
-                  '请在 Trae 客户端里登录，或用「账号」页右列的「添加账号」在浏览器里登录。',
+                  '请在 Trae 客户端里登录，或用「账号」页中列的「添加账号」在浏览器里登录。',
                 ],
               })
             : null,
@@ -2289,21 +2289,21 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     }
     //#endregion
 
-    //#region 共用模块（账号页两列同一套样式）
+    //#region 共用模块（账号页三列同一套样式）
     /**
-     * 账号页两列共用的几种「模块」。
+     * 账号页三列共用的几种「模块」。
      *
-     * 抽出来的目的就是让左右两列长得**完全一样**：同一套列头、同一套统计小卡、
+     * 抽出来的目的就是让三列长得**完全一样**：同一套列头、同一套统计小卡、
      * 同一套账号卡、同一套空态。先前两列各写各的，于是 WorkBuddy 侧没有统计行、
      * 卡片字段与操作按钮的位置也和 Trae 侧对不齐，并排一眼就能看出是两套东西。
      *
      * 这些组件刻意做成「无状态、只吃 props」：状态仍归 WotrPage 里各自那一份，
-     * 两列的独立性（见 AccountsTab 注释）不受影响。
+     * 三列的独立性（见 AccountsTab 注释）不受影响。
      */
 
-    /** 列头：标题 + 区域切换 + 右侧操作按钮。两列共用。 */
+    /** 列头：标题 + 区域切换 + 右侧操作按钮。三列共用。 */
     /**
-     * 列头：标题 + 区域切换 + 两侧可选插槽 + 右侧操作按钮。两列共用。
+     * 列头：标题 + 区域切换 + 两侧可选插槽 + 右侧操作按钮。三列共用。
      *
      * `title` 两个配置页都要给 —— 先前 Trae 页手写了一份列头且**没有标题**，
      * 与 XD Pool 并排切换时视觉重心对不齐（一个从标题起、一个直接从按钮起）。
@@ -2354,7 +2354,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       });
     }
 
-    /** 统计小卡一行（列内两两一行，见 CSS 的 .wbc-sums）。两列共用。 */
+    /** 统计小卡一行（列内两两一行，见 CSS 的 .wbc-sums）。三列共用。 */
     function StatsRow({ items }) {
       return jsx('div', {
         className: 'wbc-sums',
@@ -2386,7 +2386,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       });
     }
 
-    /** 键值行：账号卡里的明细（额度 / 签到 / 令牌到期…）都用它。两列共用。 */
+    /** 键值行：账号卡里的明细（额度 / 签到 / 令牌到期…）都用它。三列共用。 */
     function KV({ k, v }) {
       return jsxs('div', {
         className: 'wbc-kv',
@@ -2397,7 +2397,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       });
     }
 
-    /** 空态：虚线框 + 若干行说明。两列共用。 */
+    /** 空态：虚线框 + 若干行说明。三列共用。 */
     function EmptyBox({ lines }) {
       return jsx('div', {
         className: 'wbc-empty',
@@ -2408,7 +2408,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     }
 
     /**
-     * 账号卡：两列同一套骨架。
+     * 账号卡：三列同一套骨架。
      *
      *   head   名称 + 若干状态标签
      *   rows   KV 明细
@@ -3079,8 +3079,8 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     /**
      * 左列：WorkBuddy 账号。
      *
-     * 只返回**列**（`wbc-col`），不套 `wbc-body` —— 外层由 AccountsTab 排成两列。
-     * 骨架与右列 Trae **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块），
+     * 只返回**列**（`wbc-col`），不套 `wbc-body` —— 外层由 AccountsTab 排成三列。
+     * 骨架与中列 Trae **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块），
      * 只是数据字段与操作按钮的实际内容不同。
      */
     function WorkBuddyAccountsPanel({
@@ -3657,9 +3657,9 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     }
     //#endregion
 
-    //#region 账号页（右列：Trae）
+    //#region 账号页（中列：Trae）
     /**
-     * 右列：Trae 账号。
+     * 中列：Trae 账号。
      *
      * 骨架与左列 WorkBuddy **完全一致**（列头 / 统计行 / 账号卡 / 空态都走共用模块）；
      * 卡片底部的按钮只出现在**当前绑定**的那张卡上 —— 签到路由是按区域结算当前账号的
@@ -3875,17 +3875,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     }
     //#endregion
 
-    //#region 账号页（两列合并）
-    /**
-     * 账号页：WorkBuddy 与 Trae 并排两列。
-     *
-     * 两侧各自管自己的区域、加载、错误与签到，互不影响 —— 两列的状态在
-     * WotrPage 里就是分开的，这里只是把它们放进同一个网格。
-     *
-     * 布局：`repeat(auto-fit, minmax(300px, 1fr))`。
-     * 面板窄（设置对话框默认宽度）时自动**塌成一列**上下排列，
-     * 不会把两张卡片挤到没法看。两列合计可用宽度够时才是真正的左右两列。
-     */
+    //#region 账号页（三列）
     /**
      * 「账号」页：三列，同一套模块样式。
      *
@@ -4448,7 +4438,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      *
      * `didCheckedIn` 要单独说：账号没签、但**这台机器**今天已经在别的账号上用掉
      * 签到，是合法状态（上游按设备放行一次），此时说「可签到」只会让人白点一次。
-     * 词与「账号」页右列的列头副标题同一套。
+     * 词与「账号」页中列（Trae）的列头副标题同一套。
      */
     function checkinStateNote(doc, fallback) {
       if (doc === undefined || doc === null) return fallback;
@@ -5136,7 +5126,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
        *
        * 为什么仍然懒加载：WorkBuddy 那半的状态进页就拉（便宜），
        * 而 Trae 的 `/usage` 里的 credits 是一次**实时计费调用**。
-       * 账号页现在是两列并排，但没打开它之前不该花这笔钱。
+       * 账号页现在是三列并排，但没打开它之前不该花这笔钱。
        *
        * 位置要求：本 effect 必须排在 `loadTrae` 的 `const` 定义**之后**。
        * 早先它写在前面的 useRef/useEffect 区块里，依赖数组 `[tab, loadTrae]`
@@ -5896,7 +5886,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
               jsx('div', {
                 className: 'wbc-desc',
                 children:
-                  '配置并查看 WorkBuddy 账号池、Trae 接入与 Qoder 号池：模型勾选、分配策略、账号与额度、积分与使用记录。WorkBuddy 与 Trae 可以直接在浏览器里登录添加（「账号」页左右两列的「添加账号」）；Qoder 桌面端每个安装只保存一份登录，扫不出多个账号，请在「Qoder 配置」页用「添加账号」逐个登录入池。',
+                  '配置并查看 WorkBuddy 账号池、Trae 接入与 Qoder 号池：模型勾选、分配策略、账号与额度、积分与使用记录。WorkBuddy 与 Trae 可以直接在浏览器里登录添加（「账号」页左、中两列的「添加账号」）；Qoder 桌面端每个安装只保存一份登录，扫不出多个账号，请在「Qoder 配置」页用「添加账号」逐个登录入池。',
               }),
             ],
           }),

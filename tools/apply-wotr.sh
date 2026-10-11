@@ -67,6 +67,17 @@ for t in credit-store client-apply console-render trae-pool trae-checkin-route w
 done
 # host-assembly 单独跑在**装配之后**（第 8 步）：它断言的是 profile 的解析结果，
 # 部署前跑没有意义（那时依赖还没装配）。
+#
+# 安装器自己的单测（tools/test/install-wotr.test.mjs）也在这里跑：它覆盖
+# 「新设备装得上吗」—— tar.gz 解压、asar 读取、profile 修补、pnpm 副本清理，
+# 以及 peer 版本范围必须选得中宿主的版本（这条直接来自一次真机事故）。
+if (cd "$ROOT" && "$NODE" tools/test/install-wotr.test.mjs >/dev/null 2>&1); then
+  echo "  ✓ install-wotr（新设备安装器）"
+else
+  echo "  ✗ install-wotr 未通过 —— 别的设备会装不上，先修好再部署" >&2
+  echo "    手动查看：cd $ROOT && \"$NODE\" tools/test/install-wotr.test.mjs" >&2
+  exit 1
+fi
 
 # —— 2) 备份 profile 的三个关键文件 + 两个旧包 ——
 if [ "$DRY" = 0 ]; then

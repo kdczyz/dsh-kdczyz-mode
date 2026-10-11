@@ -6,6 +6,37 @@
 
 > 「WOTR」= **W**orkBuddy + T**rae**（WorkBuddy-O-Tr-Ae 的缩写读法）。
 
+## 安装
+
+新设备（Windows / macOS / Linux，**不需要 git、bash、pnpm**）：
+
+```bash
+node tools/install-wotr.mjs        # 仓库里的安装器；也能单独下载后运行
+node tools/install-wotr.mjs --dry-run   # 只看计划
+```
+
+Windows PowerShell 一条条照抄即可（用 DSH 自带的 node）：
+
+```powershell
+$node = (Get-ChildItem "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime" `
+         -Recurse -Filter node.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+irm https://raw.githubusercontent.com/kdczyz/dsh-workbuddy-mode/main/tools/install-wotr.mjs `
+    -OutFile "$env:TEMP\install-wotr.mjs"
+& $node "$env:TEMP\install-wotr.mjs"
+```
+
+安装器做的事：匿名 HTTPS 拉 GitHub 的 tar.gz 并自己解压 → 把本包放成
+`<profile>/node_modules/dsh-wotr-console` → 从 `app.asar` 里把 **9 个宿主内包**
+读出来装配成实体再软链进 profile（`react` 除外：它只被浏览器端的 `lib/client.js`
+用到，那份由 DSH 前端提供）→ 补 profile 的 `package.json` 与 `cordis.patch.yml`
+三个条目 → 写 `.npmrc` 的 `auto-install-peers=false` → 自检。装完**必须重启 DSH**。
+
+> **为什么不能只靠插件管理页**：pnpm 解析 `github:` 会先调 `git ls-remote`，
+> 没装 git 的 Windows 直接失败；就算有 git，默认的 `auto-install-peers=true`
+> 还会按 peer 范围从公共 npm **另装一份**宿主内包，那份在解析链上比宿主更近，
+> 会静默遮住宿主那份（表现：模型选择器里一个 provider 都没有）。
+> 详见根 `README.md` 的「零、安装」。
+
 ## 提供的 provider
 
 | provider | 来源 | 说明 |
@@ -202,7 +233,7 @@ Trae 配置页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 XD
 `SlotRegistry.inject`）订阅槽位的 declaration epoch，**声明到了才在 effect 里跑 cb**。
 所以 `apply` 刚返回时通常一张卡片都还没拿到。
 
-早先按快照传值，后果是「WOTR 页正常、五个标签页都在，但两个配置标签页显示
+早先按快照传值，后果是「WOTR 页正常、六个标签页都在，但三个配置标签页显示
 **配置组件未能载入**」—— 注册项全部正确，不报任何错。
 
 现在对外暴露的是句柄：
@@ -294,7 +325,7 @@ node test/qoder-shim.test.mjs       # 52 项：loopback shim（loopback/bearer/C
   `react`，`apply` 抛 `ReferenceError` → cordis fiber 变 `failed` →
   宿主弹「应用无法启动或已意外停止」。只测「内联工厂能求值」抓不到。
   卡片并入后它还守一条跨模块契约：截获到的组件必须真的**渲染进**管理页，
-  且拿到 `settingsScope` 与 Trae 的 `view: 'page'` —— 否则两个配置标签页
+  且拿到 `settingsScope` 与 Trae 的 `view: 'page'` —— 否则这三个配置标签页
   就是空白，而注册项全部正确、不报任何错。
 - **`console-render`** 防「设置面板白屏」：组件曾用 `status?.accounts ?? []`
   取数组，接口返回非数组时 `.map` 在**渲染期**抛错 —— 启动阶段完全正常。
@@ -321,7 +352,7 @@ node test/qoder-shim.test.mjs       # 52 项：loopback shim（loopback/bearer/C
     `status.distribution`（池级单键），Trae 读 `traeStatus.pool.distribution`
     （按区域）。夹具刻意给两个**不同**的值，再断言每列高亮的按钮对得上自己
     那份；两列读同一处时界面照样渲染、文案照样齐全，只有高亮项会露馅。
-    写入也真点一次：左列要往 `wbSettings` 写 `distribution`，右列要往
+    写入也真点一次：左列要往 `wbSettings` 写 `distribution`，中列要往
     `traeSettings` 写 `regions` 且**不动其它区域槽**，两边写完都要刷新。
 
 > **两列的分配策略作用范围不一样，界面必须说清楚。**
@@ -423,7 +454,7 @@ GET  /v2/plugin/accounts                        → 账号身份（uin/uid/nickn
 
 ## 浏览器登录添加账号（Trae）
 
-「账号」页右列也有「**添加账号**」，协议与 WorkBuddy **完全不同** —— 真 PKCE
+「账号」页中列（Trae）也有「**添加账号**」，协议与 WorkBuddy **完全不同** —— 真 PKCE
 授权码流程，回调走**本机回环 HTTP**（`http://127.0.0.1:<port>/authorize`），
 **全程自动回调**，用户不需要复制粘贴任何东西。实现见 `lib/trae-auth.mjs`。
 

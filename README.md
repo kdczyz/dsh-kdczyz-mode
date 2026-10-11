@@ -5,7 +5,7 @@
 
 | 插件 | 状态 | 作用 |
 |---|---|---|
-| **`dsh-wotr-console@1.1.0`** | **合并版 · 已部署** | WorkBuddy 模型池 + Trae 接入，两个独立 provider 家族，共用一张五标签页管理页（配置 + 查看，账号页左右两列） |
+| **`dsh-wotr-console@1.1.0`** | **合并版 · 已部署** | WorkBuddy 模型池 + Trae 接入 + Qoder 号池，三个独立 provider 家族，共用一张六标签页管理页（三个配置 + 三个查看，账号页三列） |
 | `dsh-workbuddy-console@2.0.48` | 归档（已被合并版取代） | 合并前的 WorkBuddy 单插件 |
 | `dsh-connect-trae@3.0.0` | 归档（已被合并版取代） | 合并前的 Trae 单插件，原版未改动 |
 
@@ -22,7 +22,7 @@
 > - 合并过程中修掉一个真实缺陷：`console.mjs` 的 `useEffect` 依赖数组在
 >   `loadTrae` 的 `const` 定义之前引用它（TDZ），渲染期抛错 → 设置面板白屏。
 > - WorkBuddy 的独立 Web 控制台（`/wb-console`）此前已移除，形态对齐 Trae —— 只注册 LLM provider。
-> - DSH 原生管理页（设置面板内）**扩展为五标签页**：XD Pool / Trae 配置 / 账号 / 积分 / 使用记录 —— 两边的**配置**也并了进来；「账号」页**左右两列**分列 WorkBuddy 与 Trae，设置里不再有独立的池页面、Trae 卡片与单独的 Trae 账号页。
+> - DSH 原生管理页（设置面板内）**扩展为六标签页**：XD Pool / Trae 配置 / Qoder 配置 / 账号 / 积分 / 使用记录 —— 三边的**配置**也并了进来；「账号」页**三列**分列 WorkBuddy、Trae 与 Qoder，设置里不再有独立的池页面、Trae 卡片与单独的 Trae / Qoder 账号页。
 > - 仓库根新增 `package.json`（**安装壳**）：让 DSH 插件管理页能直接从这个 GitHub 地址安装。
 >   详见下面「零、安装」。
 
@@ -30,17 +30,92 @@
 
 ## 零、安装
 
-### 方式一：DSH 插件管理页直接装（推荐）
+### 方式一：一键安装器（新设备推荐，不需要 git / bash / pnpm）
 
-设置 → 插件 → 安装，填：
-
-```text
-github:kdczyz/dsh-workbuddy-mode
+```bash
+node tools/install-wotr.mjs            # 在仓库里跑
+node install-wotr.mjs                  # 或把脚本单独下载下来跑（它自己会拉源码）
 ```
 
-或完整地址 `https://github.com/kdczyz/dsh-workbuddy-mode`。
+Windows（PowerShell，只装了 DSH、别的什么都没有的机器）：
 
-**为什么以前装不上**：插件管理页 `pnpm add <git 地址>` 装的是**仓库根**，
+```powershell
+# 1) 找 DSH 自带的 node —— 不用另装 Node
+$node = (Get-ChildItem "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime" `
+         -Recurse -Filter node.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+if (-not $node) { $node = (Get-Command node).Source }   # 退路：系统里装了 node 也行
+# 2) 下载安装器并运行
+irm https://raw.githubusercontent.com/kdczyz/dsh-workbuddy-mode/main/tools/install-wotr.mjs `
+    -OutFile "$env:TEMP\install-wotr.mjs"
+& $node "$env:TEMP\install-wotr.mjs"
+```
+
+macOS / Linux 同理（一条命令）：
+
+```bash
+curl -fsSL -o /tmp/install-wotr.mjs \
+  https://raw.githubusercontent.com/kdczyz/dsh-workbuddy-mode/main/tools/install-wotr.mjs
+node /tmp/install-wotr.mjs
+```
+
+参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--profile <目录>` | 指定 profile（默认 `~/.dsh/profiles/desktop`） |
+| `--ref <分支\|标签\|sha>` | 装哪一版（默认 `main`） |
+| `--from <目录\|tar.gz>` | 用本地源码 / 本地 tar.gz 装（离线可用） |
+| `--dry-run` | 只打印计划，不改任何文件 |
+
+它做的事（少任何一步的症状都是「装完了但什么都没发生」）：
+
+1. 匿名 HTTPS 拉 GitHub 的 tar.gz（**不用 git**），自己解压（**不用 tar 命令**）；
+2. 把插件放成 `<profile>/node_modules/dsh-wotr-console`（真实目录），
+   并在 `<profile>/.dsh-wotr-src` 留一份源码副本供 profile 的 `link:` 指向；
+3. 从 `app.asar` 里把 9 个宿主内包**读出来**（纯 JS 读 asar，不借 Electron），
+   实体写到 `<profile>/.dsh-runtime-deps/node_modules`，再软链进 profile
+   （Windows 上用目录联接，不需要管理员权限）；
+4. 补 `<profile>/package.json` 的 `dependencies` 与 `dsh.profile.bundles`；
+5. 补 `<profile>/cordis.patch.yml` 的三个条目 —— **只改名、只补条目，绝不删除**
+   （条目下面的 `config:` 就是你的设置本身）；
+6. 写 `<profile>/.npmrc` 的 `auto-install-peers=false`（见下面的「peer 陷阱」）；
+7. 清掉 pnpm 可能装出来的同名副本，然后跑自检（真的 import 三个入口）。
+
+装前会备份 profile 配置到 `~/.dsh/wotr-install-backup/<时间戳>/`，装完**必须完全重启 DSH**。
+
+安装器是**幂等**的：重复跑只覆盖自己那几处（已装配且版本一致的宿主包直接沿用）。
+之后若又用插件管理页装/卸过别的插件（pnpm 会重建 profile 的 `node_modules`，
+可能把手写的软链一起清掉），重跑一次安装器即可恢复。
+
+### 方式二：DSH 插件管理页（需要 git）
+
+设置 → 插件 → 安装，填 `github:kdczyz/dsh-workbuddy-mode`（或
+`https://github.com/kdczyz/dsh-workbuddy-mode`）。
+
+**两个前提，缺一个就装不上或装了不生效：**
+
+1. **机器上要有 `git`。** pnpm 解析 `github:` 时会先跑 `git ls-remote` 问远端 ref，
+   Windows 上没装 git 就会得到：
+
+   ```text
+   [ERROR] Command failed with exit code 1:
+     git ls-remote "https://github.com/kdczyz/dsh-workbuddy-mode.git" HEAD "HEAD^{}"
+   'git' 不是内部或外部命令，也不是可运行的程序
+   ```
+
+   装上即可（`winget install --id Git.Git -e`），装完**完全重启 DSH**（PATH 才会生效）。
+   不想装 git 就用方式一。
+
+2. **peer 版本必须选得中宿主的版本。** pnpm 默认 `auto-install-peers=true`，会按
+   `peerDependencies` 从公共 npm **另装一份**宿主内包。原先的范围是
+   `>=0.1.7-rc.1 <0.3.0-0`，按 semver 规则**排除所有预发布版**，于是它装了
+   `@deepseek-ai/dsh-llm@0.1.7-rc.2` / `@earendil-works/pi-ai@0.85.1`，
+   而宿主自己用的是 `0.2.0-rc.2` / `0.87.1` —— 那份副本在解析链上**比宿主更近**，
+   会直接遮住宿主那份，表现是「管理页能看到账号，但模型选择器里一个 provider 都没有」。
+   现在范围写成两条版本线的并集（`^0.1.7-rc.1 || ^0.2.0-rc.1`，已用真 semver 核对），
+   安装器还会顺手写 `auto-install-peers=false` 彻底断掉这条路。
+
+**为什么以前连装都装不上**：插件管理页 `pnpm add <git 地址>` 装的是**仓库根**，
 装完后它读包根的 `package.json` 找 `dsh.bundle.patch` —— 组合包的判定标准就是这一个字段
 （DSH 文档原文：*A bundle is a package whose `package.json` declares `dsh.bundle.patch`*）。
 而这个仓库以前根目录**没有 package.json**，真正的插件在子目录 `dsh-wotr-console/`，
@@ -53,14 +128,16 @@ github:kdczyz/dsh-workbuddy-mode
 | `name` | `dsh-wotr-console` | 与已部署的包名保持一致，profile 里存的 entry id / 设置项全部沿用 |
 | `main` / `exports["."]` | `./dsh-wotr-console/lib/index.js` | WorkBuddy 半边入口 |
 | `exports["./trae"]` | `./dsh-wotr-console/lib/trae.js` | Trae 半边入口（第二个 Loader entry） |
-| `exports["./client"]` | `./dsh-wotr-console/lib/client.js` | 浏览器端 bundle（五标签页） |
+| `exports["./qoder"]` | `./dsh-wotr-console/lib/qoder.js` | Qoder 半边入口（第三个 Loader entry） |
+| `exports["./client"]` | `./dsh-wotr-console/lib/client.js` | 浏览器端 bundle（六标签页） |
 | `dsh.bundle.patch` | `./dsh-wotr-console/cordis.patch.yml` | **组合包声明**，管理页据此识别 |
 | `dsh.client` | `platform: web` + inject 列表 | 客户端注入目标 |
 
-壳只在包根做转发，插件代码仍在 `dsh-wotr-console/` 下，两个 Loader entry 的名字
-（`dsh-wotr-console`、`dsh-wotr-console/trae`）与 profile 里已保存的配置**完全不变**。
+壳只在包根做转发，插件代码仍在 `dsh-wotr-console/` 下，三个 Loader entry 的名字
+（`dsh-wotr-console`、`dsh-wotr-console/trae`、`dsh-wotr-console/qoder`）与 profile
+里已保存的配置**完全不变**。
 
-### 方式二：本地开发部署（link:）
+### 方式三：本地开发部署（link:）
 
 ```bash
 ./tools/apply-wotr.sh            # 部署到 desktop profile
@@ -69,10 +146,11 @@ github:kdczyz/dsh-workbuddy-mode
 
 这条路径把 `dsh-wotr-console/` 直接同步进 `~/.dsh/profiles/desktop/node_modules/dsh-wotr-console`，
 并在 profile 的 `dependencies`（`link:`）与 `dsh.profile.bundles` 里登记。
-改代码即时生效（要重启 DSH）。
+改代码即时生效（要重启 DSH）。它是 macOS 专用的（用了 `rsync` 与 `.app` 内的绝对路径），
+新设备请用方式一。
 
-> 两种方式的包名都是 `dsh-wotr-console`，但**同时只能走一条**：
-> 管理页装了 git 版本后，本地 `link:` 会被替换掉，反之亦然。
+> 三种方式的包名都是 `dsh-wotr-console`，但**同时只能走一条**：管理页装了 git 版本后，
+> 本地 `link:` 会被替换掉，反之亦然。方式一每次都会把自己那份重新装配成一致状态。
 
 ---
 
@@ -86,15 +164,15 @@ dsh-workbuddy-mode/
 │   ├── lib/trae.js                  Trae 半边（上游宿主 lib/index.js 并入；浏览器半边已移除）
 │   ├── lib/wb-auth.mjs              WorkBuddy 登录协议（客户端 OAuth 轮询换 token）
 │   ├── lib/trae-auth.mjs            Trae 登录协议（ExchangeToken + 设备绑定）
-│   ├── lib/client.js                浏览器端唯一 bundle（两块内联 + settings 作用域解析）
-│   ├── lib/console.mjs              五标签页管理页源码（唯一事实来源）
+│   ├── lib/client.js                浏览器端唯一 bundle（三块内联 + settings 作用域解析）
+│   ├── lib/console.mjs              六标签页管理页源码（唯一事实来源）
 │   ├── lib/credit-store.mjs         积分与历史记录的落盘存储
-│   ├── cordis.patch.yml             两个 Loader entry（勿改 id，见文件内注释）
+│   ├── cordis.patch.yml             三个 Loader entry（勿改 id，见文件内注释）
 │   ├── scripts/gen-console-inline.mjs 把 console.mjs 内联进 client.js（支持 --check）
 │   ├── scripts/gen-xdpool-client.mjs  把 vendor/xdpool/lib/client.js 内联进 client.js
 │   ├── test/credit-store.test.mjs   数据层单测（14 项）
 │   ├── test/client-apply.test.mjs   仿浏览器调用 apply 的单测（34 项，防启动失败）
-│   ├── test/console-render.test.mjs 真正渲染五个 tab（含账号页两列与活句柄）的单测（145 项，防白屏）
+│   ├── test/console-render.test.mjs 真正渲染六个 tab（含账号页三列与活句柄）的单测（防白屏）
 │   ├── test/wb-auth.test.mjs        WorkBuddy 登录协议单测（64 项）
 │   ├── test/trae-auth.test.mjs      Trae 登录协议单测（71 项）
 │   ├── test/trae-pool.test.mjs      Trae 账号池与凭据落盘单测（46 项）
@@ -194,14 +272,15 @@ cd ~/.dsh/profiles/desktop && "$NODE" "$PNPM" install     # 应显示 Packages: 
 
 **部署后必须重启 DSH**（退出后重新打开）：这些是 ES module，热重载不会重新加载代码。
 
-**配置方式**：重启后 → **设置 → WOTR**（一个入口，五个标签页）：
+**配置方式**：重启后 → **设置 → WOTR**（一个入口，六个标签页）：
 
 - **`XD Pool`** 标签页 —— WorkBuddy 侧配置：管理账号池、勾选模型、设置分配策略
 - **`Trae 配置`** 标签页 —— Trae 侧配置：区域开关、刷新账号与 Token、模型勾选与测试
-- **`账号` / `积分` / `使用记录`** —— 查看页（`账号` 左右两列分列 WorkBuddy 与 Trae，见第六节）
+- **`Qoder 配置`** 标签页 —— Qoder 侧配置：设备码登录、号池与每日签到
+- **`账号` / `积分` / `使用记录`** —— 查看页（`账号` 三列分列 WorkBuddy、Trae 与 Qoder，见第六节）
 
 > 合并前 `XD Pool` 是设置面板里的独立页、`Trae` 是「设置 → 插件」里的卡片；
-> 现在两者都并进了 `WOTR 管理`，设置里不再有单独的池页面与 Trae 卡片。
+> 现在三者都并进了 `WOTR 管理`，设置里不再有单独的池页面、Trae 卡片或 Qoder 页面。
 
 **回滚**：把 `~/.dsh/wotr-merge-backup/<时间戳>/` 里的 `package.json`、`cordis.patch.yml`、`pnpm-lock.yaml` 拷回 profile，恢复 `node_modules-*` 两个旧包目录，再 `pnpm install`。
 
@@ -260,7 +339,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 
 **最硬的验收方式**：让模型用 `write` 工具写一个文件，然后去磁盘核对内容是否正确——不看模型自己说"已完成"。
 
-**验收管理页**：打开 设置 → WOTR，五个 tab 应各有数据（默认停在 XD Pool；「账号」页右列首次进入才拉取）；切到「使用记录」后再看 `daily.jsonl` 是否多了一行今天的记录。
+**验收管理页**：打开 设置 → WOTR，六个 tab 应各有数据（默认停在 XD Pool；「账号」页的 Trae / Qoder 两列首次进入才拉取）；切到「使用记录」后再看 `daily.jsonl` 是否多了一行今天的记录。
 
 > **路由前缀有两套，别搞混**：
 > - `/plugins/dsh-workbuddy-xdpool/*`、`/plugins/dsh-connect-trae/*` —— **有意沿用旧名**（都带 `dsh-` 前缀），
@@ -303,7 +382,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 
 ---
 
-## 六、WOTR 管理页（五个标签页）
+## 六、WOTR 管理页（六个标签页）
 
 **设置 → WOTR** 是唯一入口：配置与查看都在这一页里，设置里不再有单独的池页面或 Trae 卡片。
 
@@ -311,7 +390,8 @@ ls ~/.dsh/profiles/desktop/node_modules/
 |---|---|
 | `XD Pool` 标签页 | **配置**：WorkBuddy 的模型勾选、账号分配策略、积分自动化 |
 | `Trae 配置` 标签页 | **配置**：Trae 的区域开关、账号与 Token、模型勾选与测试 |
-| `账号` 标签页 | **查看**：左右两列 —— 左 WorkBuddy、右 Trae |
+| `Qoder 配置` 标签页 | **配置**：Qoder 的设备码登录、号池、每日签到与额度刷新 |
+| `账号` 标签页 | **查看**：三列 —— WorkBuddy、Trae、Qoder |
 | `积分` / `使用记录` 标签页 | **查看**：额度明细与历史变化 |
 
 > 这两个配置标签页的组件本体**没有重写**，仍是 vendored 的 `PoolCard` 与
@@ -319,7 +399,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 > 把原本注册成独立入口的卡片截获下来，改由管理页作为标签页渲染。
 > 上游源码一行未改，日后可继续逐字节对照升级。
 
-### 五个 tab
+### 六个 tab
 
 | Tab | 内容 | 数据来源 |
 |---|---|---|
@@ -407,15 +487,15 @@ ls ~/.dsh/profiles/desktop/node_modules/
 - **`apply` 整体被 try/catch 兜住**：一个纯 UI 页面的问题绝不能让整个应用起不来
   （cordis 的 fiber 一旦 apply 抛出就变 `failed`，宿主会弹「应用无法启动」）
 
-### 测试（五层，都是 `apply-wotr.sh` 的硬性门禁，共 257 项）
+### 测试（都是 `apply-wotr.sh` 的硬性门禁）
 
 ```sh
 cd dsh-workbuddy-mode/dsh-wotr-console
 node test/credit-store.test.mjs     # 14 项：积分/历史记录的读写、去重、坏行容错
-node test/client-apply.test.mjs     # 31 项：仿浏览器执行 client.js，真正调用 apply
-node test/console-render.test.mjs   # 83 项：真正渲染五个 tab（含账号页两列与活句柄），空数据/坏数据/边界值
-node test/wb-auth.test.mjs          # 64 项：WorkBuddy 登录（state 轮询）、凭据落盘
-node test/trae-auth.test.mjs        # 65 项：Trae 登录（PKCE+回环回调，自动回调）、凭据落盘
+node test/client-apply.test.mjs     # 仿浏览器执行 client.js，真正调用 apply
+node test/console-render.test.mjs   # 427 项：真正渲染六个 tab（含账号页三列与活句柄），空数据/坏数据/边界值
+node test/wb-auth.test.mjs          # WorkBuddy 登录（state 轮询）、凭据落盘
+node test/trae-auth.test.mjs        # Trae 登录（PKCE+回环回调，自动回调）、凭据落盘
 ```
 
 后两层是**必须有**的，各对应一次真实事故，合并后又各抓到一次新问题：
@@ -448,10 +528,10 @@ web boot: 1 entry did not activate」）。根因是 `lib/client.js` 的包装�
 后果只应是这一个标签页显示降级说明，而不是整个设置面板白屏。
 另有一条断言守住 `settingsScope` / `t` 的**原样透传**：
 丢掉它两张卡片会静默退化成只读（改完点保存、值弹回原样）。
-「账号」页合成两列后又加了三条：**列的顺序与归属**（直接查元素树，
-两列若塌成上下两块文本一模一样，只看文本抓不到）、**两列互不连坐**
-（一侧数据坏掉时另一侧照常渲染），以及**两列同一套模块样式** ——
-把每列展开成「标签 + className」序列，断言两侧用到的模块 class 集合一致、
+「账号」页合成三列后又加了五条：**列的顺序与归属**（直接查元素树，
+三列若塌成上下三块文本一模一样，只看文本抓不到）、**三列互不连坐**
+（一侧数据坏掉时另外两侧照常渲染），以及**三列同一套模块样式** ——
+把每列展开成「标签 + className」序列，断言三列用到的模块 class 集合一致、
 列头骨架逐项对应。三条都用反向验证确认过会失败
 （删掉一侧统计行 → class 集合不等；删掉一侧列头按钮 → 列头骨架不等）。
 
@@ -476,9 +556,9 @@ web boot: 1 entry did not activate」）。根因是 `lib/client.js` 的包装�
 | | `dsh-wotr-console`（合并版） | 合并前的两个插件 |
 |---|---|---|
 | 包数量 | **1 个** | 2 个 |
-| Loader entry | 2 个（指向不同模块，两套独立 Config） | 各 1 个 |
+| Loader entry | 3 个（指向不同模块，三套独立 Config） | 各 1 个 |
 | 独立 Web 控制台 | ❌ 无 | ❌ 无 |
-| 管理页 | ✅ `WOTR 管理`，五标签页（含两边**配置**，「账号」页左右两列） | WorkBuddy 三标签页；Trae 无 |
+| 管理页 | ✅ `WOTR 管理`，六标签页（含三边**配置**，「账号」页三列） | WorkBuddy 三标签页；Trae 无 |
 | 配置入口 | **并入** `WOTR 管理` 的 `XD Pool` / `Trae 配置` 标签页 | `XD Pool` 独立页 + `Trae` 卡片 |
 | provider | `workbuddy-xdpool`、`workbuddy-xdpool-global`、`trae`、`trae-global` | 各占一半 |
 | 注册的 HTTP 路由 | 前缀沿用 `/plugins/dsh-workbuddy-xdpool` 与 `/plugins/dsh-connect-trae` | 同名 |
