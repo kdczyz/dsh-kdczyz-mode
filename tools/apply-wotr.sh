@@ -105,14 +105,14 @@ run_suite() {
   return 1
 }
 
-for t in credit-store client-apply console-render trae-pool trae-checkin-route wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-campaign qoder-checkin-route qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
+for t in live-catalog live-wiring credit-store client-apply console-render trae-pool trae-checkin-route wb-pool-selected wb-auth wb-fingerprint trae-auth qoder-auth qoder-pool qoder-pool-route qoder-credits qoder-campaign qoder-checkin-route qoder-relay qoder-catalog qoder-shim qoder-chat qoder-streaming qoder-payload qoder-dedup qoder-fingerprint qoder-provider; do
   run_suite "$SRC" "test/$t.test.mjs" "$t" "先修好再部署" || exit 1
 done
 # host-assembly 单独跑在**装配之后**（第 8 步）：它断言的是 profile 的解析结果，
 # 部署前跑没有意义（那时依赖还没装配）。
 #
 # 新设备安装不再有本仓库的安装器（2026-10-11 删除）：那条路是 DSH 插件管理页
-# 装 `github:kdczyz/dsh-kdczyz-mode`，前置只有 git，见 README「零、安装」。
+# 装 `github:kdczyz/kdczyz-dsh-model`，前置只有 git，见 README「零、安装」。
 
 # —— 2) 备份 profile 的三个关键文件 + 两个旧包 ——
 if [ "$DRY" = 0 ]; then
@@ -274,14 +274,14 @@ fi
 
 # —— 7) 校验新包在该 profile 下能被解析 ——
 if [ "$DRY" = 0 ]; then
-  for f in lib/index.js lib/trae.js lib/qoder.js lib/client.js lib/console.mjs; do
-    [ -f "$TARGET/$f" ] || { echo "错误：目标缺少 $f" >&2; exit 1; }
-    "$NODE" --check "$TARGET/$f"
+  for f in lib/index.js lib/trae.js lib/qoder.js lib/client.js lib/console.mjs lib/live-catalog.mjs; do
+    [ -f "$INNER/$f" ] || { echo "错误：目标缺少 $f" >&2; exit 1; }
+    "$NODE" --check "$INNER/$f"
   done
   # Qoder 半边靠 package.json 的 exports 白名单解析子路径 `./qoder`，
   # 缺了这一条 Loader 报 ERR_PACKAGE_PATH_NOT_EXPORTED，provider 不会注册。
   "$NODE" -e "
-    const pkg = require('$TARGET/package.json');
+    const pkg = require('$INNER/package.json');
     if (pkg.exports?.['./qoder'] === undefined) {
       console.error('错误：package.json 缺少 exports[\"./qoder\"]，qoder 半边无法被解析');
       process.exit(1);

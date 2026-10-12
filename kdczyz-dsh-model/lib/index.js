@@ -792,9 +792,15 @@ export function mountConsoleRoutes(ctx, config) {
                   throw new Error('WorkBuddy 未返回任何模型');
                 }
                 api.catalogs[region].updateFromUpstream(models);
-                // 尽力让已注册的 provider 重建模型表（失败不影响目录本身已更新）
+                // 重建 provider 模型表**并广播** `llm/adapters-updated`。
+                //
+                // 只调 `adapter.invalidate()` 是看不见的：客户端选择器（以及
+                // DSH 的 modelCatalog）有自己的快照缓存，只认那一个事件。少了
+                // 广播，用户点完「刷新」后卡片更新了、选择器里还是旧模型名与旧
+                // 倍率，看起来像刷新没生效。
                 try {
-                  api.adapter?.invalidate?.();
+                  if (typeof api.publishCatalog === 'function') api.publishCatalog();
+                  else api.adapter?.invalidate?.();
                 } catch {
                   /* 下一次请求仍会按新目录取模型 */
                 }

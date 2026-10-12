@@ -45,6 +45,7 @@ import { readOrCreateQoderMachineId } from './qoder-auth.mjs';
 import { createQoderFingerprint } from './qoder-fingerprint.mjs';
 import { QoderAccountPool, QoderCredentialStore } from './qoder-pool.mjs';
 import { createQoderShim } from './qoder-shim.mjs';
+import { catalogSignature, createLiveRefresher } from './live-catalog.mjs';
 import { asVolatile, unwrapVolatile } from './volatile.mjs';
 import {
   applyQoderRelayFailure,
@@ -670,6 +671,63 @@ function apply(ctx, config) {
     machineId,
   });
 
+  /**
+   * 「实时目录」：读路径按 TTL 触发上游刷新，内容有变就广播适配器更新。
+   *
+   * # 为什么挂在读路径上（而不是定时器）
+   *
+   * DSH 的聊天选择器每次打开都会走
+   * `modelCatalog()` → `llm.listModels()` → `PiAiAdapter` → `pi-ai Models.getModels()`
+   * → 本插件的 `getModels()`（同步）。这条链上没有 discovery，所以**只要目录缓存
+   * 不刷新，选择器里的 `Qwen3.8-Max · x0.8` 就永远是启动那一刻的快照**。
+   *
+   * 挂在读路径上能保证「用户伸手去看的那一刻」触发刷新，且不空转请求。
+   * 刷新本身在后台跑（`ensureFresh()` 不阻塞、不抛错），选择器先看到旧值，
+   * 下一帧就是新值。
+   *
+   * # 为什么刷新成功还要广播
+   *
+   * 刷新只改插件内存；客户端的 `ModelCatalogDirectory` 有自己的快照缓存，只认
+   * `llm/adapters-updated` 等四个事件。而 `registerAdapter()` 返回的句柄上
+   * `.replace([...])` 会走到 `commitRoutes()` → `emitAdaptersUpdated()`，这是本
+   * 插件唯一能主动发的那个事件。所以 `onChange` 里做一次 `.replace()`。
+   */
+  const liveFeed = createLiveRefresher({
+    refresh: async () => {
+      // 没有账号时**不算失败也不重试**：这是「还没登录」，不是上游抖了。
+      // 记成成功（签名不变）可以避免每 15 秒空转一次「号池里还没有账号」。
+      let cred = pool.list()[0]?.credential;
+      if (cred === undefined) {
+        try {
+          await pool.scan();
+        } catch {
+          /* 扫不动就按没账号处理 */
+        }
+        cred = pool.list()[0]?.credential;
+      }
+      if (cred === undefined) return { ok: true, signature: liveFeedSignature() };
+      const result = await catalog.refresh(cred);
+      if (result?.ok !== true) return { ok: false };
+      return { ok: true, signature: catalogSignature(catalog.current()) };
+    },
+    onChange: () => {
+      // 目录变了 → 让 DSH 重新读一次模型表（也顺带刷新客户端选择器的缓存）。
+      try {
+        registration.adapter?.replace?.([QODER_PROVIDER]);
+      } catch (error) {
+        ctx.logger?.warn?.('dsh-connect-qoder: 目录刷新后广播适配器失败', error);
+      }
+    },
+    onError: (error) => {
+      ctx.logger?.warn?.('dsh-connect-qoder: 实时目录刷新失败，继续用当前缓存', error);
+    },
+  });
+
+  /** 当前可见模型（目录 + 配置过滤）的签名 —— 与广播判据同口径。 */
+  function liveFeedSignature() {
+    return catalogSignature(catalog.current());
+  }
+
   // 池与 shim 都是本入口自己的实例：不跨入口共享，避免生命周期耦合。
   //
   // ⚠️ `dshHome` **必须显式传**（与 lib/index.js 管理页同一个口径 `DSH_HOME ?? ~/.dsh`）。
@@ -1017,8 +1075,16 @@ function apply(ctx, config) {
    *
    * **推理链（`toPiModel`）与 DSH 目录（discovery）都只读它**，这样两边不可能
    * 出现「选择器说能收图、实际发不出去」这类不一致。
+   *
+   * 这里也是「实时目录」的触发点：DSH 每次打开模型选择器都会经
+   * `listModels → getModels → buildModels` 走到本函数（见 `lib/live-catalog.mjs`
+   * 的模块注释）。`ensureFresh()` 不阻塞、不抛错、且带 TTL 与并发合并，
+   * 所以放在这里不会让选择器变慢或变脆。
    */
-  const visibleModels = () => selectModels(catalog.current(), config);
+  const visibleModels = () => {
+    liveFeed.ensureFresh();
+    return selectModels(catalog.current(), config);
+  };
 
   const ready = (async () => {
     await pool.scan();
@@ -1026,7 +1092,11 @@ function apply(ctx, config) {
 
     // 目录：拉不到就用兜底，**绝不因为拉不到就不注册 provider**
     const cred = pool.list()[0]?.credential;
-    if (cred !== undefined) await catalog.refresh(cred);
+    if (cred !== undefined) {
+      const seeded = await catalog.refresh(cred);
+      // 种子刚拉完 → 标成新鲜，避免注册后的第一次读路径立刻又打一次上游。
+      if (seeded?.ok === true) liveFeed.markFresh(liveFeedSignature());
+    }
   })();
 
   /**
@@ -1050,7 +1120,22 @@ function apply(ctx, config) {
     if (cred === undefined) {
       return { ok: false, models: catalog.current(), message: '号池里还没有账号，请先登录 Qoder' };
     }
-    return catalog.refresh(cred);
+    const result = await catalog.refresh(cred);
+    // 手动刷新成功 → 同样标新鲜：用户刚点过，没必要在读路径上再打一次。
+    // 内容变了要广播（卡片上的倍率变了，选择器也得跟着变）。
+    if (result?.ok === true) {
+      const next = liveFeedSignature();
+      const changed = next !== liveFeed.signature();
+      liveFeed.markFresh(next);
+      if (changed) {
+        try {
+          registration.adapter?.replace?.([QODER_PROVIDER]);
+        } catch (error) {
+          ctx.logger?.warn?.('dsh-connect-qoder: 手动刷新后广播适配器失败', error);
+        }
+      }
+    }
+    return result;
   };
 
   ready
@@ -1075,15 +1160,26 @@ function apply(ctx, config) {
           declared: false,
         },
       ]);
-      ctx.llm.registerModelDiscovery(settingsNs, async () =>
-        visibleModels().map((m) => ({
+      ctx.llm.registerModelDiscovery(settingsNs, async () => {
+        // Models 页的「拉取模型」也走实时目录：否则用户主动点一次，拿到的还是
+        // 启动时的快照，与「实时」的承诺自相矛盾。这里**等**刷新完成（用户在
+        // 等这个动作），失败则退回缓存 —— discovery 绝不因此抛错。
+        const pending = liveFeed.ensureFresh();
+        if (pending !== undefined) {
+          try {
+            await pending;
+          } catch {
+            /* ensureFresh 本身不抛；这里只防御 refresh 里漏出的异常 */
+          }
+        }
+        return visibleModels().map((m) => ({
           id: m.id,
           name: qoderModelDisplayName(m),
           contextWindow: m.contextWindow ?? QODER_FALLBACK_CONTEXT_WINDOW,
           ...(m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens }),
           inputModalities: qoderInputModalities(m),
-        })),
-      );
+        }));
+      });
       // 管理页要能碰到 provider 内部（目录、刷新）—— `lib/index.js` 是另一个
       // Loader 入口，与这里各自持有实例，只有模块级句柄能跨过去。
       //
@@ -1128,6 +1224,7 @@ function apply(ctx, config) {
 
   ctx.effect(() => () => {
     disposed = true;
+    liveFeed.dispose();
     if (published?.catalog === catalog) published = undefined;
     registration.adapter?.();
     registration.directory?.();

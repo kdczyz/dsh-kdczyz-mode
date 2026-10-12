@@ -4163,6 +4163,27 @@ function createWorkBuddyAdapter(options) {
 	const displayName = options.displayName ?? "WorkBuddy XD Pool";
 	const buildModels = () => {
 		const baseUrl = `${shim.baseUrl()}/v1`;
+		/**
+		* Live-catalog hook (added by this fork; optional and inert by default).
+		*
+		* DSH's model picker reaches the catalog through
+		* `modelCatalog()` -> `llm.listModels()` -> `pi-ai Models.getModels()` ->
+		* this function, and that chain is **synchronous** and runs several times
+		* per picker frame. The upstream roster (and each row's credit
+		* multiplier) only changes when someone re-fetches it, so without a hook
+		* here the picker keeps showing the startup snapshot forever.
+		*
+		* The injected callback is expected to be non-blocking and never throw
+		* (see lib/live-catalog.mjs: TTL + in-flight coalescing + failure
+		* backoff). It is called on every build, which is exactly the "look at it
+		* now" moment we want to piggyback on; the throttling lives in the
+		* callback, not here.
+		*/
+		try {
+			options.beforeModels?.();
+		} catch {
+			/* a broken hook must never take the model list down with it */
+		}
 		return catalog.visible().map((info) => toPiModel(info, baseUrl, providerId));
 	};
 	const provider = {
@@ -7565,6 +7586,14 @@ function apply(ctx, config = {}) {
 	let builtAdapter;
 	let invalidateCatalog = () => {};
 	/**
+	* Republish the route set so DSH's picker drops its cached catalog.
+	*
+	* Seeded with a no-op for the same reason as `invalidateCatalog`: the
+	* settings section calls its hooks synchronously during `installSection`,
+	* before provider registration has run.
+	*/
+	let publishCatalog = () => {};
+	/**
 	* The effective config with every live volatile reference peeled.
 	*
 	* On 0.1.7 a field marked volatile is handed to the plugin as `{get(): T}` so
@@ -7785,6 +7814,30 @@ function apply(ctx, config = {}) {
 		get adapter() {
 			return builtAdapter;
 		},
+		/**
+		* Rebuild the adapters' model table AND emit `llm/adapters-updated`, so
+		* DSH's picker re-reads the roster (added by this fork).
+		*
+		* Exposed for the admin route: `adapter.invalidate()` alone is invisible
+		* to the picker, which is why a manual refresh used to leave stale names
+		* (and credit multipliers) on screen.
+		*/
+		publishCatalog() {
+			publishCatalog();
+		},
+		/** Force one live roster fetch now, bypassing the TTL. */
+		async refreshCatalogNow() {
+			const ok = await liveRefresh();
+			if (ok) {
+				liveLastOkAtMs = Date.now();
+				const next = liveSignatureOf();
+				if (next !== liveSignature) {
+					liveSignature = next;
+					publishCatalog();
+				}
+			}
+			return ok;
+		},
 		async rescan() {
 			const accounts = await core.pool.scan();
 			ctx.logger.info?.(`dsh-workbuddy-xdpool: discovered ${accounts.length} account(s)`);
@@ -7801,6 +7854,82 @@ function apply(ctx, config = {}) {
 		}
 	};
 	core.scheduler.start();
+	/**
+	* Read-triggered upstream refresh for the model roster (added by this fork).
+	*
+	* DSH's picker reaches the roster through a **synchronous** chain
+	* (`modelCatalog()` -> `llm.listModels()` -> `pi-ai Models.getModels()` ->
+	* `createWorkBuddyAdapter`'s `buildModels`), with no discovery call in it.
+	* Before this, the roster (and every row's credit multiplier) was fetched
+	* once at startup and then never again, so an upstream price change was
+	* invisible until DSH restarted.
+	*
+	* Semantics kept deliberately here rather than in the adapter: throttled by a
+	* TTL, coalesced so concurrent reads cause one request, backed off after a
+	* failure, and it never throws into the read path. `lib/index.js` owns the
+	* richer version of this (see lib/live-catalog.mjs); this local copy exists
+	* so the vendored bundle stays self-contained and swappable.
+	*/
+	const liveTtlMs = Number(process.env.WORKBUDDY_LIVE_CATALOG_TTL_MS) > 0 ? Number(process.env.WORKBUDDY_LIVE_CATALOG_TTL_MS) : 60_000;
+	let liveLastOkAtMs = 0;
+	let liveLastAttemptAtMs = 0;
+	let liveInflight;
+	let liveSignature;
+	const liveSignatureOf = () => {
+		const rows = [...core.catalogs.cn.current(), ...core.catalogs.global.current()].map((model) => [
+			String(model.id ?? ""),
+			String(model.name ?? ""),
+			model.multiplier === void 0 || model.multiplier === null ? "" : String(model.multiplier)
+		]);
+		rows.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+		return JSON.stringify(rows);
+	};
+	/** Fetch both rosters and publish them; never throws. */
+	const liveRefresh = async () => {
+		const accounts = await core.pool.scan();
+		let ok = false;
+		for (const region of ["cn", "global"]) {
+			const credential = accounts.find((account) => regionOf(account.credential.domain) === region)?.credential;
+			if (credential === void 0) continue;
+			try {
+				const models = await core.client.fetchModels(credential);
+				if (!Array.isArray(models) || models.length === 0) continue;
+				core.catalogs[region].updateFromUpstream(models);
+				ok = true;
+			} catch (error) {
+				ctx.logger.warn?.(`dsh-workbuddy-xdpool: live ${region} catalog refresh failed`, error);
+			}
+		}
+		return ok;
+	};
+	const ensureLiveCatalog = () => {
+		if (stopped) return;
+		if (liveInflight !== undefined) return;
+		if (liveLastOkAtMs > 0 && Date.now() - liveLastOkAtMs < liveTtlMs) return;
+		if (liveLastAttemptAtMs > liveLastOkAtMs && Date.now() - liveLastAttemptAtMs < 15_000) return;
+		liveLastAttemptAtMs = Date.now();
+		liveInflight = Promise.resolve()
+			.then(() => liveRefresh())
+			.then((ok) => {
+				if (!ok) return;
+				liveLastOkAtMs = Date.now();
+				const next = liveSignatureOf();
+				if (next !== liveSignature) {
+					liveSignature = next;
+					// The picker caches its own snapshot and only re-reads on
+					// `llm/adapters-updated`; `publishCatalog` is how this plugin
+					// publishes that event.
+					publishCatalog();
+				}
+			})
+			.catch((error) => {
+				ctx.logger.warn?.("dsh-workbuddy-xdpool: live catalog refresh failed; keeping the current roster", error);
+			})
+			.finally(() => {
+				liveInflight = undefined;
+			});
+	};
+	let releaseDirectory;
 	Promise.all([shims.cn.ready, shims.global.ready]).then(async () => {
 		if (stopped) return;
 		try {
@@ -7810,19 +7939,20 @@ function apply(ctx, config = {}) {
 					shim: shims.cn,
 					catalog: core.catalogs.cn,
 					providerId: POOL_PROVIDER_BY_REGION.cn,
-					displayName: POOL_NAME_BY_REGION.cn
+					displayName: POOL_NAME_BY_REGION.cn,
+					beforeModels: ensureLiveCatalog
 				}),
 				global: createWorkBuddyAdapter({
 					ctx,
 					shim: shims.global,
 					catalog: core.catalogs.global,
 					providerId: POOL_PROVIDER_BY_REGION.global,
-					displayName: POOL_NAME_BY_REGION.global
+					displayName: POOL_NAME_BY_REGION.global,
+					beforeModels: ensureLiveCatalog
 				})
 			};
 			let releaseAdapterCn;
 			let releaseAdapterGlobal;
-			let releaseDirectory;
 			try {
 				releaseAdapterCn = ctx.llm.registerAdapter([POOL_PROVIDER_BY_REGION.cn], adaptersByRegion.cn.adapter);
 				releaseAdapterGlobal = ctx.llm.registerAdapter([POOL_PROVIDER_BY_REGION.global], adaptersByRegion.global.adapter);
@@ -7851,6 +7981,39 @@ function apply(ctx, config = {}) {
 				adaptersByRegion.cn.invalidate();
 				adaptersByRegion.global.invalidate();
 			};
+			/**
+			* Republish the route set so DSH re-reads the model list (added by this
+			* fork).
+			*
+			* `invalidateCatalog` only rebuilds the adapters' own snapshot; it does
+			* NOT emit `llm/adapters-updated`, which is the signal DSH's model
+			* picker listens for before dropping its cached catalog. Without this,
+			* a manual roster refresh updates the plugin but the picker keeps
+			* showing the pre-refresh names (and multipliers) until a reload.
+			*
+			* The directory handle's `replace()` commits the same entries and emits
+			* the event; providers are passed through unchanged.
+			*/
+			publishCatalog = () => {
+				invalidateCatalog();
+				try {
+					releaseDirectory?.replace?.([{
+						provider: POOL_PROVIDER_BY_REGION.cn,
+						displayName: POOL_NAME_BY_REGION.cn,
+						settingsNs: WORKBUDDY_POOL_SETTINGS_NS,
+						settingsPath: [],
+						declared: false
+					}, {
+						provider: POOL_PROVIDER_BY_REGION.global,
+						displayName: POOL_NAME_BY_REGION.global,
+						settingsNs: WORKBUDDY_POOL_SETTINGS_NS,
+						settingsPath: [],
+						declared: false
+					}]);
+				} catch (error) {
+					ctx.logger.warn?.("dsh-workbuddy-xdpool: publishing the catalog update failed", error);
+				}
+			};
 			/** Release everything the two providers registered, once. */
 			const releaseProviders = () => {
 				releaseAdapterCn?.();
@@ -7865,6 +8028,12 @@ function apply(ctx, config = {}) {
 			ctx.llm.registerModelDiscovery(WORKBUDDY_POOL_SETTINGS_NS, async (request) => {
 				if (request.provider !== "workbuddy-xdpool" && request.provider !== "workbuddy-xdpool-global") return [];
 				const region = request.provider === "workbuddy-xdpool-global" ? "global" : "cn";
+				// Models 页的「拉取模型」同样吃实时目录：用户主动点一次却拿到启动
+				// 快照，与「实时」自相矛盾。这里**等**刷新完成（用户在等这个动作），
+				// 失败就退回缓存 —— discovery 不因此抛错。
+				await liveInflight?.catch?.(() => {});
+				ensureLiveCatalog();
+				await liveInflight?.catch?.(() => {});
 				return core.catalogs[region].visible().map((model) => ({
 					id: model.id,
 					name: model.name,
@@ -7886,6 +8055,7 @@ function apply(ctx, config = {}) {
 		});
 		(async () => {
 			const accounts = await core.pool.scan();
+			let seeded = false;
 			for (const region of ["cn", "global"]) try {
 				const credential = accounts.find((account) => regionOf(account.credential.domain) === region)?.credential;
 				if (credential === void 0) {
@@ -7894,11 +8064,19 @@ function apply(ctx, config = {}) {
 				}
 				const models = await core.client.fetchModels(credential);
 				core.catalogs[region].updateFromUpstream(models);
+				seeded = true;
 				ctx.logger.info?.(`dsh-workbuddy-xdpool: ${region} catalog seeded with ${models.length} model(s)`);
 			} catch (error) {
 				ctx.logger.warn(`dsh-workbuddy-xdpool: ${region} model catalog unavailable; using static fallback`, error);
 			}
 			invalidateCatalog();
+			// The seed just fetched the live roster, so record it as fresh and
+			// remember its signature: otherwise the first picker read would
+			// immediately re-fetch the same document.
+			if (seeded) {
+				liveLastOkAtMs = Date.now();
+				liveSignature = liveSignatureOf();
+			}
 		})().catch((error) => {
 			ctx.logger.warn("dsh-workbuddy-xdpool: account catalog seed failed", error);
 		});

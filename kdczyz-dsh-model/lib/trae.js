@@ -14,6 +14,7 @@ import { Readable } from "node:stream";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readdirSync } from "node:fs";
+import { catalogSignature, createLiveRefresher } from "./live-catalog.mjs";
 //#region src/catalog.ts
 /**
 * Bootstrap catalog: identity only where current Trae metadata has not been
@@ -407,7 +408,26 @@ function toPiModel(info, baseUrl, providerId) {
 function createTraeAdapter(options) {
 	const providerId = options.provider ?? "trae";
 	const providerName = options.displayName ?? "Trae";
-	const buildModels = () => options.catalog.current().map((info) => toPiModel(info, `${options.shim.baseUrl()}/v1`, providerId));
+	const buildModels = () => {
+		/**
+		* Live-catalog hook (optional; inert when absent).
+		*
+		* DSH's picker reaches the roster through a **synchronous** chain
+		* (`modelCatalog()` -> `llm.listModels()` -> `pi-ai Models.getModels()` ->
+		* here). There is no discovery call on that path, so whatever
+		* `catalog.current()` holds at startup is what the picker shows — credit
+		* multipliers included — until something else replaces it.
+		*
+		* The injected callback is responsible for its own throttling and must not
+		* throw (see `createLiveRefresher` in lib/live-catalog.mjs).
+		*/
+		try {
+			options.beforeModels?.();
+		} catch {
+			/* a broken hook must never take the model list down with it */
+		}
+		return options.catalog.current().map((info) => toPiModel(info, `${options.shim.baseUrl()}/v1`, providerId));
+	};
 	const provider = {
 		...createProvider({
 			id: providerId,
@@ -5994,10 +6014,70 @@ function apply(ctx, config) {
 		applySelection(current());
 	});
 	let stopped = false;
+	/**
+	* 「实时目录」——按区域一份，挂在 DSH 选择器的读路径上。
+	*
+	* # 为什么需要它
+	*
+	* DSH 的聊天选择器每次打开都走
+	* `modelCatalog()` → `llm.listModels()` → `PiAiAdapter` → `pi-ai Models.getModels()`
+	* → `createTraeAdapter` 的 `buildModels()`（同步），**这条路上没有 discovery**。
+	* 而 `stack.catalog` 此前只在启动种子（`stack.catalog.set(derive(...))`）与配置
+	* 变化时被写入，所以上游调价后选择器里的 `GLM-5.2 · x0.79` 会一直是启动那一刻
+	* 的数字。
+	*
+	* # 为什么不直接改卡片那份
+	*
+	* 卡片（`displayModels`）刻意只读**保存值**：注释写明「用户要求『仅手动获取上游
+	* 模型在启用后才会更新模型列表』」。所以实时刷新只作用于**选择器路径**上的
+	* `stack.catalog`，不动卡片列表，也不写回设置 —— 用户没点「从 Trae 刷新」时，
+	* 卡片仍是手动快照，而选择器拿到的是当前上游的真实目录与真实倍率。
+	*
+	* # 内容变了要广播
+	*
+	* 刷新只改插件内存；客户端的 `ModelCatalogDirectory` 有自己的快照缓存，只认
+	* `llm/adapters-updated`。`registration[region].adapter.replace([...])` 会走到
+	* `emitAdaptersUpdated()`，这是本插件唯一能主动发的那个事件。
+	*
+	* 声明必须早于下面的 dispose effect（它会在卸载时遍历这份表）。
+	*/
+	const liveFeeds = {};
 	ctx.effect(() => () => {
 		stopped = true;
-		for (const region of REGION_KEYS) stacks[region].shim.close();
+		for (const region of REGION_KEYS) {
+			liveFeeds?.[region]?.dispose?.();
+			stacks[region].shim.close();
+		}
 	});
+	for (const region of REGION_KEYS) {
+		liveFeeds[region] = createLiveRefresher({
+			refresh: async () => {
+				const stack = stacks[region];
+				if (stack === undefined) return { ok: false };
+				const discovered = await stack.discoverModels();
+				if (!Array.isArray(discovered) || discovered.length === 0) return { ok: false };
+				// 与启动种子同一口径：先过 derive（勾选/图片/预算），再进 catalog。
+				stack.catalog.set(derive(current(), discovered, region));
+				return { ok: true, signature: catalogSignature(stack.liveDirectory ?? discovered) };
+			},
+			onChange: () => {
+				try {
+					registration[region].adapter?.replace?.(
+						regionEnabled(current(), region) ? [TRAE_PROVIDERS[region]] : [],
+					);
+				} catch (error) {
+					ctx.logger?.warn?.(`dsh-connect-trae: 目录刷新后广播 ${region} 适配器失败`, error);
+				}
+				// 适配器内部也有自己的 profile 快照，一并重建，保证下一次
+				// `getModels()` 读到的就是新目录。
+				stacks[region]?.invalidateAdapter?.();
+			},
+			onError: (error) => {
+				ctx.logger?.warn?.(`dsh-connect-trae: 实时目录刷新失败（${region}），继续用当前缓存`, error);
+			},
+		});
+	}
+
 	Promise.all(REGION_KEYS.map((region) => stacks[region].shim.ready)).then(async () => {
 		if (stopped) return;
 		try {
@@ -6008,7 +6088,11 @@ function apply(ctx, config) {
 					catalog: stack.catalog,
 					provider: TRAE_PROVIDERS[region],
 					displayName: TRAE_PROVIDER_DISPLAY_NAMES[region],
-					resolveAttachments: () => ctx.get("attachments")
+					resolveAttachments: () => ctx.get("attachments"),
+					// 「实时目录」：选择器每次读模型表时按 TTL 触发一次上游刷新
+					// （见下方 liveFeed 的说明）。回调自带节流、并发合并与失败退避，
+					// 且不会抛错。
+					beforeModels: () => liveFeeds[region]?.ensureFresh()
 				});
 				stack.invalidateAdapter = () => {
 					trae.invalidate();
@@ -6081,6 +6165,9 @@ function apply(ctx, config) {
 					const models = await stack.discoverModels();
 					if (stopped) return;
 					stack.catalog.set(derive(current(), models, region));
+					// 种子刚拉完上游 → 标成新鲜并记下签名，避免选择器的第一次读
+					// 立刻又打一次同一份目录。
+					liveFeeds[region]?.markFresh(catalogSignature(stack.liveDirectory ?? models));
 				} catch (error) {
 					ctx.logger.warn(`dsh-connect-trae: live ${region} model directory unavailable; serving the configured catalog`, error);
 					stack.catalog.set(configuredModels(current(), region));

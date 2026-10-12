@@ -45,38 +45,39 @@
 
 | 文件 | entry id | 注册 provider | 作用 |
 |---|---|---|---|
-| [`index.js`](dsh-kdczyz-mode/lib/index.js) | `llm-workbuddy-xdpool` | `workbuddy-xdpool`、`workbuddy-xdpool-global` | **WorkBuddy 入口 + 三平台共用后端**（管理页全部路由）。⚠️ 名实不符，见 [lib/README.md](dsh-kdczyz-mode/lib/README.md) |
-| [`trae.js`](dsh-kdczyz-mode/lib/trae.js) | `dsh-connect-trae` | `trae`、`trae-global` | Trae 半边（上游 3.0.0 逐字节并入，零改动） |
-| [`qoder.js`](dsh-kdczyz-mode/lib/qoder.js) | `dsh-connect-qoder` | `qoder` | Qoder 半边（设备流号池 + 反代） |
+| [`index.js`](kdczyz-dsh-model/lib/index.js) | `llm-workbuddy-xdpool` | `workbuddy-xdpool`、`workbuddy-xdpool-global` | **WorkBuddy 入口 + 三平台共用后端**（管理页全部路由）。⚠️ 名实不符，见 [lib/README.md](kdczyz-dsh-model/lib/README.md) |
+| [`trae.js`](kdczyz-dsh-model/lib/trae.js) | `dsh-connect-trae` | `trae`、`trae-global` | Trae 半边（上游 3.0.0 逐字节并入，零改动） |
+| [`qoder.js`](kdczyz-dsh-model/lib/qoder.js) | `dsh-connect-qoder` | `qoder` | Qoder 半边（设备流号池 + 反代） |
 
 **共用模块**（不属于任何单一平台）：
 
 | 文件 | 作用 |
 |---|---|
-| [`console.mjs`](dsh-kdczyz-mode/lib/console.mjs) | **唯一事实来源**（5965 行）：三标签页管理页 + composer 那颗可点击展开的积分胶囊。**改界面改这个**。 |
-| [`client.js`](dsh-kdczyz-mode/lib/client.js) | 浏览器端**唯一** bundle。**生成产物，勿手改** —— 由两个脚本内联而成。 |
-| [`credit-store.mjs`](dsh-kdczyz-mode/lib/credit-store.mjs) | 积分与使用记录落盘（`credit-samples` / `history` / `daily` 三个 `.jsonl`）。 |
-| [`volatile.mjs`](dsh-kdczyz-mode/lib/volatile.mjs) | 宿主 `volatile` 契约助手（`asVolatile` / `unwrapVolatile`）。不这么做设置会**静默丢弃**。 |
-| [`README.md`](dsh-kdczyz-mode/lib/README.md) | 入口分工与共用模块说明（新增）。 |
+| [`console.mjs`](kdczyz-dsh-model/lib/console.mjs) | **唯一事实来源**（5965 行）：三标签页管理页 + composer 那颗可点击展开的积分胶囊。**改界面改这个**。 |
+| [`client.js`](kdczyz-dsh-model/lib/client.js) | 浏览器端**唯一** bundle。**生成产物，勿手改** —— 由两个脚本内联而成。 |
+| [`credit-store.mjs`](kdczyz-dsh-model/lib/credit-store.mjs) | 积分与使用记录落盘（`credit-samples` / `history` / `daily` 三个 `.jsonl`）。 |
+| [`volatile.mjs`](kdczyz-dsh-model/lib/volatile.mjs) | 宿主 `volatile` 契约助手（`asVolatile` / `unwrapVolatile`）。不这么做设置会**静默丢弃**。 |
+| [`README.md`](kdczyz-dsh-model/lib/README.md) | 入口分工与共用模块说明（新增）。 |
 
-**WorkBuddy 侧**： [`wb-auth.mjs`](dsh-kdczyz-mode/lib/wb-auth.mjs) —— 登录协议（authUrl + state 轮询，**不开本地端口**）。
+**WorkBuddy 侧**： [`wb-auth.mjs`](kdczyz-dsh-model/lib/wb-auth.mjs) —— 登录协议（authUrl + state 轮询，**不开本地端口**）。
 
-**Trae 侧**： [`trae-auth.mjs`](dsh-kdczyz-mode/lib/trae-auth.mjs) —— 真 PKCE 授权码流程，回调走**本机回环 HTTP**。
+**Trae 侧**： [`trae-auth.mjs`](kdczyz-dsh-model/lib/trae-auth.mjs) —— 真 PKCE 授权码流程，回调走**本机回环 HTTP**。
 
 **Qoder 侧（9 个）**：
 
 | 文件 | 作用 |
 |---|---|
-| [`qoder-auth.mjs`](dsh-kdczyz-mode/lib/qoder-auth.mjs) | **设备流**登录（PKCE + 轮询，不开端口）。404 = 还没授权，必须继续轮询 |
-| [`qoder-pool.mjs`](dsh-kdczyz-mode/lib/qoder-pool.mjs) | 多账号号池。`scan()` **以磁盘为唯一真相** |
-| [`qoder-relay.mjs`](dsh-kdczyz-mode/lib/qoder-relay.mjs) | 反代请求：COSY 签名、发请求、**解双层信封**、失败分类 |
-| [`qoder-fingerprint.mjs`](dsh-kdczyz-mode/lib/qoder-fingerprint.mjs) | **出站指纹对齐**：运行时从本机安装提取并驱动官方 wasm |
-| [`qoder-shim.mjs`](dsh-kdczyz-mode/lib/qoder-shim.mjs) | 本地 loopback shim（OpenAI 协议 ↔ Qoder 私有协议） |
-| [`qoder-catalog.mjs`](dsh-kdczyz-mode/lib/qoder-catalog.mjs) | 模型目录 + 静态兜底（DSH 要求每行有正整数 `contextWindow`） |
-| [`qoder-credits.mjs`](dsh-kdczyz-mode/lib/qoder-credits.mjs) | 积分额度查询（上游 `quota/usage`） |
-| [`qoder-campaign.mjs`](dsh-kdczyz-mode/lib/qoder-campaign.mjs) | 每日签到（活动线 `me/campaigns → claim`）。`Cosy-ClientType` 必须是 `10` |
+| [`qoder-auth.mjs`](kdczyz-dsh-model/lib/qoder-auth.mjs) | **设备流**登录（PKCE + 轮询，不开端口）。404 = 还没授权，必须继续轮询 |
+| [`qoder-pool.mjs`](kdczyz-dsh-model/lib/qoder-pool.mjs) | 多账号号池。`scan()` **以磁盘为唯一真相** |
+| [`qoder-relay.mjs`](kdczyz-dsh-model/lib/qoder-relay.mjs) | 反代请求：COSY 签名、发请求、**解双层信封**、失败分类 |
+| [`qoder-fingerprint.mjs`](kdczyz-dsh-model/lib/qoder-fingerprint.mjs) | **出站指纹对齐**：运行时从本机安装提取并驱动官方 wasm |
+| [`qoder-shim.mjs`](kdczyz-dsh-model/lib/qoder-shim.mjs) | 本地 loopback shim（OpenAI 协议 ↔ Qoder 私有协议） |
+| [`qoder-catalog.mjs`](kdczyz-dsh-model/lib/qoder-catalog.mjs) | 模型目录 + 静态兜底（DSH 要求每行有正整数 `contextWindow`） |
+| [`live-catalog.mjs`](kdczyz-dsh-model/lib/live-catalog.mjs) | **实时目录协调器**（三家共用）：读时按 TTL 刷新 + 并发合并 + 失败退避，仅内容变化才广播 |
+| [`qoder-credits.mjs`](kdczyz-dsh-model/lib/qoder-credits.mjs) | 积分额度查询（上游 `quota/usage`） |
+| [`qoder-campaign.mjs`](kdczyz-dsh-model/lib/qoder-campaign.mjs) | 每日签到（活动线 `me/campaigns → claim`）。`Cosy-ClientType` 必须是 `10` |
 
-### 2.2 `test/` —— 25 套单测（25 文件）
+### 2.2 `test/` —— 28 套单测（28 文件）
 
 **全部是 `tools/apply-wotr.sh` 的硬性门禁**，任一失败即停。
 
@@ -84,10 +85,12 @@
 
 | 文件 | 作用 |
 |---|---|
-| [`client-apply.test.mjs`](dsh-kdczyz-mode/test/client-apply.test.mjs) | 仿浏览器执行 `client.js` 并真调 `apply`。**防「DSH 无法启动」**（曾因未声明的 `react` 导致启动失败） |
-| [`console-render.test.mjs`](dsh-kdczyz-mode/test/console-render.test.mjs) | 真正渲染三个 tab 与 composer 胶囊卡片（5337 行，444 项）。**防设置面板白屏**（曾抓到 TDZ 缺陷） |
-| [`credit-store.test.mjs`](dsh-kdczyz-mode/test/credit-store.test.mjs) | 数据层读写、去重、坏行容错 |
-| [`host-assembly.test.mjs`](dsh-kdczyz-mode/test/host-assembly.test.mjs) | 三个入口在目标 profile 下**真的能加载** |
+| [`live-catalog.test.mjs`](kdczyz-dsh-model/test/live-catalog.test.mjs) | 实时目录协调器：TTL/并发/退避/变更才广播（42 项） |
+| [`live-wiring.test.mjs`](kdczyz-dsh-model/test/live-wiring.test.mjs) | **三家接线**：读路径是否真的挂了 `ensureFresh()`、变了是否广播（37 项） |
+| [`client-apply.test.mjs`](kdczyz-dsh-model/test/client-apply.test.mjs) | 仿浏览器执行 `client.js` 并真调 `apply`。**防「DSH 无法启动」**（曾因未声明的 `react` 导致启动失败） |
+| [`console-render.test.mjs`](kdczyz-dsh-model/test/console-render.test.mjs) | 真正渲染三个 tab 与 composer 胶囊卡片（5337 行，444 项）。**防设置面板白屏**（曾抓到 TDZ 缺陷） |
+| [`credit-store.test.mjs`](kdczyz-dsh-model/test/credit-store.test.mjs) | 数据层读写、去重、坏行容错 |
+| [`host-assembly.test.mjs`](kdczyz-dsh-model/test/host-assembly.test.mjs) | 三个入口在目标 profile 下**真的能加载** |
 
 WorkBuddy 3 套：`wb-auth`（64 项）、`wb-fingerprint`、`wb-pool-selected`
 

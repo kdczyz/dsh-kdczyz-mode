@@ -62,7 +62,7 @@ Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`
 | qoder | **单列**（与另两个配置页同一条骨架）：页头（刷新 / 添加账号）→ 四格统计 → **「账号」区**（浏览器设备流登录逐个入池、状态/令牌到期/冷却/限流次数/**积分余额，每 30 秒自动刷新**、清除冷却、参与轮换、保留额度、移出池子）→ **「模型」区**（`QoderModelsPanel`：逐模型启用勾选 + **「从 Qoder 刷新」**，图片与上下文跟随上游，见下文「Qoder 模型」）。账号区就是 `QoderPoolPanel` 本体 |
 
 > **「从 WorkBuddy 刷新」（workbuddy 模型区）**：与 Trae 页的「从 Trae 刷新」同款
-> 「拉取即落盘」。服务端 `POST /plugins/dsh-kdczyz-mode/wb/models/refresh?region=`
+> 「拉取即落盘」。服务端 `POST /plugins/kdczyz-dsh-model/wb/models/refresh?region=`
 > （`lib/index.js`）经 `currentApi()` 拉一次上游实时目录并更新内存 catalog ——
 > vendor 的启动种子只在插件加载时拉一次，WorkBuddy 之后新上的模型要靠它才能
 > 免重启看见；前端随回执把整段五键选择覆盖写入（fresh 全部启用、图片能力跟随
