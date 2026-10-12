@@ -157,7 +157,7 @@ ok('挂上了 /qoder/pool', typeof handler === 'function', [...routes.keys()].sl
  * 发一次真 GET。
  *
  * `fetch` 在这里被换成「上游不可达」：额度查询失败**不该**让快照失败 ——
- * 页面上的号码、当前使用、冷却标记都不依赖它（余额显示「—」而已）。
+ * 页面上的号码、当前使用、停用标记都不依赖它（余额显示「—」而已）。
  */
 const realFetch = globalThis.fetch;
 globalThis.fetch = async () => {
@@ -192,14 +192,14 @@ const snapshot = async (url = POOL_PATH, target = handler, method = 'GET') => {
   ok('快照里没有 distribution（分配策略已删，只留优先）', !('distribution' in body), Object.keys(body).join(','));
 
   /**
-   * 「当前使用」的判据：没显式选过时是**池里第一个账号**（Trae 同款确定性
-   * 默认值）。刻意不是「下一个会用的」那种按额度挑的规则 —— 那会让界面上
-   * 的「当前使用」随余额漂移，用户点一次切换都定不住。
+   * 「当前使用」的判据（完全手动语义）：没显式选过时**没有**当前账号 ——
+   * 界面显示「—」，请求失败并提示先「切换到此账号」。刻意不默认第一个账号：
+   * 那等于「没选也能自动用上第一个」，与手动切换语义冲突。
    */
-  ok('没选过时 current = 池里第一个账号', body.effectiveSelectedAccountId === FIRST, `${body.effectiveSelectedAccountId} vs ${FIRST}`);
+  ok('没选过时没有「当前使用」', body.effectiveSelectedAccountId === null, `${body.effectiveSelectedAccountId} vs ${FIRST}`);
   ok('未显式选择时 selectedAccountId 为 null（不假装选过）', body.selectedAccountId === null, String(body.selectedAccountId));
   const flagged = (body.accounts ?? []).filter((a) => a.selected === true);
-  ok('恰好一个账号被标成「当前使用」', flagged.length === 1 && flagged[0].id === FIRST, JSON.stringify((body.accounts ?? []).map((a) => [a.id, a.selected])));
+  ok('没选过时没有卡片被标成「当前使用」', flagged.length === 0, JSON.stringify((body.accounts ?? []).map((a) => [a.id, a.selected])));
   ok('「本次调用」与「当前使用」是两个独立字段', 'serving' in body && body.serving !== null);
 }
 
@@ -232,45 +232,51 @@ const snapshot = async (url = POOL_PATH, target = handler, method = 'GET') => {
   ok('另一张卡变成备用', (body.accounts ?? []).find((a) => a.id === FIRST)?.selected === false);
 }
 
-/* —— 4) 当前账号被限流 → 自动让位给备用，但「当前使用」标记**不动** —— */
+/* —— 4) 选中账号不可用 → 请求直接失败（完全手动，不让位）—— */
 {
   warns.length = 0;
-  pool.penalize(SECOND, Date.now() + 60_000);
+  // 把选中的 SECOND 停用：这正是「不可用」的一种
+  disabled = [SECOND];
+  handlers.get('loader/volatile-update')?.();
 
   const acquired = await pool.acquire();
-  ok('冷却时自动换到备用账号', acquired?.id === FIRST, `${acquired?.id} vs ${FIRST}`);
+  ok('选中账号停用时请求失败（不自动换号）', acquired === undefined, String(acquired?.id));
+
   ok(
-    '让位写了一条说清原因的 warn 日志（池必须带 logger）',
-    warns.some((line) => line.includes('当前账号不可用') && line.includes('本次改用备用账号')),
+    '失败原因写了一条 warn 日志（请求失败而不是换号）',
+    warns.some((line) => line.includes('当前无可用账号') && line.includes('请手动切换账号')),
     JSON.stringify(warns),
   );
 
   const { body } = await snapshot();
-  const first = (body.accounts ?? []).find((a) => a.id === FIRST);
   const second = (body.accounts ?? []).find((a) => a.id === SECOND);
-  ok('冷却**不**改变「当前使用」（那是用户选的那个）', body.effectiveSelectedAccountId === SECOND, String(body.effectiveSelectedAccountId));
-  ok('新账号被标成冷却中（可用性另有标记）', second?.cooling === true, JSON.stringify(second?.cooldownUntilMs));
-  ok('备用卡片自己也如实展示', first?.selected === false && first?.cooling === false);
-  ok('「本次调用」如实指向真正在服务的那个（可能与当前使用不同）', body.lastServedId === undefined || body.lastServedId === null || body.lastServedId === FIRST, String(body.lastServedId));
+  ok('停用不改变「当前使用」（那是用户选的那个）', body.effectiveSelectedAccountId === SECOND, String(body.effectiveSelectedAccountId));
+  ok('停用账号被标成已停用', second?.disabled === true);
+  ok('「本次调用」没有可服务的账号', body.serving?.accountId === undefined || body.serving?.accountId === null, JSON.stringify(body.serving));
+
+  disabled = [];
+  handlers.get('loader/volatile-update')?.();
+  const recovered = await pool.acquire();
+  ok('恢复停用后又能用回选中账号', recovered?.id === SECOND, String(recovered?.id));
 }
 
-/* —— 5) 停用 / 保留额度走同一条线 —— */
+/* —— 5) 停用走同一条线（保留额度已删除）—— */
 {
   disabled = [FIRST];
-  reserves = { [SECOND]: 30 };
   handlers.get('loader/volatile-update')?.();
 
   const { body } = await snapshot();
   ok('停用列表推到了快照（停用卡片置灰）', (body.accounts ?? []).find((a) => a.id === FIRST)?.disabled === true);
-  ok('保留额度推到了快照（输入框里的数字）', (body.accounts ?? []).find((a) => a.id === SECOND)?.creditReserve === 30, JSON.stringify(body.creditReserves));
+  ok('快照里没有保留额度字段', !('creditReserves' in body), Object.keys(body).join(','));
+  ok('账号行里没有保留额度字段', (body.accounts ?? []).every((a) => a.creditReserve === undefined));
 }
 
-/* —— 6) 清空选择 = 回到确定性默认值 —— */
+/* —— 6) 清空选择 = 无可用账号 —— */
 {
   selected = '';
   handlers.get('loader/volatile-update')?.();
   const { body } = await snapshot();
-  ok('清空选择后回到池里第一个账号', body.selectedAccountId === null && body.effectiveSelectedAccountId === FIRST, `${body.selectedAccountId} / ${body.effectiveSelectedAccountId}`);
+  ok('清空选择后没有当前账号（请求将失败）', body.selectedAccountId === null && body.effectiveSelectedAccountId === null, `${body.selectedAccountId} / ${body.effectiveSelectedAccountId}`);
 }
 
 /**

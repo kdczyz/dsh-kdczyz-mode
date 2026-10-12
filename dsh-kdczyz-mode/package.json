@@ -1,6 +1,6 @@
 {
   "name": "dsh-kdczyz-mode",
-  "version": "1.1.0",
+  "version": "1.2.5-beta",
   "description": "WorkBuddy + Trae + Qoder merged into one DSH plugin: the WorkBuddy desktop account/model pool, the Trae connector and the Qoder account pool as three independent providers, plus one settings page with six tabs — two configuration tabs (XD Pool / Trae config: provider switch, account binding, model selection and its own multi-account pool) and four management/read-only tabs (accounts [WorkBuddy + Trae + Qoder, three columns] / Qoder pool / credits / usage history).",
   "repository": {
     "type": "git",
@@ -68,8 +68,8 @@
   },
   "scripts": {
     "build:console": "node scripts/gen-console-inline.mjs && node scripts/gen-xdpool-client.mjs",
-    "check:console": "node scripts/gen-console-inline.mjs --check",
-    "test": "node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs && node test/trae-pool.test.mjs && node test/trae-checkin-route.test.mjs && node test/wb-pool-selected.test.mjs && node test/wb-auth.test.mjs && node test/wb-fingerprint.test.mjs && node test/trae-auth.test.mjs && node test/qoder-auth.test.mjs && node test/qoder-pool.test.mjs && node test/qoder-pool-route.test.mjs && node test/qoder-credits.test.mjs && node test/qoder-campaign.test.mjs && node test/qoder-checkin-route.test.mjs && node test/qoder-relay.test.mjs && node test/qoder-catalog.test.mjs && node test/qoder-shim.test.mjs && node test/qoder-chat.test.mjs && node test/qoder-streaming.test.mjs && node test/qoder-payload.test.mjs && node test/qoder-dedup.test.mjs && node test/qoder-fingerprint.test.mjs && node test/qoder-provider.test.mjs && node test/host-assembly.test.mjs",
+    "check:console": "node scripts/gen-console-inline.mjs --check && node scripts/gen-xdpool-client.mjs --check",
+    "test": "node scripts/gen-console-inline.mjs --check && node scripts/gen-xdpool-client.mjs --check && node test/credit-store.test.mjs && node test/client-apply.test.mjs && node test/console-render.test.mjs && node test/trae-pool.test.mjs && node test/trae-checkin-route.test.mjs && node test/wb-pool-selected.test.mjs && node test/wb-auth.test.mjs && node test/wb-fingerprint.test.mjs && node test/trae-auth.test.mjs && node test/qoder-auth.test.mjs && node test/qoder-pool.test.mjs && node test/qoder-pool-route.test.mjs && node test/qoder-credits.test.mjs && node test/qoder-campaign.test.mjs && node test/qoder-checkin-route.test.mjs && node test/qoder-relay.test.mjs && node test/qoder-catalog.test.mjs && node test/qoder-shim.test.mjs && node test/qoder-chat.test.mjs && node test/qoder-streaming.test.mjs && node test/qoder-payload.test.mjs && node test/qoder-dedup.test.mjs && node test/qoder-fingerprint.test.mjs && node test/qoder-provider.test.mjs && node test/host-assembly.test.mjs",
     "test:host-assembly": "node test/host-assembly.test.mjs",
     "test:store": "node test/credit-store.test.mjs",
     "test:client": "node test/client-apply.test.mjs",

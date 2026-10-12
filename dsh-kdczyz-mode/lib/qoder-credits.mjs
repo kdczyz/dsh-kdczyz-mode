@@ -395,8 +395,8 @@ export async function fetchQoderQuotaUsage(credential, options = {}) {
  * 2. **单个账号失败不影响其它账号**，也**不写余额**。读失败就保持
  *    `credits` 为 `null`（卡片显示「—」而不是「0」），下次刷新再试。
  *
- * 余额写回走 `pool.noteCredits()`，于是「保留额度」判据（`creditReserves`）
- * 立刻拿到新值生效 —— 这正是刷新积分的主要用途。
+ * 余额写回走 `pool.noteCredits()`，卡片据此显示每个账号还剩多少 ——
+ * 这正是刷新积分的主要用途。（保留额度判据已随「完全手动」删除。）
  *
  * 账号 id 直接取池里的 `account.id`，不另算一份 —— 迭代池自己的账号列表，
  * 保证 `noteCredits` 必然命中（算错 id 会让它因「池里没这个账号」静默不记）。

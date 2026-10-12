@@ -497,6 +497,18 @@ export async function pickAuthDir(candidates, fallbackDir) {
 }
 
 /**
+ * WorkBuddy 插件自有凭据目录：DSH 主目录下的 `.wb-auth`。
+ *
+ * 与 Trae 的 `.trae-auth.<region>.<accountId>.json` 同思路：插件「添加账号」
+ * 写在这里，不放进桌面端 app 的目录 —— 删掉桌面 app、卸载清掉它的数据目录
+ * 都不影响插件账号；vendored 池的 `candidateAuthDirs()` 同时扫描桌面目录与
+ * 本目录，两边账号并存、同账号按 id 合并取较新的那份。
+ */
+export function dshAuthDir(dshHomeDir) {
+  return join(dshHomeDir, '.wb-auth');
+}
+
+/**
  * 把一个登录结果写成一个 `*.info` 凭据文件。
  *
  * 文件名字带账号 id，重复登录同一账号会**覆盖**自己那一份（幂等），

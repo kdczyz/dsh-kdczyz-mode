@@ -13,6 +13,7 @@
 # and the plugin silently never runs ("未运行" in the plugin manager, with only a
 # passing "1 entry did not activate" warning).
 #
+#
 # The two halves each declare `enabledModelIds` / `imageModelIds` /
 # `contextBudgets` / `authFile` with DIFFERENT semantics. Cordis keys a plugin's
 # runtime — and therefore its `Config` schema — by the resolved `apply`

@@ -527,15 +527,15 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
   const { qoderPool } = await import('../lib/index.js');
   ok('管理页 qoderPool() 复用 provider 的池（同一个对象）', qoderPool() === api.pool);
 
-  // ① 启动时把设置读进池
+  // ① 启动时把设置读进池（保留额度已删除，这里刻意仍传旧键：必须被安全忽略）
   selected = 'account-from-settings';
   disabled = ['account-off'];
   reserves = { 'account-off': 30 };
   const applied = api.syncPoolConfig();
   ok('syncPoolConfig 读到了 settings 里的当前账号', api.pool.selectedAccountId() === 'account-from-settings', String(api.pool.selectedAccountId()));
   ok('syncPoolConfig 把停用列表推给了池', api.pool.disabledIdsInOrder().length === 0 && api.pool.isDisabled('account-off') === true);
-  ok('syncPoolConfig 把保留额度推给了池', api.pool.creditReserveOf('account-off') === 30, String(api.pool.creditReserveOf('account-off')));
-  ok('返回值就是推下去的那份配置', applied.selectedAccountId === 'account-from-settings' && applied.creditReserves['account-off'] === 30);
+  ok('syncPoolConfig 不再推保留额度（旧键被忽略）', api.pool.creditReserveOf === undefined, String(api.pool.creditReserveOf));
+  ok('返回值就是推下去的那份配置（只有两键）', applied.selectedAccountId === 'account-from-settings' && !('creditReserves' in applied), JSON.stringify(applied));
 
   // ② 宿主发 volatile-update → 池跟着换（不必重启、不必等下一次请求）
   ok('注册了 loader/volatile-update 监听', handlers.has('loader/volatile-update'));

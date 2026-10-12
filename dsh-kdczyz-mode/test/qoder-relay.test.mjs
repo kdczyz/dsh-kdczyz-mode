@@ -242,9 +242,9 @@ ok('signature 不重试（换号也签不过）', qoderRelayRetryable('signature
 ok('client 不重试（协议错误）', qoderRelayRetryable('client') === false);
 ok('not_found 不重试', qoderRelayRetryable('not_found') === false);
 
-/* —— 11) 失败回灌号池 —— */
+/* —— 11) 失败回灌号池（已随冷却机制删除：降级为纯日志 no-op） —— */
 {
-  /** 记录调用的假号池 */
+  /** 记录是否被调用的假号池 */
   const fakePool = () => {
     const calls = [];
     return {
@@ -255,21 +255,18 @@ ok('not_found 不重试', qoderRelayRetryable('not_found') === false);
   };
 
   let p = fakePool();
-  ok('hard_credit → penalizeExhausted（整账号）', applyQoderRelayFailure(p, 'a1', { kind: 'hard_credit' }) === 'penalizeExhausted');
-  ok('  → 真的调了 penalizeExhausted', p.calls[0][0] === 'penalizeExhausted' && p.calls[0][1] === 'a1');
+  ok('任何 kind 都返回 noop（不再惩罚账号）', applyQoderRelayFailure(p, 'a1', { kind: 'hard_credit' }) === 'noop');
+  ok('  → 池没有被调用（冷却已删除）', p.calls.length === 0);
 
   p = fakePool();
   applyQoderRelayFailure(p, 'a1', { kind: 'soft_rate', modelId: 'm1', resetAtMs: 123 });
-  ok('soft_rate → penalize 且带上 modelId（按模型冷却）', p.calls[0][0] === 'penalize' && p.calls[0][3] === 'm1');
-  ok('  → resetAtMs 透传（上游给的比本地估算准）', p.calls[0][2] === 123);
+  ok('soft_rate 同样 noop', p.calls.length === 0);
 
-  p = fakePool();
-  ok('signature 不惩罚账号', applyQoderRelayFailure(p, 'a1', { kind: 'signature' }) === 'noop');
-  ok('  → 池没被调用', p.calls.length === 0);
+  applyQoderRelayFailure(p, 'a1', { kind: 'signature' });
   applyQoderRelayFailure(p, 'a1', { kind: 'client' });
   applyQoderRelayFailure(p, 'a1', { kind: 'session_dead' });
   applyQoderRelayFailure(p, 'a1', { kind: 'not_found' });
-  ok('client / session_dead / not_found 都不惩罚', p.calls.length === 0);
+  ok('所有 kind 都不惩罚、不触碰池状态', p.calls.length === 0);
 
   ok('无池不抛（返回 noop）', applyQoderRelayFailure(undefined, 'a1', { kind: 'hard_credit' }) === 'noop');
   ok('池缺方法不抛', applyQoderRelayFailure({}, 'a1', { kind: 'hard_credit' }) === 'noop');
