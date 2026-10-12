@@ -20,7 +20,6 @@
     ".": "./lib/index.js",
     "./trae": "./lib/trae.js",
     "./qoder": "./lib/qoder.js",
-    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -92,21 +91,5 @@
     "test:qoder-streaming": "node test/qoder-streaming.test.mjs",
     "test:qoder-payload": "node test/qoder-payload.test.mjs",
     "test:qoder-dedup": "node test/qoder-dedup.test.mjs"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-settings-plugins",
-        "@deepseek-ai/dsh-client-ui-primitives"
-      ],
-      "platform": "web"
-    }
   }
 }

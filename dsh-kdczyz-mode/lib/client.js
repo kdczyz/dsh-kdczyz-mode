@@ -6034,17 +6034,18 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
 // 内联执行可以只注册一次、顺序可控，且 vendored 代码一行都不用改
 // （便于日后对照上游升级）。
 //
-// 注意注册 id：本 bundle 用**合并后的包名** dsh-kdczyz-mode 注册，
-// 因为 client-modules 是按包名建表、按包名 require 的；两个 vendored 脚本
-// 各自声明的 id 由下面的替身加载器捕获，不会真的注册进模块表。
+// 注意注册 id：本 bundle 用**安装包名** kdczyz-dsh-model 注册，因为 client-modules
+// 是按包名建表、按包名 require 的（官方规范：\"the browser artifact registers a
+// lazy factory whose id equals the package name\"）；两个 vendored 脚本各自声明的
+// id 由下面的替身加载器捕获，不会真的注册进模块表。
 window.__ModuleLoader__.load({
-  id: 'dsh-kdczyz-mode',
+  id: 'kdczyz-dsh-model',
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
 
     /** 与 package.json 的 name 一致；cordis 用它定位模块 */
-    const pkgName = 'dsh-kdczyz-mode';
+    const pkgName = 'kdczyz-dsh-model';
 
     // React 运行时：管理页组件要用。
     //

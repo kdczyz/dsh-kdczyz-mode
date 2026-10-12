@@ -35,6 +35,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 let pass = 0;
@@ -175,20 +176,65 @@ if (PLUGIN === undefined) {
     ok('package.json 可读', false, error.message);
   }
 
-  /* —— 5) client bundle 唯一性（2026-10-12 启动崩溃的根因）—— */
+  /* —— 5) Loader entry 名必须能从 profile 解析 —— */
   //
-  // DSH 的 client-modules 对每个「声明了 ./client 的 manifest」各 emit 份
-  // client bundle。wrapper 与内层 manifest 若都声明了 ./client，且归一化后
-  // 指向**同一个物理文件**，那这份代码会被打进同一个 module scope 两次：
+  // 2026-10-12 真机故障：包从 `dsh-kdczyz-mode` 改名为 `kdczyz-dsh-model` 后，
+  // 包内 cordis.patch.yml 的三个 entry 名没跟着改，于是宿主报
+  //
+  //   1 entry did not activate llm-workbuddy-xdpool (dsh-kdczyz-mode): failed to import
+  //
+  // 而插件管理页只显示「未运行」，没有任何报错 —— 因为 Loader 按 entry 的
+  // `name:` 去 import，而 `dsh-kdczyz-mode` 已经不是可解析的包名（它现在只是
+  // kdczyz-dsh-model 内部的一个子目录）。
+  //
+  // 这条断言直接拿 patch 里声明的 name 去解析，是拦这个故障的第一道防线。
+  const patchFile = path.join(PLUGIN, 'dsh-kdczyz-mode', 'cordis.patch.yml');
+  const patchCandidates = [patchFile, path.join(PLUGIN, 'cordis.patch.yml')]
+    .filter((f) => fs.existsSync(f));
+  if (patchCandidates.length === 0) {
+    ok('找到 cordis.patch.yml', false, patchFile);
+  } else {
+    let patchText = fs.readFileSync(patchCandidates[0], 'utf8');
+    // dsh.bundle.patch 可能指向别处，优先用 manifest 声明的那个
+    const declaredPatch = manifest.dsh?.bundle?.patch;
+    if (typeof declaredPatch === 'string') {
+      const p = path.resolve(PLUGIN, declaredPatch);
+      if (fs.existsSync(p)) patchText = fs.readFileSync(p, 'utf8');
+    }
+    const names = [...patchText.matchAll(/^\s*name:\s*(\S+)\s*$/gm)].map((m) => m[1]);
+    ok('patch 里声明了 Loader entry 名', names.length > 0, `找到 ${names.length} 个`);
+    for (const name of names) {
+      // 裸名 entry：必须能作为包名解析（这是 client 归属者）
+      // 子路径 entry：所属包名必须能解析
+      const pkgName = name.startsWith('@')
+        ? name.split('/').slice(0, 2).join('/')
+        : name.split('/')[0];
+      let resolved;
+      try {
+        resolved = createRequire(path.join(PROFILE, 'package.json')).resolve(`${pkgName}/package.json`);
+      } catch (error) {
+        ok(`entry "${name}" 可解析`, false, `${pkgName} 解析失败: ${error.code ?? error.message}`);
+        continue;
+      }
+      ok(`entry "${name}" 可解析`, fs.existsSync(resolved), resolved);
+    }
+  }
+
+  /* —— 6) client bundle 唯一性（2026-10-12 启动崩溃的根因）—— */
+  //
+  // DSH 的 client-modules 对每个「声明了 dsh.client 的 package」emit 一份 client
+  // bundle。wrapper 与内层 manifest 若都声明了，且归一化后指向**同一个物理
+  // 文件**，这份代码会被打进同一个 module scope 两次：
   //
   //   Uncaught SyntaxError: Identifier 'XDPOOL_CLIENT_SRC' has already been declared
   //   -> entry 激活失败 -> web boot: 1 entry did not activate -> 应用起不来
   //
-  // 关键在于 loader 的归属判定（client-modules 的 nearestPackage）：
-  //   - 裸名 entry   expectedPackageName = 包名 -> 向上找 name 相等的 manifest
-  //   - 子路径 entry expectedPackageName = undefined -> 向上找**第一个** manifest 即接受
-  // 于是裸名 entry 归wrapper、子路径 entry 归内层 —— 两个不同 packageName
-  // 各自声称同一个 client.js。这条断言就是拦住这个组合。
+  // 归属规则（client-modules 的 locatePkgJson/resolveMeta，逐字核对过）：
+  //   - 裸名 entry   expectedPackageName = 包名 -> 向上找 name 相等的 manifest；包装成
+  //                  `kdczyz-dsh-model` 时归 **wrapper**
+  //   - 子路径 entry `if (!pathLike && expectedPackageName === void 0) return void 0;`
+  //                  -> **完全不贡献 client**，不会与裸名 entry 抢
+  // 所以 client 必须且只能由 wrapper 声明 —— 这条断言就锁这个不变量。
   const claims = [];
   for (const dir of [PLUGIN, path.join(PLUGIN, 'dsh-kdczyz-mode')]) {
     const manifestPath = path.join(dir, 'package.json');
@@ -196,11 +242,12 @@ if (PLUGIN === undefined) {
     let pkg;
     try { pkg = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { continue; }
     const target = pkg.exports?.['./client'];
-    if (typeof target !== 'string') continue;
+    if (typeof target !== 'string' && pkg.dsh?.client === undefined) continue;
     claims.push({
       name: pkg.name,
       manifest: path.relative(PROFILE_NM, manifestPath),
-      file: path.resolve(dir, target),
+      file: typeof target === 'string' ? path.resolve(dir, target) : '(未声明 ./client)',
+      declaresDshClient: pkg.dsh?.client !== undefined,
     });
   }
   const byFile = new Map();
@@ -211,6 +258,14 @@ if (PLUGIN === undefined) {
     collided.length === 0,
     collided.map(([f, names]) => `${path.relative(PROFILE_NM, f)} 被 ${names.join(' + ')} 同时声明`).join('; '),
   );
+  // 声明了 dsh.client 的 manifest 必须同时给出 ./client，否则 resolveMeta 抛错
+  for (const c of claims) {
+    ok(
+      `${c.name} 声明 dsh.client 时也提供 ./client`,
+      !c.declaresDshClient || c.file !== '(未声明 ./client)',
+      c.manifest,
+    );
+  }
 }
 
 console.log(`\nhost-assembly: ${pass} 通过, ${fail} 失败${skip > 0 ? `, ${skip} 跳过` : ''}`);
