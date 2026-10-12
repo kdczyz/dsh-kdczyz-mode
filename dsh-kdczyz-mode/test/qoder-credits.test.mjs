@@ -1,10 +1,9 @@
 /**
  * Qoder 额度查询（lib/qoder-credits.mjs）的单测。
  *
- * 为什么要有这个文件：额度查询决定「账号还剩多少积分」以及「保留额度该不该
- * 把这个账号挡在轮转外」。这部分错了不会抛异常 —— 表现为「明明还有加量包，
- * 账号却被当成空号踢掉」，或者更糟：「网络断了，卡片显示这个号 0 积分」，
- * 用户据此删掉一个好账号。
+ * 为什么要有这个文件：额度查询决定「账号还剩多少积分」。这部分错了不会抛异常
+ * —— 表现为「明明还有加量包，账号却被当成空号踢掉」，或者更糟：「网络断了，
+ * 卡片显示这个号 0 积分」，用户据此删掉一个好账号。
  *
  * 因此本文件用**真实的 T1 响应原文**做 fixture，而不是自己编一个「理想结构」
  * —— 编出来的结构永远恰好被自己的解析器接受，测不出形态漂移。覆盖：
@@ -14,7 +13,7 @@
  *   - 余额口径：三池求和、负数 clamp、主池空但加量包有余额
  *   - 网络失败 / 非 2xx / 非 JSON / 形态不认识
  *   - 批量刷新：逐账号记余额、单账号失败不牵连、串行
- *   - 与号池保留额度的联动（刷新积分的主要用途）
+ *   - 与号池的联动（刷新积分的主要用途，完全手动切换语义下反映新余额）
  *
  * 运行：node test/qoder-credits.test.mjs
  */
@@ -349,23 +348,42 @@ console.log('\n== 批量刷新 ==');
   ok('串行发出（不并发打上游）', maxInFlight === 1, maxInFlight);
 }
 
-console.log('\n== 与号池保留额度的联动 ==');
+console.log('\n== 与号池的联动（完全手动切换） ==');
 {
+  // 保留额度 / 分配策略 / 轮换已在 beta 重构中删除。号池现在是**完全手动**
+  // 切换：`available()` 只看「是否被停用」（余额不参与可用性），真正的取号只
+  // 认 `selectAccount` 选中的那一个（`resolveSelected`）。这个用例验证的是
+  // 刷新积分的真正用途：`refreshQoderPoolCredits` 把余额记回号池后，
+  // `creditsOf` / `available` / `resolveSelected` 都反映新余额。
   const pool = new QoderAccountPool({ store: fakeStore([cred('low', '低额'), cred('high', '高额')]) });
   await pool.scan();
   const [lowId, highId] = pool.list().map((account) => account.id);
-  pool.setCreditReserves({ [lowId]: 50, [highId]: 50 });
 
-  ok('刷新前没有余额数据 ⇒ 保留额度判据无值可用，两个都算可用', pool.available(Date.now()).length === 2);
+  pool.selectAccount(highId);
+  ok('未选中/选中前都不借余额判断：两个都没被停用，都算可用', pool.available(Date.now()).length === 2);
+  ok('刷新前选中的账号可直接取号（尚未刷新也能用）', pool.resolveSelected(Date.now())?.id === highId);
 
   const result = await refreshQoderPoolCredits(pool, {
     fetcher: fakeFetcher((n) => fakeResponse(200, { userQuota: { remaining: n === 1 ? 10 : 900 } })),
   });
   ok('两个账号都刷新成功', result.refreshed === 2);
-  ok('余额被记住', pool.creditsOf(lowId) === 10 && pool.creditsOf(highId) === 900);
+  ok('余额被记住（低额 10 / 高额 900）', pool.creditsOf(lowId) === 10 && pool.creditsOf(highId) === 900);
+
+  ok('刷新后：选中的账号仍然可取号', pool.resolveSelected(Date.now())?.id === highId);
   ok(
-    '刷新后：低于保留值的账号被挡在轮转外，另一个照常可用',
-    pool.available(Date.now()).map((a) => a.id).join(',') === highId,
+    '未选中的账号不参与取号（resolveSelected 不落到它）',
+    pool.resolveSelected(Date.now())?.id !== lowId,
+  );
+
+  // 完全手动：停用是唯一把账号从 available 里剔出去的方式（不是余额）。
+  pool.applyConfig({ disabledAccountIds: [highId] });
+  ok(
+    '刷新前后停用禁用照常生效：停用的账号被挡在 available 外',
+    pool.available(Date.now()).map((a) => a.id).join(',') === lowId,
+  );
+  ok(
+    '停用的选中账号 resolveSelected 落空（不自动让位、不自动换号）',
+    pool.resolveSelected(Date.now()) === undefined,
   );
 }
 
@@ -447,9 +465,15 @@ console.log('\n== resolveQoderServingCredits：显示的就是被调用的那个
   ok('窗口过期后重新读', fetcher.calls.length === 2 && refreshed.credits === 100);
 
   // 没有任何调用记录时如实说「这是下一个会用的」，而不是假装它已经服务过。
+  // 完全手动语义下「下一个会用的」= 用户**选中**的那个账号（resolveNext 只认
+  // selectedId，不自动换号），所以这里要先选中，预告才有意义。
   _resetQoderServedSlot();
   const virgin = new QoderAccountPool({ store: fakeStore([cred('u1', 'alice'), cred('u2', 'bob')]) });
   await virgin.scan();
+  // 完全手动语义下「下一个会用的」= 用户**选中**的那个账号（resolveNext 只认
+  // selectedId，不自动换号），所以提前选中以表达「这是下一会取号的目标」。
+  const aliceId = virgin.list().find((a) => a.label === 'alice').id;
+  virgin.selectAccount(aliceId);
   const nextFetcher = fakeFetcher(fakeResponse(200, ADDON_BODY));
   const preview = await resolveQoderServingCredits(virgin, { fetcher: nextFetcher });
   ok('没有调用记录时给出预告', preview.source === 'next', preview.source);
@@ -511,7 +535,7 @@ console.log('\n== resolveQoderServingCredits：读失败绝不伪造成 0 ==');
   ok('读失败时 credits 为 null（不是 0）', failing.credits === null, String(failing.credits));
   ok('读失败时给出原因', typeof failing.error === 'string' && failing.error !== '', failing.error);
   ok('读失败时仍然知道是谁被调用了', failing.accountId === only.id && failing.source === 'served');
-  ok('读失败不写余额（不污染号池的保留额度判据）', pool.creditsOf(only.id) === undefined);
+  ok('读失败不写余额（保持未知，界面显示 — 而非 0）', pool.creditsOf(only.id) === undefined);
   ok('读失败不推进「读到的时刻」（下次还会重试）', pool.creditsAt(only.id) === 0);
 
   // 上游返回 401：同样是失败，不能当成「余额 0」。

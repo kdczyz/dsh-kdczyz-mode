@@ -90,7 +90,7 @@ const qoderCtx = {
 };
 const before = currentQoderApi();
 applyQoder(qoderCtx, {
-  selectedAccountId: { get: () => '' },
+  selectedAccountId: { get: () => FIRST },
   disabledAccountIds: { get: () => [] },
   creditReserves: { get: () => ({}) },
 });
@@ -247,7 +247,7 @@ const post = async (body, { method = 'POST', origin = 'http://127.0.0.1:19387', 
 
   /* 核心断言：签到没有把「当前使用」换掉 */
   eq('池的当前账号没动', pool.effectiveSelectedAccountId(), FIRST);
-  eq('也没有写「显式选中」（签到不该改设置）', pool.selectedAccountId() ?? null, null);
+  eq('没有把选中切成签到账号（本次用 SECOND 签到、选中仍是 FIRST）', pool.selectedAccountId(), FIRST);
   const acquired = await pool.acquire();
   eq('请求路径仍然用原来那个账号', acquired?.id, FIRST);
 

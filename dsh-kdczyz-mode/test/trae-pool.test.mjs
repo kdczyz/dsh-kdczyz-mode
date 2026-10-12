@@ -7,11 +7,11 @@
  * 以前的测试只能覆盖到渲染层，完全碰不到这里。
  *
  * 这里用一个假 store（提供若干账号的凭据）直接驱动池，覆盖：
- *   - scan 发现账号、保留已有冷却状态
- *   - 三种分配策略的取号行为
- *   - 429 只冷却该模型、402 冷却整个账号
- *   - 冷却中的账号被跳过；全都冷却时重新扫描
- *   - 停用 / 保留额度让账号退出轮换
+ *   - scan 发现账号
+ *   - 完全手动取号：未 prefer 时取不到；prefer 后只取指定账号
+ *   - 停用的账号无法被取到（prefer 它也会失败）
+ *   - noteServed / lastServedId
+ *   - 无 store / 无账号时安全降级
  *   - 显式偏好（prefer）优先
  *
  * 运行：node test/trae-pool.test.mjs
@@ -85,126 +85,88 @@ console.log('Trae 号池测试\n');
   const found = await pool.scan();
   ok('scan 发现全部 3 个账号', found.length === 3, `实际 ${found.length}`);
   ok('每个账号都有 id 与 label', found.every((a) => typeof a.id === 'string' && a.id !== '' && typeof a.label === 'string'));
-  ok('新账号默认不在冷却', found.every((a) => a.cooldownUntilMs === 0));
-  ok('status() 报出账号数与冷却数', pool.status().count === 3 && pool.status().cooling === 0);
+  ok('status() 报出账号数', pool.status().count === 3, `实际 ${pool.status().count}`);
 }
 
-// —— 2) scan 保留已有冷却状态 ——
+// —— 2) 完全手动：未 prefer 时取不到账号 ——
 {
-  const pool = new TraeAccountPool({ store: makeStore(2) });
+  const pool = new TraeAccountPool({ store: makeStore(3) });
   await pool.scan();
-  const ids = await idsOf(pool);
-  pool.penalize(ids[0], Date.now() + 60_000);
-  // 再扫一次：冷却必须还在（扫描是每次取号失败时都会跑的，不能把冷却抹掉）
-  await pool.scan();
-  ok('重新 scan 不清掉已有冷却', pool.list().find((a) => a.id === ids[0]).cooldownUntilMs > Date.now());
-}
-
-// —— 3) 三种分配策略 ——
-for (const [dist, expect] of [
-  ['priority', 'priority'],
-  ['round-robin', 'round-robin'],
-  ['balanced', 'balanced'],
-]) {
-  const pool = new TraeAccountPool({ store: makeStore(3), distribution: dist });
-  await pool.scan();
-  ok(`分配策略 ${dist} 被记住`, pool.currentDistribution() === expect);
-}
-
-// —— 4) priority：总是第一个，直到它被冷却 ——
-{
-  const pool = new TraeAccountPool({ store: makeStore(3), distribution: 'priority' });
-  await pool.scan();
-  const ids = await idsOf(pool);
-  const first = await pool.acquire('m1');
-  ok('priority 取第一个账号', first.id === ids[0]);
-  // 冷却第一个 → 应换下一个
-  pool.penalize(ids[0], Date.now() + 60_000);
-  const second = await pool.acquire('m1');
-  ok('priority 在被冷却后换下一个账号', second.id === ids[1], `实际 ${second?.id}`);
-}
-
-// —— 5) round-robin：依次轮换 ——
-{
-  const pool = new TraeAccountPool({ store: makeStore(3), distribution: 'round-robin' });
-  await pool.scan();
-  const ids = await idsOf(pool);
-  const a = await pool.acquire('m1');
-  const b = await pool.acquire('m1');
-  const c = await pool.acquire('m1');
-  ok('round-robin 连续三次取到三个不同账号', new Set([a.id, b.id, c.id]).size === 3, `${a.id},${b.id},${c.id}`);
-  void ids;
-}
-
-// —— 6) 429 只冷却该模型，不影响同账号其它模型 ——
-{
-  const pool = new TraeAccountPool({ store: makeStore(2) });
-  await pool.scan();
-  const ids = await idsOf(pool);
-  pool.penalize(ids[0], Date.now() + 60_000, 'model-A');
-  const onOtherModel = await pool.acquire('model-B');
-  const onCooledModel = await pool.acquire('model-A');
-  ok('429 后同账号的其它模型仍可用', onOtherModel.id === ids[0], `实际 ${onOtherModel?.id}`);
-  ok('429 后该模型换到别的账号', onCooledModel.id === ids[1], `实际 ${onCooledModel?.id}`);
-}
-
-// —— 7) 402 冷却整个账号 ——
-{
-  const pool = new TraeAccountPool({ store: makeStore(2) });
-  await pool.scan();
-  const ids = await idsOf(pool);
-  pool.penalizeExhausted(ids[0]);
-  const anyModel = await pool.acquire('m1');
-  const otherModel = await pool.acquire('m2');
-  ok('额度耗尽后该账号不再服务任何模型', anyModel.id === ids[1] && otherModel.id === ids[1]);
-}
-
-// —— 8) 全都冷却时返回 undefined（并已重新扫描过）——
-{
-  const pool = new TraeAccountPool({ store: makeStore(2) });
-  await pool.scan();
-  for (const a of pool.list()) pool.penalize(a.id, Date.now() + 60_000);
+  ok('池非空（scan 后有三个账号）', pool.list().length === 3);
   const got = await pool.acquire('m1');
-  ok('所有账号都冷却时取不到账号（返回 undefined）', got === undefined);
+  ok('未 prefer 任何账号时 acquire 返回 undefined（不自动让位）', got === undefined);
 }
 
-// —— 9) 停用账号退出轮换 ——
+// —— 3) prefer 某账号 → acquire 只返回它 ——
+{
+  const pool = new TraeAccountPool({ store: makeStore(3) });
+  await pool.scan();
+  const ids = await idsOf(pool);
+  pool.prefer(ids[1]);
+  const got = await pool.acquire('m1');
+  ok('prefer 后 acquire 返回指定账号', got !== undefined && got.id === ids[1], `实际 ${got?.id}`);
+  const again = await pool.acquire('m1');
+  ok('多次取号始终回到同一个账号（不轮换）', again?.id === ids[1], `实际 ${again?.id}`);
+}
+
+// —— 4) prefer 不存在的账号 → acquire 返回 undefined ——
+{
+  const pool = new TraeAccountPool({ store: makeStore(2) });
+  await pool.scan();
+  pool.prefer('no-such-account');
+  const got = await pool.acquire('m1');
+  ok('prefer 不在池里的账号时取不到（返回 undefined）', got === undefined);
+}
+
+// —— 5) prefer 一个已停用的账号 → acquire 返回 undefined ——
 {
   const pool = new TraeAccountPool({ store: makeStore(2) });
   await pool.scan();
   const ids = await idsOf(pool);
   pool.applyConfig({ disabledAccountIds: [ids[0]] });
+  pool.prefer(ids[0]);
   const got = await pool.acquire('m1');
-  ok('停用的账号不参与取号', got.id === ids[1]);
-  ok('isDisabled 反映停用状态', pool.isDisabled(ids[0]) === true && pool.isDisabled(ids[1]) === false);
+  ok('prefer 被停用的账号时取不到（返回 undefined）', got === undefined);
 }
 
-// —— 10) 保留额度：余额低于下限的账号退出轮换 ——
+// —— 6) 账号被停用后，prefer 其它账号仍可用 ——
 {
   const pool = new TraeAccountPool({ store: makeStore(2) });
   await pool.scan();
   const ids = await idsOf(pool);
-  pool.noteCredits(ids[0], 50);
-  pool.applyConfig({ creditReserves: { [ids[0]]: 100 } });
+  pool.applyConfig({ disabledAccountIds: [ids[0]] });
+  ok('isDisabled 反映停用状态', pool.isDisabled(ids[0]) === true && pool.isDisabled(ids[1]) === false);
+  pool.prefer(ids[1]);
   const got = await pool.acquire('m1');
-  ok('余额低于保留额度的账号退出轮换', got.id === ids[1], `实际 ${got?.id}`);
-  // 余额充足 → 回到轮换
-  pool.noteCredits(ids[0], 500);
-  const back = await pool.acquire('m1');
-  ok('余额充足后该账号重新可用', back.id === ids[0], `实际 ${back?.id}`);
+  ok('停用一个账号不影响其它被 prefer 的账号', got?.id === ids[1], `实际 ${got?.id}`);
 }
 
-// —— 11) 显式偏好优先 ——
+// —— 7) 空池时 acquire 会先 scan ——
 {
-  const pool = new TraeAccountPool({ store: makeStore(3) });
+  const pool = new TraeAccountPool({ store: makeStore(2) });
+  // 凭据还没进池，直接由凭据算出它在池里的 id，再 prefer 它
+  const expectedId = traeAccountId({ edition: 'solo', userId: 'user-0', accountName: '账号0' });
+  pool.prefer(expectedId);
+  // 不手动 scan：acquire 遇到空池应自动 scan 建池，然后取到 prefer 的账号
+  const got = await pool.acquire('m1');
+  ok('acquire 在池空时自动 scan，并取到 prefer 的账号', got !== undefined && got.id === expectedId, `实际 ${got ? got.id : got}`);
+  const after = await pool.acquire('m1');
+  ok('后续取号不再走空池（同一账号）', after?.id === expectedId, `实际 ${after?.id}`);
+}
+
+// —— 8) noteCredits / creditsOf ——
+{
+  const pool = new TraeAccountPool({ store: makeStore(2) });
   await pool.scan();
   const ids = await idsOf(pool);
-  pool.prefer(ids[2]);
-  const got = await pool.acquire('m1');
-  ok('prefer 指定的账号优先被取到', got.id === ids[2], `实际 ${got?.id}`);
+  ok('未记录余额时 creditsOf 为 undefined', pool.creditsOf(ids[0]) === undefined);
+  pool.noteCredits(ids[0], 1234);
+  ok('noteCredits 后 creditsOf 返回记录值', pool.creditsOf(ids[0]) === 1234);
+  pool.noteCredits(ids[0], Number.NaN);
+  ok('记录非有限余额被忽略', pool.creditsOf(ids[0]) === 1234);
 }
 
-// —— 12) noteServed / lastServedId ——
+// —— 9) noteServed / lastServedId ——
 {
   const pool = new TraeAccountPool({ store: makeStore(2) });
   await pool.scan();
@@ -214,17 +176,7 @@ for (const [dist, expect] of [
   ok('noteServed 后 lastServedId 记录下来', pool.lastServedId() === ids[1]);
 }
 
-// —— 13) 清除冷却 ——
-{
-  const pool = new TraeAccountPool({ store: makeStore(2) });
-  await pool.scan();
-  for (const a of pool.list()) pool.penalize(a.id, Date.now() + 60_000);
-  pool.resetCooldowns();
-  const got = await pool.acquire('m1');
-  ok('清除冷却后账号重新可用', got !== undefined);
-}
-
-// —— 14) 无 store 时安全降级 ——
+// —— 10) 无 store 时安全降级 ——
 {
   const pool = new TraeAccountPool({});
   const got = await pool.acquire('m1');
@@ -232,7 +184,7 @@ for (const [dist, expect] of [
   ok('没有 store 时 scan 不抛', (await pool.scan()).length === 0);
 }
 
-// —— 15) 无账号时不抛 ——
+// —— 11) 无账号时不抛 ——
 {
   const pool = new TraeAccountPool({ store: makeStore(0) });
   const got = await pool.acquire('m1');

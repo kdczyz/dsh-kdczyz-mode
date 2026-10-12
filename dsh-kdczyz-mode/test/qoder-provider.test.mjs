@@ -563,7 +563,7 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
   const patchPath = path.resolve(import.meta.dirname, '../cordis.patch.yml');
   const patch = fs.readFileSync(patchPath, 'utf8');
   ok('cordis.patch.yml 里有 dsh-connect-qoder 条目', patch.includes('dsh-connect-qoder'));
-  ok('该条目的 name 指向 dsh-kdczyz-mode/qoder', /name:\s*dsh-kdczyz-mode\/qoder\b/.test(patch));
+  ok('该条目的 name 指向 kdczyz-dsh-model/qoder', /name:\s*kdczyz-dsh-model\/qoder\b/.test(patch), patch);
 }
 
 console.log(`\nqoder-provider: ${pass} 通过, ${fail} 失败`);

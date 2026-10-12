@@ -319,12 +319,12 @@ const require_ = makeRequire(fakeReact);
 let mod = null;
 try {
   new Function('window', 'document', source)(globalThis.window, globalThis.document);
-  const def = definitions.get('dsh-kdczyz-mode');
+  const def = definitions.get('kdczyz-dsh-model');
   ok('模块已注册到 __ModuleLoader__', def !== undefined);
   mod = def.factory(require_);
   ok('factory 返回 exports', mod !== null && typeof mod === 'object');
   ok('导出 apply', typeof mod.apply === 'function');
-  ok('导出 name', mod.name === 'dsh-kdczyz-mode');
+  ok('导出 name', mod.name === 'kdczyz-dsh-model');
   ok('导出 inject = [slots, locale]', JSON.stringify(mod.inject) === JSON.stringify(['slots', 'locale']));
 } catch (e) {
   ok('加载模块不抛异常', false, e.message);
@@ -463,7 +463,7 @@ if (mine.length === 1) {
     throw new Error(`unexpected require: ${name}`);
   };
   new Function('window', 'document', source)(globalThis.window, globalThis.document);
-  const mod4 = definitions.get('dsh-kdczyz-mode').factory(require2);
+  const mod4 = definitions.get('kdczyz-dsh-model').factory(require2);
   const ctx4 = makeCtx();
   mod4.apply(ctx4);
   // 声明到达 → 槽位回调开跑，管理页这才注册出来
@@ -522,7 +522,7 @@ if (mine.length === 1) {
     registrations.length = 0;
     installGlobals();
     new Function('window', 'document', source)(globalThis.window, globalThis.document);
-    const mod5 = definitions.get('dsh-kdczyz-mode').factory(require3);
+    const mod5 = definitions.get('kdczyz-dsh-model').factory(require3);
     const ctx5 = makeCtx();
     mod5.apply(ctx5);
     ctx5.flushSlots();
@@ -571,7 +571,7 @@ installGlobals();
 const brokenRequire = () => { throw new Error('react not found'); };
 try {
   new Function('window', 'document', source)(globalThis.window, globalThis.document);
-  const def = definitions.get('dsh-kdczyz-mode');
+  const def = definitions.get('kdczyz-dsh-model');
   const mod2 = def.factory(brokenRequire);
   let err2 = null;
   const ctx2 = makeCtx();
@@ -603,7 +603,7 @@ try {
   installGlobals();
   const ctx6 = makeCtx();
   new Function('window', 'document', source)(globalThis.window, globalThis.document);
-  const mod6 = definitions.get('dsh-kdczyz-mode').factory(require_);
+  const mod6 = definitions.get('kdczyz-dsh-model').factory(require_);
   mod6.apply(ctx6);
   ctx6.flushSlots();
 
@@ -625,7 +625,7 @@ registrations.length = 0;
 installGlobals();
 try {
   new Function('window', 'document', source)(globalThis.window, globalThis.document);
-  const def = definitions.get('dsh-kdczyz-mode');
+  const def = definitions.get('kdczyz-dsh-model');
   const mod3 = def.factory(require_);
   let err3 = null;
   try {
