@@ -1,6 +1,6 @@
 {
   "name": "kdczyz-dsh-model",
-  "version": "1.2.1-beta",
+  "version": "1.2.2-beta",
   "description": "Installable wrapper for the DSH plugin in dsh-kdczyz-mode/: WorkBuddy model pool + Trae connector + Qoder account pool as three independent providers, plus one settings page with six tabs (XD Pool / Trae config [provider switch, account binding, model selection, account pool] / accounts [WorkBuddy + Trae + Qoder, three columns] / Qoder pool [device-flow login, per-account credits, cooldown] / credits / usage history). This root manifest exists so the DSH plugin manager can install the package: it declares dsh.bundle.patch at its root and re-exports the inner package's entry points. It deliberately declares NO dsh.client and NO ./client export - the client half belongs to the inner dsh-kdczyz-mode package. Re-exporting ./client here would make two manifests claim the same client.js; DSH emits one client bundle per claiming package, and the duplicate makes the renderer throw 'Identifier XDPOOL_CLIENT_SRC has already been declared', which fails web boot and prevents the app from starting.",
   "repository": {
     "type": "git",

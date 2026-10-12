@@ -7,11 +7,15 @@
  *   宿主加载方式一变就可能整个 bundle 起不来 —— 这个坑踩过（空白页）。
  *   所以生成器直接把源码写成一个 const，走字符串注入执行。
  *
- * 用法：node scripts/gen-xdpool-client.mjs
+ * 用法：
+ *   node scripts/gen-xdpool-client.mjs          # 写入
+ *   node scripts/gen-xdpool-client.mjs --check  # 只校验是否已同步
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const CHECK = process.argv.includes('--check');
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -45,6 +49,23 @@ const block = [
   'const XDPOOL_CLIENT_SRC = ' + JSON.stringify(src) + ';',
   END,
 ];
+
+if (CHECK) {
+  // 校验模式：不写文件，只看生成块是否与 vendor 源码一致。
+  // 接入 npm test —— 改了 vendor 却忘了重跑生成脚本时，测试会直接失败。
+  const current = b >= 0 && e > b ? lines.slice(b, e + 1) : [];
+  const same =
+    current.length === block.length &&
+    current.every((line, i) => line === block[i]);
+  if (same) {
+    console.log('✓ 生成块已同步');
+    process.exit(0);
+  }
+  console.error(
+    '✗ 生成块与 vendor/xdpool/lib/client.js 不同步，请重跑 node scripts/gen-xdpool-client.mjs',
+  );
+  process.exit(1);
+}
 
 let out;
 if (b >= 0 && e > b) {
