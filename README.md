@@ -1,11 +1,11 @@
-# dsh-kdczyz-mode
+# kdczyz-dsh-model
 
 把 **WorkBuddy** 与 **Trae** 两个桌面 App 的模型接进 DeepSeek Harness。
-**两边已合并为一个插件**：`dsh-kdczyz-mode`。
+**两边已合并为一个插件**：`kdczyz-dsh-model`。
 
 | 插件 | 状态 | 作用 |
 |---|---|---|
-| **`dsh-kdczyz-mode@1.1.0`** | **合并版 · 已部署** | WorkBuddy 模型池 + Trae 接入 + Qoder 号池，三个独立 provider 家族，共用一张三标签页管理页（三个配置页，各带「刷新账号 / 添加账号」） |
+| **`kdczyz-dsh-model@1.3.0`** | **合并版 · 已部署** | WorkBuddy 模型池 + Trae 接入 + Qoder 号池，三个独立 provider 家族，共用一张三标签页管理页（三个配置页，各带「刷新账号 / 添加账号」） |
 | `dsh-workbuddy-console@2.0.48` | 归档（已被合并版取代） | 合并前的 WorkBuddy 单插件 |
 | `dsh-connect-trae@3.0.0` | 归档（已被合并版取代） | 合并前的 Trae 单插件，原版未改动 |
 
@@ -15,10 +15,10 @@
 `trae`、`trae-global` —— 彼此独立，可同时使用。
 
 > **2026-10-09 变更**
-> - 两个插件**合并为 `dsh-kdczyz-mode`**，用两个 Loader entry 指向不同模块
+> - 两个插件**合并为 `kdczyz-dsh-model`**，用两个 Loader entry 指向不同模块
 >   （原生两套 Config schema，字段不会互相覆盖）。详见 [dsh-kdczyz-mode/README.md](dsh-kdczyz-mode/README.md)。
 > - profile 已切换：旧的两个包从 `dependencies` / `bundles` / `node_modules`
->   与 `pnpm-lock.yaml` 中**全部移除**，现在只挂 `dsh-kdczyz-mode`（link: 到本仓库）。
+>   与 `pnpm-lock.yaml` 中**全部移除**，现在只挂 `kdczyz-dsh-model`（link: 到本仓库）。
 > - 合并过程中修掉一个真实缺陷：`console.mjs` 的 `useEffect` 依赖数组在
 >   `loadTrae` 的 `const` 定义之前引用它（TDZ），渲染期抛错 → 设置面板白屏。
 > - WorkBuddy 的独立 Web 控制台（`/wb-console`）此前已移除，形态对齐 Trae —— 只注册 LLM provider。
@@ -50,8 +50,8 @@ winget install --id Git.Git -e --source winget
 
 ### 方式一：DSH 插件管理页（推荐）
 
-设置 → 插件 → 安装，填 `github:kdczyz/dsh-kdczyz-mode`（或
-`https://github.com/kdczyz/dsh-kdczyz-mode`），装完**重启 DSH**。
+设置 → 插件 → 安装，填 `github:kdczyz/kdczyz-dsh-model`（或
+`https://github.com/kdczyz/kdczyz-dsh-model`），装完**重启 DSH**。
 
 装之前先看一眼旧包：合并前的 `dsh-workbuddy-console`、`dsh-connect-trae`
 （以及单独的 Qoder 插件）如果还在，先在管理页卸掉 —— 同一批 Loader entry id
@@ -80,7 +80,7 @@ winget install --id Git.Git -e --source winget
 
 | 字段 | 值 | 作用 |
 |---|---|---|
-| `name` | `dsh-kdczyz-mode` | 与已部署的包名保持一致，profile 里存的 entry id / 设置项全部沿用 |
+| `name` | `kdczyz-dsh-model` | 与已部署的包名保持一致，profile 里存的 entry id / 设置项全部沿用 |
 | `main` / `exports["."]` | `./dsh-kdczyz-mode/lib/index.js` | WorkBuddy 半边入口 |
 | `exports["./trae"]` | `./dsh-kdczyz-mode/lib/trae.js` | Trae 半边入口（第二个 Loader entry） |
 | `exports["./qoder"]` | `./dsh-kdczyz-mode/lib/qoder.js` | Qoder 半边入口（第三个 Loader entry） |
@@ -104,7 +104,7 @@ winget install --id Git.Git -e --source winget
 改代码即时生效（要重启 DSH）。它是 macOS 专用的（用了 `rsync` 与 `.app` 内的绝对路径），
 新设备请用方式一。
 
-> 两种方式的包名都是 `dsh-kdczyz-mode`，但**同时只能走一条**：管理页装了 git 版本后，
+> 两种方式的包名都是 `kdczyz-dsh-model`，但**同时只能走一条**：管理页装了 git 版本后，
 > 本地 `link:` 会被替换掉，反之亦然。
 
 **宿主内包不用你管。** 三个入口在模块顶层 import 的 `@earendil-works/pi-ai`、
@@ -564,7 +564,7 @@ web boot: 1 entry did not activate」）。根因是 `lib/client.js` 的包装�
 
 ## 七、合并前后的形态对比
 
-| | `dsh-kdczyz-mode`（合并版） | 合并前的两个插件 |
+| | `kdczyz-dsh-model`（合并版） | 合并前的两个插件 |
 |---|---|---|
 | 包数量 | **1 个** | 2 个 |
 | Loader entry | 3 个（指向不同模块，三套独立 Config） | 各 1 个 |

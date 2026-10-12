@@ -1149,6 +1149,10 @@ export function mountConsoleRoutes(ctx, config) {
                 contextWindow: m.contextWindow,
                 ...(m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens }),
                 supportsImages: m.supportsImages === true,
+                // 积分倍率（上游 `price_factor`）透传给管理页，让 Qoder 模型卡与
+                // Trae 一样在名称后显示 `x倍率`。`undefined` = 上游没给倍率，页面
+                // 保持原名。
+                ...(m.priceFactor === undefined ? {} : { priceFactor: m.priceFactor }),
               })),
               usingFallback: api.catalog.usingFallback(),
               lastFetchAtMs: api.catalog.lastFetchAtMs(),

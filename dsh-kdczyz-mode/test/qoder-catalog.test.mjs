@@ -18,7 +18,9 @@ import {
   QODER_FALLBACK_CONTEXT_WINDOW,
   QODER_FALLBACK_MODELS,
   QoderCatalog,
+  qoderFactorSuffix,
   qoderInputModalities,
+  qoderModelDisplayName,
 } from '../lib/qoder-catalog.mjs';
 
 let pass = 0;
@@ -264,6 +266,48 @@ ok(
   await cat.refresh(CRED);
   ok('刷新结束后能重新打（不是永久复用旧 promise）', calls === 2, `实际 ${calls} 次`);
   ok('并发期间不影响目录可用', cat.current().length === 1 && cat.current()[0].id === 'a1');
+}
+
+/* —— 11) 积分倍率：解析 + 展示 —— */
+{
+  const body = JSON.stringify({
+    chat: [
+      { key: 'qmodel_38max', display_name: 'Qwen3.8-Max', price_factor: 0.8 },
+      { key: 'gfmodel', display_name: 'GLM-5.3-Flash', price_factor: 0.06 },
+      { key: 'kmodel', display_name: 'Kimi-K2.8-Preview', price_factor: 1.62 },
+      { key: 'hy3', display_name: 'Hy3', price_factor: 0 },
+      { key: 'plain', display_name: 'Plain' },
+    ],
+  });
+  const cat = new QoderCatalog({ fetcher: fakeFetcher([jsonResponse(body)]) });
+  const r = await cat.refresh(CRED);
+  const byId = new Map(cat.current().map((m) => [m.id, m]));
+  ok('上游给了 5 条就解析出 5 条', r?.ok === true && cat.current().length === 5);
+  ok('price_factor 落到条目（0.8）', byId.get('qmodel_38max')?.priceFactor === 0.8);
+  ok('price_factor 落到条目（0.06）', byId.get('gfmodel')?.priceFactor === 0.06);
+  ok('price_factor 落到条目（1.62）', byId.get('kmodel')?.priceFactor === 1.62);
+  ok('price_factor 为 0 也保留（免费）', byId.get('hy3')?.priceFactor === 0);
+  ok('无 price_factor → 字段不存在', !('priceFactor' in (byId.get('plain') ?? {})));
+}
+
+/* —— 12) 展示名与倍率后缀 —— */
+{
+  ok(
+    '带倍率 → 名称后接 ` · x0.8`',
+    qoderModelDisplayName({ name: 'Qwen3.8-Max', priceFactor: 0.8 }) === 'Qwen3.8-Max · x0.8',
+  );
+  ok('整数倍率不补零', qoderModelDisplayName({ name: 'M', priceFactor: 2 }) === 'M · x2');
+  ok('倍率 0 → 免费', qoderModelDisplayName({ name: 'Hy3', priceFactor: 0 }) === 'Hy3 · 免费');
+  ok('无倍率 → 保持原名', qoderModelDisplayName({ name: 'Plain' }) === 'Plain');
+  ok('价格缺失的条目 fallback 不补倍率（无 priceFactor 字段）', qoderModelDisplayName(QODER_FALLBACK_MODELS[0]) === QODER_FALLBACK_MODELS[0].name);
+  ok('name 缺失用 id 兜底', qoderModelDisplayName({ id: 'm1', priceFactor: 0.8 }) === 'm1 · x0.8');
+  ok('priceFactor 非数字 → 无后缀', qoderModelDisplayName({ name: 'M', priceFactor: NaN }) === 'M');
+  // 后缀碎片
+  ok('qoderFactorSuffix(0.8) → "x0.8"', qoderFactorSuffix(0.8) === 'x0.8');
+  ok('qoderFactorSuffix(1.62) → "x1.62"', qoderFactorSuffix(1.62) === 'x1.62');
+  ok('qoderFactorSuffix(2) → "x2"', qoderFactorSuffix(2) === 'x2');
+  ok('qoderFactorSuffix(0) → "免费"', qoderFactorSuffix(0) === '免费');
+  ok('qoderFactorSuffix(NaN) → undefined', qoderFactorSuffix(NaN) === undefined);
 }
 
 console.log(`\n${pass} 通过, ${fail} 失败`);

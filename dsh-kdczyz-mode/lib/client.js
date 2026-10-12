@@ -2548,6 +2548,24 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
     }
 
     /**
+     * Qoder 模型卡显示名：名称后接积分倍率（如 `Qwen3.8-Max · x0.8 · 图片`）。
+     *
+     * 与 lib/qoder-catalog.mjs 的 `qoderModelDisplayName` 同一套格式（整数直接转、
+     * 非整数 toFixed(2) 去尾 0 和尾点；`priceFactor === 0` 显示「免费」）。这里不能
+     * import Node 模块（浏览器端），所以内联一个等价的轻量版。`priceFactor` 来自
+     * 上游目录（`/qoder/models/refresh` 透传），缺失 = 上游没给，保持原名不虚构。
+     */
+    function qoderFactorLabel(model) {
+      const factor = model?.priceFactor;
+      if (typeof factor !== 'number' || !Number.isFinite(factor)) return null;
+      if (factor === 0) return '免费';
+      const text = Number.isInteger(factor)
+        ? String(factor)
+        : factor.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+      return `x${text}`;
+    }
+
+    /**
      * Qoder 模型列（与「Qoder 号池」并排的第二列）。
      *
      * 与另两家（WorkBuddy / Trae）的模型列**逐条同款**：每张卡上只留一个「启用」
@@ -2850,7 +2868,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         ModelCard,
                         {
                           id: model.id,
-                          name: [model.name ?? model.id, upstreamImages ? '图片' : null]
+                          name: [model.name ?? model.id, qoderFactorLabel(model), upstreamImages ? '图片' : null]
                             .filter(Boolean)
                             .join(' · '),
                           checked: enabledSet.has(model.id),

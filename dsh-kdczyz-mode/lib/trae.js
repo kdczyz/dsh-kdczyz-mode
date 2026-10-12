@@ -3429,6 +3429,25 @@ function remoteDressing(region) {
 	};
 }
 /**
+* Browser-shaped UA built from the REAL host platform, used by the two web
+* clients (model-catalog + usage/check-in despite their `x-device-type` being the
+* real machine platform).
+*
+* Why not a hardcoded Windows UA: a macOS machine reports `x-device-type: mac`
+* in the Trae identity headers while the web client sent
+* `Mozilla/5.0 (Windows NT 10.0; Win64; x64)` — a device that is simultaneously
+* macOS and Windows is itself a recognition signal (the same mismatch
+* trae-auth's `collectSystemInfo` fixes on the login path). Building the UA from
+* `os` avoids the mix. A generic `Mozilla/5.0` with no platform is equally
+* anomalous, so both web surfaces get the same real-platform spelling.
+*/
+function traeWebUserAgent() {
+	const osBits = process.platform === "darwin" ? "Macintosh; Intel Mac OS X 10_15_7" :
+		process.platform === "win32" ? "Windows NT 10.0; Win64; x64" :
+		"X11; Linux x86_64";
+	return `Mozilla/5.0 (${osBits}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36`;
+}
+/**
 * Read-only model catalog client for the SOLO Web API.
 *
 * This deliberately has no chat/session method: the Remote session protocol
@@ -3453,7 +3472,7 @@ var TraeSoloRemoteCatalogClient = class {
 			"x-trae-user-timezone": dressing.timezone,
 			"x-preferenced-language": dressing.language,
 			"Referer": dressing.referer,
-			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+			"User-Agent": traeWebUserAgent()
 		};
 	}
 	async fetchModels(signal) {
@@ -4281,7 +4300,7 @@ var TraeUsageClient = class {
 		return {
 			"Authorization": `Cloud-IDE-JWT ${credential.accessToken}`,
 			"Content-Type": "application/json",
-			"User-Agent": "Mozilla/5.0",
+			"User-Agent": traeWebUserAgent(),
 			"Origin": origin,
 			"Referer": `${origin}/`
 		};

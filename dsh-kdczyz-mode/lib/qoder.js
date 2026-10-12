@@ -39,6 +39,7 @@ import {
   QoderCatalog,
   QODER_FALLBACK_CONTEXT_WINDOW,
   qoderInputModalities,
+  qoderModelDisplayName,
 } from './qoder-catalog.mjs';
 import { readOrCreateQoderMachineId } from './qoder-auth.mjs';
 import { createQoderFingerprint } from './qoder-fingerprint.mjs';
@@ -258,7 +259,7 @@ function selectModels(models, config) {
 function toPiModel(model, baseUrl, providerId) {
   return {
     id: model.id,
-    name: model.name ?? model.id,
+    name: qoderModelDisplayName(model),
     api: 'openai-completions',
     provider: providerId,
     baseUrl,
@@ -1077,7 +1078,7 @@ function apply(ctx, config) {
       ctx.llm.registerModelDiscovery(settingsNs, async () =>
         visibleModels().map((m) => ({
           id: m.id,
-          name: m.name ?? m.id,
+          name: qoderModelDisplayName(m),
           contextWindow: m.contextWindow ?? QODER_FALLBACK_CONTEXT_WINDOW,
           ...(m.maxTokens === undefined ? {} : { maxTokens: m.maxTokens }),
           inputModalities: qoderInputModalities(m),

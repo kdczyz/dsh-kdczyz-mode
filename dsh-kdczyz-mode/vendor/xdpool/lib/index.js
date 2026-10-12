@@ -401,7 +401,13 @@ function billingHeaders(credential) {
 	const headers = {
 		"Authorization": `Bearer ${credential.accessToken}`,
 		"Accept": "application/json",
-		"Content-Type": "application/json"
+		"Content-Type": "application/json",
+		// 官方客户端对 billing/签到/积分这类调用同样带完整 UA 与同源 Origin/Referer；
+		// 裸奔（无 UA / 无 Origin）本身就是"脚本客户端"最强的信号 —— 签到链此前
+		// 100% 无 UA，是最高优先级的隐藏痕迹点之一。这里补齐成与 chat 同形。
+		"Origin": originReferer(credential),
+		"Referer": `${originReferer(credential)}/`,
+		"User-Agent": CLIENT_UA
 	};
 	if (credential.uid !== "" && credential.uid !== void 0) headers["X-User-Id"] = credential.uid;
 	if (credential.enterpriseId !== void 0 && credential.enterpriseId !== "") {
@@ -1283,9 +1289,16 @@ var WorkBuddyUpstreamClient = class {
 	*/
 	desktopFingerprint(credential) {
 		const now = Date.now();
+		// 官方 body 里的 ideVersion / extVersion 与 header 的 UA 同源（都是当前桌面版本）。
+		// 此前固定 "5.5.6" 而 header UA 是 5.7.7，同一请求 body < header，版本不一致本身
+		// 就是可识别的破绽。改从版本常量派生，消除这处内部打架。
+		const ideVersion = WORKBUDDY_DESKTOP_VERSION;
+		// 报告延迟做真机节律抖动（[1500, 3500]ms），避免所有账号用同一个固定 2000ms ——
+		// 无抖动的固定节律是"自动化定时任务"的典型信号。
+		const reportDelay = 1500 + Math.floor(Math.random() * 2000);
 		return {
 			timezone: "Asia/Shanghai",
-			reportDelay: 2e3,
+			reportDelay,
 			userId: credential.uid ?? "",
 			username: credential.nickname ?? "",
 			userNickname: credential.nickname ?? "",
@@ -1294,11 +1307,11 @@ var WorkBuddyUpstreamClient = class {
 			commit: "5f9692923c93033111c51ad7b003eb80204a9b75",
 			ideName: "WorkBuddy",
 			ideType: "WorkBuddy",
-			ideVersion: "5.5.6",
+			ideVersion,
 			machineId: deriveDeviceId(credential, "machine"),
 			sessionId: deriveDeviceId(credential, "session"),
 			extName: "workbuddy-desktop",
-			extVersion: "5.5.6",
+			extVersion: ideVersion,
 			os: "win32",
 			arch: "x64",
 			osVersion: "10.0.26220",
