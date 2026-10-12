@@ -4599,7 +4599,7 @@ console.log('\n胶囊展开的账号卡片\n');
     calls.map((c) => c.url).join(' '),
   );
   const row = findRow(node, '国内号');
-  ok('每行都有一个开关 + 一个切换按钮', findByClass(row, 'wotr-credit-switch') !== null && findByClass(row, 'wotr-credit-mini') !== null, text);
+  ok('每行都有「切换到此账号」按钮', findByClass(row, 'wotr-credit-mini') !== null, text);
   ok(
     '被固定的那一行标明「已固定」，并且按钮变成「取消固定」',
     (() => {
@@ -4615,53 +4615,6 @@ console.log('\n胶囊展开的账号卡片\n');
     text,
   );
   ok('页脚说明取数时机（不轮询）', text.includes('打开卡片时取一次'), text);
-  globalThis.fetch = prevFetch;
-}
-
-// B) WorkBuddy 的开关：走路由（服务端按整份设置合并，跨区域安全）
-{
-  const prevFetch = globalThis.fetch;
-  const calls = routeFetch([
-    ['region=cn', { ok: true, selectedAccountId: 'cn1', activeAccountId: 'cn1', accounts: [{ id: 'cn1', nickname: '国内号', credits: { total: 1200 } }, { id: 'cn2', nickname: '国内备用', credits: { total: 40 } }] }],
-    ['region=global', { ok: true, activeAccountId: 'g1', accounts: [{ id: 'g1', nickname: '国际号', credits: { total: 80 } }] }],
-  ]);
-  let node = null;
-  let err = null;
-  try {
-    const first = renderOpenPill('workbuddy-xdpool', makeEmbedded());
-    node = first.node;
-    cardRefresh(node)?.props?.onClick?.();
-    await new Promise((r) => setTimeout(r, 0));
-    first.react.reset();
-    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
-    // 点「国内备用」那一行的开关
-    const row = findRow(node, '国内备用');
-    findByClass(row, 'wotr-credit-switch')?.props?.onClick?.();
-    await new Promise((r) => setTimeout(r, 0));
-    first.react.reset();
-    node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
-  } catch (e) {
-    err = e;
-  }
-  const write = calls.find((c) => c.url.includes('/accounts/disabled'));
-  ok(
-    'WorkBuddy 的开关走 /accounts/disabled（POST）',
-    err === null && write !== undefined && write.method === 'POST',
-    err?.message ?? calls.map((c) => `${c.method} ${c.url}`).join(' | '),
-  );
-  ok(
-    '请求体只带 accountId 与 disabled',
-    write !== undefined && JSON.parse(String(write.body))?.accountId === 'cn2' && JSON.parse(String(write.body))?.disabled === true,
-    String(write?.body),
-  );
-  const out = [];
-  collectText(node, out);
-  ok('停用之后卡片上那一行的开关变成关闭态', findByClass(findRow(node, '国内备用'), 'wotr-credit-switch')?.props?.['data-on'] === '0', out.join(''));
-  ok(
-    '写的是国内版那一行，国际版没被连带改动',
-    calls.filter((c) => c.url.includes('/accounts/disabled')).length === 1,
-    calls.map((c) => c.url).join(' '),
-  );
   globalThis.fetch = prevFetch;
 }
 
@@ -4735,8 +4688,6 @@ console.log('\n胶囊展开的账号卡片\n');
     await new Promise((r) => setTimeout(r, 0));
     first.react.reset();
     node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('trae').store });
-    // 停用「国内备用」
-    findByClass(findRow(node, '国内备用'), 'wotr-credit-switch')?.props?.onClick?.();
     await new Promise((r) => setTimeout(r, 0));
     first.react.reset();
     node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('trae').store });
@@ -4754,19 +4705,6 @@ console.log('\n胶囊展开的账号卡片\n');
   ok('Trae 卡片把国内版与国际版都列出来', err === null && text.includes('国内版') && text.includes('国际版'), err?.message ?? text);
   ok('Trae 两边的账号都在（国际版没有余额接口 → 显示 –）', text.includes('国内号') && text.includes('4,500') && text.includes('国际号'), text);
   ok('Trae 卡片行显示的也是通用池剩余，不是发放总量 9,000', !text.includes('9,000'), text);
-  const disabledWrite = scope.writes.find((w) => w.field === 'regions');
-  ok(
-    'Trae 的开关写 regions（不动 ai 那边的 enabled）',
-    disabledWrite?.value?.ai?.enabled === true,
-    JSON.stringify(disabledWrite?.value),
-  );
-  ok(
-    'Trae 的停用是**合并**：既有的 keep-me 没被抹掉，新 id 加进去了',
-    Array.isArray(disabledWrite?.value?.cn?.disabledAccountIds) &&
-      disabledWrite.value.cn.disabledAccountIds.includes('keep-me') &&
-      disabledWrite.value.cn.disabledAccountIds.includes('acct-2'),
-    JSON.stringify(disabledWrite?.value?.cn?.disabledAccountIds),
-  );
   const accountsWrite = scope.writes.find((w) => w.field === 'accounts');
   ok('Trae 的切换写 accounts.cn = acct-2', accountsWrite?.value?.cn === 'acct-2', JSON.stringify(accountsWrite?.value));
   ok(
@@ -4779,7 +4717,7 @@ console.log('\n胶囊展开的账号卡片\n');
   globalThis.fetch = prevFetch;
 }
 
-// E) Qoder：只有一个池，所以不分组；两个控件写各自字段且都做合并
+// E) Qoder：只有一个池，所以不分组；控件（切换）写各自字段
 {
   const prevFetch = globalThis.fetch;
   const scope = makeLiveScope({ disabledAccountIds: ['other'], selectedAccountId: 'q1' });
@@ -4807,7 +4745,6 @@ console.log('\n胶囊展开的账号卡片\n');
     await new Promise((r) => setTimeout(r, 0));
     first.react.reset();
     node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('qoder').store });
-    findByClass(findRow(node, 'q2-accou'), 'wotr-credit-switch')?.props?.onClick?.();
     await new Promise((r) => setTimeout(r, 0));
     findByClass(findRow(node, 'q2-accou'), 'wotr-credit-mini')?.props?.onClick?.();
     await new Promise((r) => setTimeout(r, 0));
@@ -4820,12 +4757,6 @@ console.log('\n胶囊展开的账号卡片\n');
   collectText(node, out);
   const text = out.join('');
   ok('Qoder 卡片渲染且不出现区域分组标题', err === null && text.includes('Qoder · 2 个账号') && !text.includes('国内版'), err?.message ?? text);
-  const disabledWrite = scope.writes.find((w) => w.field === 'disabledAccountIds');
-  ok(
-    'Qoder 的停用写 disabledAccountIds 且保留 other',
-    Array.isArray(disabledWrite?.value) && disabledWrite.value.includes('other') && disabledWrite.value.includes('q2'),
-    JSON.stringify(disabledWrite?.value),
-  );
   const selectWrite = scope.writes.find((w) => w.field === 'selectedAccountId');
   ok('Qoder 的切换写 selectedAccountId = q2', selectWrite?.value === 'q2', JSON.stringify(selectWrite?.value));
   ok(

@@ -332,14 +332,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
   .wotr-credit-row-credits{flex:none;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
   .wotr-credit-row-foot{display:flex;align-items:center;justify-content:space-between;gap:8px}
   .wotr-credit-tags{display:flex;align-items:center;gap:4px;flex-wrap:wrap;min-width:0}
-  /* 启停开关：本页自绘（不引 primitives 的 Switch），配色沿用本文件
-     既有的 token 组合 —— 开 = label-primary 底 + bg-layer-1 滑块，
-     与 .wbc-btn-primary 同一套对比关系，深浅色主题下都不会糊。 */
-  .wotr-credit-switch{position:relative;flex:none;width:30px;height:16px;padding:0;border:none;border-radius:8px;background:var(--dsw-alias-bg-layer-3,rgba(127,127,127,.35));cursor:pointer;transition:background .12s ease-out}
-  .wotr-credit-switch::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-label-secondary,#888);transition:transform .12s ease-out,background .12s ease-out}
-  .wotr-credit-switch[data-on="1"]{background:var(--dsw-alias-label-primary,#4c8dff)}
-  .wotr-credit-switch[data-on="1"]::after{transform:translateX(14px);background:var(--dsw-alias-bg-layer-1,#fff)}
-  .wotr-credit-switch:disabled{opacity:.5;cursor:default}
   .wotr-credit-foot{margin-top:10px;padding-top:8px;border-top:.5px solid var(--dsw-alias-border-l2);font-size:11px;line-height:16px}
   .wotr-credit-note{margin-top:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary)}
   .wotr-credit-err{margin-top:6px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-error,#e5484d)}
@@ -4097,8 +4089,8 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      * 就地改缓存里的行（写完之后的即时反馈）。
      *
      * 刻意**不**为了这一次改动再打一遍状态接口 —— 那个接口每个账号都会触发一次
-     * 计费调用。写路径本身已经做过读回确认（见 setAccountDisabledRemote /
-     * selectAccountRemote），所以就地改动是有依据的；下一次打开卡片或点「刷新」
+     * 计费调用。写路径本身已经做过读回确认（见 selectAccountRemote），
+     * 所以就地改动是有依据的；下一次打开卡片或点「刷新」
      * 会用真实快照把它对齐。
      */
     function patchCreditRows(family, match, patch) {
@@ -4111,79 +4103,9 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       });
     }
 
-    /** 停用名单的加减：**只动这一个 id**，其余原样带过 */
-    function mergeDisabledIds(ids, accountId, disabled) {
-      const current = asArray(ids).filter((id) => typeof id === 'string' && id !== '');
-      return disabled
-        ? [...new Set([...current, accountId])]
-        : current.filter((id) => id !== accountId);
-    }
-
-    /** 两份停用名单是否等价（读回确认用；顺序无关） */
-    function sameIdSet(a, b) {
-      const left = asArray(a).filter((id) => typeof id === 'string' && id !== '');
-      const right = asArray(b).filter((id) => typeof id === 'string' && id !== '');
-      if (left.length !== right.length) return false;
-      const set = new Set(left);
-      return right.every((id) => set.has(id));
-    }
-
     /** 该平台设置作用域（拿不到就是 null，调用方按只读处理） */
     function creditScopeOf(family) {
       return poolScopeOf(family === 'qoder' ? qoderSettings : traeSettings);
-    }
-
-    /**
-     * 停用 / 启用一个账号 —— 三家写法不同，语义是同一条。
-     *
-     * WorkBuddy：走路由 `POST /accounts/disabled`。**不要**在这里自己拼
-     * `disabledAccountIds` 写设置：国内版与国际版共用**同一份**设置文档
-     * （两个 provider 用同一个 settingsNs、`settingsPath: []`），只按当前区域的
-     * 行拼出来的列表会把另一个区域的停用项整段抹掉。路由在服务端按整份设置合并
-     * （`setAccountDisabled` 读 `current().disabledAccountIds` 再加减一个 id）。
-     *
-     * Trae / Qoder：没有可用的写路由（Trae 的 `/pool/account` 只改进程内的池，
-     * 下一次设置同步就被覆盖回去），所以写设置字段 —— 但**从当前设置文档里读旧值
-     * 再合并**，而不是从行里拼。
-     */
-    async function setAccountDisabledRemote(family, region, accountId, disabled) {
-      if (typeof accountId !== 'string' || accountId === '') throw new Error('缺少账号 id');
-      const want = disabled === true;
-      if (family === 'wb') {
-        await fetchJson(`${POOL_API}/accounts/disabled`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ accountId, disabled: want }),
-        });
-        return;
-      }
-      const scope = creditScopeOf(family);
-      const who = family === 'qoder' ? 'qoder' : 'trae';
-      if (scope === undefined || scope === null) {
-        throw new Error(`${who}: 拿不到设置作用域，无法保存（配置页同一处也只读）`);
-      }
-      if (!poolWritable(scope)) throw new Error(`${who}: 设置当前不可写`);
-      if (family === 'qoder') {
-        const currentIds = asArray(unwrapVolatileDeep(scope.getSnapshot?.().value)?.disabledAccountIds);
-        const next = mergeDisabledIds(currentIds, accountId, want);
-        await writeSettingsField(
-          scope,
-          'disabledAccountIds',
-          next,
-          (doc) => sameIdSet(doc?.disabledAccountIds, next),
-          'qoder',
-        );
-        return;
-      }
-      const value = scope.getSnapshot?.().value;
-      const next = mergeDisabledIds(traeRegionSlotOf(value, region).disabledAccountIds, accountId, want);
-      const slot = { ...traeRegionSlotOf(value, region), disabledAccountIds: next };
-      await writeTraeField(
-        scope,
-        'regions',
-        nextRegionSlots(regionsMapOf(value), region, slot),
-        (readBack) => sameIdSet(traeRegionSlotOf(readBack, region).disabledAccountIds, next),
-      );
     }
 
     /**
@@ -4325,8 +4247,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      *
      * 展开的卡片里是**当前这个平台的全部账号**（不是「所有平台的账号」）：
      * WorkBuddy 与 Trae 各自的国内版 + 国际版都列出来，Qoder 只有一个池。
-     * 每行带两个控件 —— 「停用/启用」开关与「切换到此账号」，见
-     * setAccountDisabledRemote / selectAccountRemote 的语义说明。
+     * 每行带一个控件 —— 「切换到此账号」，见 selectAccountRemote 的语义说明。
      *
      * 刷新策略分两档，因为两档的成本差一个量级：
      *   - 胶囊那颗数字：**每 30 秒自动刷一次**（见 CREDIT_REFRESH_MS 的成本说明），
@@ -4602,28 +4523,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         refreshHeadline();
       };
 
-      /** 停用 / 启用某一行 */
-      const onToggleRow = async (row) => {
-        const next = row.disabled !== true;
-        setBusyRow(row.key);
-        setWriteError('');
-        setNote('');
-        try {
-          await setAccountDisabledRemote(row.family, row.region, row.id, next);
-          patchCreditRows(row.family, (r) => r.key === row.key, { disabled: next });
-          // 停掉的正好是「这一轮在用的那个」→ 胶囊上的主语马上就会变，补一发
-          if (next === true && row.serving === true && row.region === source.region) {
-            refreshHeadline();
-          }
-          setNote(next ? `已停用 ${row.name}，请求失败时请手动切换` : `已重新启用 ${row.name}`);
-        } catch (e) {
-          setWriteError(e?.message ?? String(e));
-        } finally {
-          setBusyRow('');
-          setTick((n) => n + 1);
-        }
-      };
-
       /** 切换到此账号 / 取消固定 */
       const onSelectRow = async (row) => {
         // WorkBuddy 独有的「取消固定」：完全手动语义下它的池把「没有当前账号」
@@ -4730,22 +4629,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         },
                         children: label,
                       }),
-                  jsx('button', {
-                    type: 'button',
-                    role: 'switch',
-                    className: 'wotr-credit-switch',
-                    'aria-checked': row.disabled === true ? 'false' : 'true',
-                    'aria-label': `${row.name} 停用/启用`,
-                    'data-on': row.disabled === true ? '0' : '1',
-                    disabled: busy,
-                    title:
-                      row.disabled === true
-                        ? `启用 ${row.fullName}（恢复参与取号）`
-                        : `停用 ${row.fullName}（选中它时请求会失败）`,
-                    onClick: () => {
-                      void onToggleRow(row);
-                    },
-                  }),
                 ],
               }),
             ],

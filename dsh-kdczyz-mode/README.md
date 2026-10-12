@@ -286,15 +286,15 @@ trae 页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 workbudd
 那个区域里正在服务的那一个账号**（WorkBuddy 用 `activeAccountId`、Trae 用
 `lastServedId` 退回「当前账号」、Qoder 用 `serving.accountId`），与卡片是两个口径。
 
-每一行有两个控件，对应用户要的两件不同的事：
+每一行只有一个控件（原先还有一个「停用 / 启用」开关，已移除 —— 完全手动语义下
+它只对「已选中的那个」有效，停用别的账号对请求毫无影响；停用的管理仍在设置页）：
 
 | 控件 | 干什么 | 打到哪 |
 |---|---|---|
-| **「参与轮换」开关** | 把这个账号移出 / 放回轮换 | WorkBuddy：`POST /plugins/dsh-workbuddy-xdpool/accounts/disabled`（服务端合并）；Trae / Qoder：设置 `regions` / `disabledAccountIds`，**读-改-写合并** |
 | **「切换到此账号」** | 下一次请求优先用它 | WorkBuddy：`POST …/accounts/select?region=cn\|global`；Trae：`POST /pool/account?region=` **且必须补一次 `accounts` 设置写**；Qoder：写 `selectedAccountId` |
 
 已经是「当前账号」的那一行：WorkBuddy 把按钮换成「**取消固定**」（`{accountId:null}`，
-交回轮换）；Trae / Qoder **不给按钮** —— 这两家的池永远有一个当前账号，
+交回手动状态（未选 → 请求失败））；Trae / Qoder **不给按钮** —— 这两家的池永远有一个当前账号，
 「切换到这个已经是当前的账号」是纯 no-op（两个配置页也是这么做的）。
 
 ### 四个「做反了也不会报错」的坑
@@ -303,7 +303,7 @@ trae 页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 workbudd
 |---|---|---|
 | Trae 的 `credits.total` 是**发放总量**，不是余额 | 真机上把 3,050（发放）当成余额显示，而账号只剩 796.88 | `accountCreditsOf(row, family)` 按平台取字段：Trae 取 `generalAvailable → available → total`，WorkBuddy / Qoder 取 `total → …`（Qoder 就是裸数字） |
 | WorkBuddy 的 `disabledAccountIds` 是**两个区域共用的一份扁平数组**（两个 provider 注册同一个 `settingsNs` + `settingsPath: []`） | 配置页只看得见本区域的账号，照本区域拼一份完整名单写回设置，会把**另一个区域**已停用的账号静默重新启用 | 启停只走 `/accounts/disabled` 路由（服务端对 `current().disabledAccountIds` 合并）；单测里除了断言「请求发出去了」，还断言**没有**顺手写那份设置 —— 只断言前者的话，「路由 + 顺手再写一次」也能全绿 |
-| 卡片开着的时候轮询额度 | 上游按账号计费（Trae 的 `/usage` 是一次实时计费读），卡片开着不动也在持续花钱 | 只在**打开卡片 / 手动刷新 / 写完一次启停或切换之后**取一次；`CREDIT_REFRESH_MS = 30000` 只作用于胶囊那颗数字。单测里钉着「展开卡片不新增任何 interval」 |
+| 卡片开着的时候轮询额度 | 上游按账号计费（Trae 的 `/usage` 是一次实时计费读），卡片开着不动也在持续花钱 | 只在**打开卡片 / 手动刷新 / 写完一次切换之后**取一次；`CREDIT_REFRESH_MS = 30000` 只作用于胶囊那颗数字。单测里钉着「展开卡片不新增任何 interval」 |
 | 行里的名字直接用上游昵称 | Qoder / Trae 的 label 是 uuid，卡片被撑破 | `shortAccountName()` 截到 8 个字符 + `…`，完整值放 `title` |
 
 ### 浮层为什么是 portal + fixed
@@ -337,7 +337,7 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 444 项：真正渲染三个 tab（三个配置页的同一套骨架与页头按钮、Qoder 单列）与 **composer 胶囊展开的账号卡片**，空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）、卡片的启停/切换两条写路径与「展开卡片不新增任何定时器」
+node test/console-render.test.mjs   # 420 项：真正渲染三个 tab（三个配置页的同一套骨架与页头按钮、Qoder 单列）与 **composer 胶囊展开的账号卡片**，空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）、卡片的启停/切换两条写路径与「展开卡片不新增任何定时器」
 node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
 node test/trae-checkin-route.test.mjs # 36 项：Trae 签到路由（指定账号走 clientOfAccount 且绝不碰绑定账号、设备门禁 9095 与「账号已签」分开、未知账号 404、方法/区域/来源/坏 JSON 边界）
