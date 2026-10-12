@@ -1,4 +1,4 @@
-# dsh-kdczyz-mode
+# kdczyz-dsh-model
 
 把 **WorkBuddy**、**Trae** 与 **Qoder** 三个桌面 App 的模型接进 DeepSeek Harness，
 **合并为一个插件**。三个 App 各是一个独立的 provider 家族，
@@ -11,7 +11,7 @@
 走 DSH 插件管理页，从 GitHub 直接装（前置只有 `git`）：
 
 ```text
-设置 → 插件 → 安装 → 填 github:kdczyz/dsh-kdczyz-mode
+设置 → 插件 → 安装 → 填 github:kdczyz/kdczyz-dsh-model
 ```
 
 Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`，
@@ -133,7 +133,7 @@ Windows 上没装 git 的话先 `winget install --id Git.Git -e --source winget`
 ## 目录结构
 
 ```
-dsh-kdczyz-mode/
+kdczyz-dsh-model/
 ├── package.json
 ├── cordis.patch.yml           两个 Loader entry（见文件内注释，勿改 id）
 ├── lib/
@@ -161,9 +161,9 @@ dsh-kdczyz-mode/
 ```yaml
 - insert:
     - id: llm-workbuddy-xdpool
-      name: dsh-kdczyz-mode        # -> lib/index.js
+      name: kdczyz-dsh-model        # -> lib/index.js
     - id: dsh-connect-trae
-      name: dsh-kdczyz-mode/trae   # -> lib/trae.js
+      name: kdczyz-dsh-model/trae   # -> lib/trae.js
 ```
 
 原因：两半各自声明 `enabledModelIds` / `contextBudgets` 等**语义不同**的同名字段，
@@ -632,7 +632,7 @@ Qoder 面板（`QoderPoolPanel`）同时渲染在**两个 tab** 下：「账号�
 
 | 路由 | 作用 |
 |---|---|
-| `POST /plugins/dsh-kdczyz-mode/qoder/login/start` | 发起设备流登录，返回 `sessionId` + `authUrl` |
+| `POST /plugins/kdczyz-dsh-model/qoder/login/start` | 发起设备流登录，返回 `sessionId` + `authUrl` |
 | `GET  …/qoder/login/status?session=` | 轮询登录状态；`done` 时落盘并让池重扫 |
 | `POST …/qoder/login/cancel?session=` | 取消登录 |
 | `GET  …/qoder/pool` | 号池快照（账号 + 冷却 + 停用 + 保留额度） |
@@ -1043,7 +1043,7 @@ data:{"headers":{…},"body":"{\"choices\":[…]}","statusCodeValue":200,"status
 除模块本身外，还有两处接线缺一不可，否则表现都是「模型选择器里没有 qoder」：
 
 1. **`package.json` 的 `exports` 要有 `./qoder`**。Node 的 `exports` 是白名单，
-   未声明的子路径解析不了，Loader 加载 `dsh-kdczyz-mode/qoder` 会失败。
+   未声明的子路径解析不了，Loader 加载 `kdczyz-dsh-model/qoder` 会失败。
 2. **profile 的 `cordis.patch.yml` 要有 `dsh-connect-qoder` 条目**。插件自己的
    `- insert:` 只保证条目存在（不带 config）；这份 profile 里其余条目都是手写的，
    Qoder 那条漏了就一直没被加载。`tools/apply-wotr.sh` 现在会自动补齐（幂等）。
@@ -1076,5 +1076,5 @@ data:{"headers":{...},"body":"{\"choices\":[...]}","statusCodeValue":200,"status
 
 - 改动落在 `node_modules` 里，**插件升级会被覆盖**。
 - 依赖各客户端的**私有接口**，官方改协议可能失效。
-- 「积分」与「使用记录」两个标签页已移除：采集接口（`/plugins/dsh-kdczyz-mode/sample`
+- 「积分」与「使用记录」两个标签页已移除：采集接口（`/plugins/kdczyz-dsh-model/sample`
   与 `/history-summary`）仍在服务端保留，但管理页不再读取，落盘历史因此不再增长。

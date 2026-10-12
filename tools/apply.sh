@@ -16,7 +16,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
-SRC="$ROOT/dsh-workbuddy-console"
+SRC="$ROOT/archive-workbuddy"
 TARGET="${1:-$HOME/.dsh/profiles/desktop/node_modules/dsh-workbuddy-console}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$HOME/.dsh/wb-console-patch-backup/$STAMP"

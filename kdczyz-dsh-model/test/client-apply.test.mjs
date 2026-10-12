@@ -12,7 +12,7 @@
  * 断言的核心是最后一条：apply 永远不许抛。UI 层的问题可以导致页面不显示，
  * 但绝不能让整个应用起不来。
  *
- * 合并为 dsh-kdczyz-mode 之后本文件额外覆盖：
+ * 合并为 kdczyz-dsh-model 之后本文件额外覆盖：
  *   - 一个 bundle 里内联了 vendored 的 xdpool 自注册客户端，它的 apply
  *     仍被转发（拿 locale 文案），但注册的 settings.section 被替身 ctx 拦掉；
  *   - 两个配置标签页都是本包自写的（PoolConfigTab / TraeConfigTab），

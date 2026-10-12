@@ -71,7 +71,7 @@ const QODER_AUTH_SUFFIX = '.json';
  * 记的是 `{ accountId, atMs }`：`atMs` 让读方能判断这个信息是不是陈旧的
  * （例如进程重启后 provider 池还没服务过任何请求）。
  */
-const QODER_SERVED_SLOT = Symbol.for('dsh-kdczyz-mode.qoder.lastServed');
+const QODER_SERVED_SLOT = Symbol.for('kdczyz-dsh-model.qoder.lastServed');
 
 /**
  * 共享槽位的保鲜期：超过这个时长的「最近服务账号」不再对外声称。

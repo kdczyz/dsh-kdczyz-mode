@@ -1,4 +1,4 @@
-import { DsmlBridge } from '../dsh-kdczyz-mode/vendor/xdpool/lib/dsml-bridge.mjs';
+import { DsmlBridge } from '../kdczyz-dsh-model/vendor/xdpool/lib/dsml-bridge.mjs';
 
 const BAR = '\uFF5C';
 const T = BAR + 'DSML' + BAR;

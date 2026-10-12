@@ -6,7 +6,7 @@
  * 数据全部通过 fetch 向两个半边**已有的**路由取：
  *
  *   WorkBuddy 侧  /plugins/dsh-workbuddy-xdpool/*   （vendored 池路由）
- *   本插件侧      /plugins/dsh-kdczyz-mode/*       （lib/index.js 挂的只读接口）
+ *   本插件侧      /plugins/kdczyz-dsh-model/*       （lib/index.js 挂的只读接口）
  *   Trae 侧       /plugins/dsh-connect-trae/*       （lib/trae.js 挂的路由）
  *
  * 三个区域（都是**配置**页；原先还有一个只读的「账号」页，已删除）：
@@ -88,7 +88,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   /** vendored 账号池的路由前缀（同 vendor/xdpool/lib/index.js 的常量，刻意不改名） */
   const POOL_API = '/plugins/dsh-workbuddy-xdpool';
   /** 本插件自己的路由前缀（由 lib/index.js 注册，提供历史记录） */
-  const SELF_API = '/plugins/dsh-kdczyz-mode';
+  const SELF_API = '/plugins/kdczyz-dsh-model';
   /** Trae 半边的路由前缀（同 lib/trae.js 的常量，刻意不改名） */
   const TRAE_API = '/plugins/dsh-connect-trae';
   /** Trae 的两个区域，卡片 tab 顺序 */
@@ -156,7 +156,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
   /** 单次自动刷新的请求上限：账号再多也不并发，避免被当成异常流量。 */
   const QODER_CREDITS_MAX_ACCOUNTS = 50;
 
-  const CSS_ID = 'dsh-kdczyz-mode/settings-page';
+  const CSS_ID = 'kdczyz-dsh-model/settings-page';
   const CSS = `
 .wbc-page{align-self:stretch;display:flex;flex-direction:column;gap:20px;padding:4px 0 24px}
 .wbc-head{display:flex;flex-direction:column;gap:4px}
@@ -289,7 +289,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     if (typeof document === 'undefined') return;
     if (document.querySelector(`style[data-plugin-css="${CSS_ID}"]`) !== null) return;
     const tag = document.createElement('style');
-    tag.dataset.plugin = 'dsh-kdczyz-mode';
+    tag.dataset.plugin = 'kdczyz-dsh-model';
     tag.dataset.pluginCss = CSS_ID;
     tag.textContent = CSS;
     document.head.appendChild(tag);

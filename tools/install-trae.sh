@@ -27,10 +27,10 @@ if [ -n "$DSH_BIN" ]; then
 fi
 
 echo "没找到 dsh 命令，改为拷贝归档副本："
-echo "  $ROOT/dsh-connect-trae  ->  $TARGET"
+echo "  $ROOT/archive-trae  ->  $TARGET"
 mkdir -p "$(dirname "$TARGET")"
 rm -rf "$TARGET"
-cp -R "$ROOT/dsh-connect-trae" "$TARGET"
+cp -R "$ROOT/archive-trae" "$TARGET"
 echo "已拷贝。"
 cat <<'TIP'
 

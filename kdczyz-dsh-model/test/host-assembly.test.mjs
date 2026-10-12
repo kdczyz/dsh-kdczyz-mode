@@ -139,7 +139,7 @@ if (PLUGIN === undefined) {
   /* —— 3) 三个入口都能加载（顶层 import 全过 + 导出 apply）—— */
   //
   // 入口文件路径**跟随 manifest 的 exports**，不能写死 `lib/`：
-  // wrapper 布局（node_modules/dsh-kdczyz-mode，其内再套一层 dsh-kdczyz-mode/）
+  // wrapper 布局（node_modules/kdczyz-dsh-model，其内再套一层 kdczyz-dsh-model/）
   // 与裸包布局的相对深度不同，写死会在wrapper 布局下全部报「不存在」。
   const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'package.json'), 'utf8'));
   const resolveExport = (sub) => {
@@ -188,7 +188,7 @@ if (PLUGIN === undefined) {
   // kdczyz-dsh-model 内部的一个子目录）。
   //
   // 这条断言直接拿 patch 里声明的 name 去解析，是拦这个故障的第一道防线。
-  const patchFile = path.join(PLUGIN, 'dsh-kdczyz-mode', 'cordis.patch.yml');
+  const patchFile = path.join(PLUGIN, 'kdczyz-dsh-model', 'cordis.patch.yml');
   const patchCandidates = [patchFile, path.join(PLUGIN, 'cordis.patch.yml')]
     .filter((f) => fs.existsSync(f));
   if (patchCandidates.length === 0) {
@@ -236,7 +236,7 @@ if (PLUGIN === undefined) {
   //                  -> **完全不贡献 client**，不会与裸名 entry 抢
   // 所以 client 必须且只能由 wrapper 声明 —— 这条断言就锁这个不变量。
   const claims = [];
-  for (const dir of [PLUGIN, path.join(PLUGIN, 'dsh-kdczyz-mode')]) {
+  for (const dir of [PLUGIN, path.join(PLUGIN, 'kdczyz-dsh-model')]) {
     const manifestPath = path.join(dir, 'package.json');
     if (!fs.existsSync(manifestPath)) continue;
     let pkg;

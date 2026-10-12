@@ -551,7 +551,7 @@ ok('inject 只要 llm（不依赖 webServer 之类的可选服务）', Array.isA
 
 /* —— 5) 装配层缺口：exports 白名单必须有 ./qoder —— */
 {
-  // 这条测的是 package.json 本身。缺它 Loader 解析 `dsh-kdczyz-mode/qoder`
+  // 这条测的是 package.json 本身。缺它 Loader 解析 `kdczyz-dsh-model/qoder`
   // 会直接失败，且报错发生在插件外，从插件代码里完全看不出来。
   const pkgPath = path.resolve(import.meta.dirname, '../package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));

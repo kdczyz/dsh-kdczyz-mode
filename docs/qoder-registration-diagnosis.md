@@ -38,10 +38,10 @@ shim: http://127.0.0.1:60524
 
 | specifier | 结果 |
 |---|---|
-| `dsh-kdczyz-mode/qoder` | `MODULE_NOT_FOUND`（正常，应由 Loader 按 profile 解析） |
+| `kdczyz-dsh-model/qoder` | `MODULE_NOT_FOUND`（正常，应由 Loader 按 profile 解析） |
 | `@earendil-works/pi-ai` | **`ERR_PACKAGE_PATH_NOT_EXPORTED`** |
 | `@earendil-works/pi-ai/api/openai-completions.lazy` | **`ERR_PACKAGE_PATH_NOT_EXPORTED`** |
-| `@deepseek-ai/dsh-llm-pi-ai` | profile `node_modules/` 里只有 `dsh-kdczyz-mode` 一个包 |
+| `@deepseek-ai/dsh-llm-pi-ai` | profile `node_modules/` 里只有 `kdczyz-dsh-model` 一个包 |
 
 宿主 asar 里的 `@earendil-works/pi-ai@0.87.1` 的 `exports` 白名单是：
 
@@ -118,7 +118,7 @@ Node 的 `exports` 对 `./api/*` 的 `*` **不做「去掉 `.lazy`」的映射**
 
 ### 防回归
 
-新增 [`test/host-assembly.test.mjs`](../dsh-kdczyz-mode/test/host-assembly.test.mjs)，
+新增 [`test/host-assembly.test.mjs`](../kdczyz-dsh-model/test/host-assembly.test.mjs)，
 断言「从这个 profile 出发，三个入口能不能被加载」。它不复刻 `apply` 逻辑，
 只回答宿主才会问的那个问题。**已反向验证**：临时移走 `@earendil-works/pi-ai`
 → 6 项变红，报错形态与真机故障一致。

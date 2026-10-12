@@ -149,7 +149,7 @@ const consoleCtx = {
 };
 mountConsoleRoutes(consoleCtx, {});
 
-const POOL_PATH = '/plugins/dsh-kdczyz-mode/qoder/pool';
+const POOL_PATH = '/plugins/kdczyz-dsh-model/qoder/pool';
 const handler = routes.get(POOL_PATH);
 ok('挂上了 /qoder/pool', typeof handler === 'function', [...routes.keys()].slice(0, 3).join(', '));
 
@@ -206,10 +206,10 @@ const snapshot = async (url = POOL_PATH, target = handler, method = 'GET') => {
 /* —— 2) 旧的四条写路由不许回来（它们只能写到管理页自己的池）—— */
 {
   const legacy = [
-    '/plugins/dsh-kdczyz-mode/qoder/pool/config',
-    '/plugins/dsh-kdczyz-mode/qoder/pool/account',
-    '/plugins/dsh-kdczyz-mode/qoder/pool/select',
-    '/plugins/dsh-kdczyz-mode/qoder/pool/credit-reserve',
+    '/plugins/kdczyz-dsh-model/qoder/pool/config',
+    '/plugins/kdczyz-dsh-model/qoder/pool/account',
+    '/plugins/kdczyz-dsh-model/qoder/pool/select',
+    '/plugins/kdczyz-dsh-model/qoder/pool/credit-reserve',
   ];
   const present = legacy.filter((p) => routes.has(p));
   ok('旧的四条写路由都不存在（写了也到不了请求路径）', present.length === 0, present.join(', '));
@@ -292,7 +292,7 @@ const snapshot = async (url = POOL_PATH, target = handler, method = 'GET') => {
  * 布尔图片标记），不钉具体型号集合。
  */
 {
-  const MODELS_PATH = '/plugins/dsh-kdczyz-mode/qoder/models/refresh';
+  const MODELS_PATH = '/plugins/kdczyz-dsh-model/qoder/models/refresh';
   const modelsHandler = routes.get(MODELS_PATH);
   ok('挂上了 /qoder/models/refresh', typeof modelsHandler === 'function', [...routes.keys()].length);
 

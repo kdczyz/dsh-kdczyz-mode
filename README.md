@@ -16,7 +16,7 @@
 
 > **2026-10-09 变更**
 > - 两个插件**合并为 `kdczyz-dsh-model`**，用两个 Loader entry 指向不同模块
->   （原生两套 Config schema，字段不会互相覆盖）。详见 [dsh-kdczyz-mode/README.md](dsh-kdczyz-mode/README.md)。
+>   （原生两套 Config schema，字段不会互相覆盖）。详见 [kdczyz-dsh-model/README.md](kdczyz-dsh-model/README.md)。
 > - profile 已切换：旧的两个包从 `dependencies` / `bundles` / `node_modules`
 >   与 `pnpm-lock.yaml` 中**全部移除**，现在只挂 `kdczyz-dsh-model`（link: 到本仓库）。
 > - 合并过程中修掉一个真实缺陷：`console.mjs` 的 `useEffect` 依赖数组在
@@ -35,7 +35,7 @@
 （依赖已经写进去了、但没装成），于是每次启动 DSH 都再报一次：
 
 ```text
-pnpm: Command failed with ENOENT: git ls-remote 'https://github.com/kdczyz/dsh-kdczyz-mode.git' HEAD 'HEAD^{}'
+pnpm: Command failed with ENOENT: git ls-remote 'https://github.com/kdczyz/kdczyz-dsh-model.git' HEAD 'HEAD^{}'
 spawn git ENOENT
 ```
 
@@ -73,7 +73,7 @@ winget install --id Git.Git -e --source winget
 **为什么以前连装都装不上**：插件管理页 `pnpm add <git 地址>` 装的是**仓库根**，
 装完后它读包根的 `package.json` 找 `dsh.bundle.patch` —— 组合包的判定标准就是这一个字段
 （DSH 文档原文：*A bundle is a package whose `package.json` declares `dsh.bundle.patch`*）。
-而这个仓库以前根目录**没有 package.json**，真正的插件在子目录 `dsh-kdczyz-mode/`，
+而这个仓库以前根目录**没有 package.json**，真正的插件在子目录 `kdczyz-dsh-model/`，
 于是 pnpm 生成占位包、DSH 找不到组合包声明，报「这个包没有声明组合包，不能作为插件管理」。
 
 **现在为什么能装上**：仓库根的 `package.json` 是一个薄壳——
@@ -81,15 +81,15 @@ winget install --id Git.Git -e --source winget
 | 字段 | 值 | 作用 |
 |---|---|---|
 | `name` | `kdczyz-dsh-model` | 与已部署的包名保持一致，profile 里存的 entry id / 设置项全部沿用 |
-| `main` / `exports["."]` | `./dsh-kdczyz-mode/lib/index.js` | WorkBuddy 半边入口 |
-| `exports["./trae"]` | `./dsh-kdczyz-mode/lib/trae.js` | Trae 半边入口（第二个 Loader entry） |
-| `exports["./qoder"]` | `./dsh-kdczyz-mode/lib/qoder.js` | Qoder 半边入口（第三个 Loader entry） |
-| `exports["./client"]` | `./dsh-kdczyz-mode/lib/client.js` | 浏览器端 bundle（三标签页） |
-| `dsh.bundle.patch` | `./dsh-kdczyz-mode/cordis.patch.yml` | **组合包声明**，管理页据此识别 |
+| `main` / `exports["."]` | `./kdczyz-dsh-model/lib/index.js` | WorkBuddy 半边入口 |
+| `exports["./trae"]` | `./kdczyz-dsh-model/lib/trae.js` | Trae 半边入口（第二个 Loader entry） |
+| `exports["./qoder"]` | `./kdczyz-dsh-model/lib/qoder.js` | Qoder 半边入口（第三个 Loader entry） |
+| `exports["./client"]` | `./kdczyz-dsh-model/lib/client.js` | 浏览器端 bundle（三标签页） |
+| `dsh.bundle.patch` | `./kdczyz-dsh-model/cordis.patch.yml` | **组合包声明**，管理页据此识别 |
 | `dsh.client` | `platform: web` + inject 列表 | 客户端注入目标 |
 
-壳只在包根做转发，插件代码仍在 `dsh-kdczyz-mode/` 下，三个 Loader entry 的名字
-（`dsh-kdczyz-mode`、`dsh-kdczyz-mode/trae`、`dsh-kdczyz-mode/qoder`）与 profile
+壳只在包根做转发，插件代码仍在 `kdczyz-dsh-model/` 下，三个 Loader entry 的名字
+（`kdczyz-dsh-model`、`kdczyz-dsh-model/trae`、`kdczyz-dsh-model/qoder`）与 profile
 里已保存的配置**完全不变**。
 
 ### 方式二：本地开发部署（link:）
@@ -99,7 +99,7 @@ winget install --id Git.Git -e --source winget
 ./tools/apply-wotr.sh --dry-run  # 只看计划
 ```
 
-这条路径把 `dsh-kdczyz-mode/` 直接同步进 `~/.dsh/profiles/desktop/node_modules/dsh-kdczyz-mode`，
+这条路径把 `kdczyz-dsh-model/` 直接同步进 `~/.dsh/profiles/desktop/node_modules/kdczyz-dsh-model`，
 并在 profile 的 `dependencies`（`link:`）与 `dsh.profile.bundles` 里登记。
 改代码即时生效（要重启 DSH）。它是 macOS 专用的（用了 `rsync` 与 `.app` 内的绝对路径），
 新设备请用方式一。
@@ -127,9 +127,9 @@ raw 直链可直接下载，见 [backup/README.md](backup/README.md)。
 ## 一、目录结构
 
 ```
-dsh-kdczyz-mode/
+kdczyz-dsh-model/
 ├── README.md                      ← 本文件
-├── dsh-kdczyz-mode/              ← **合并版插件（当前部署的就是它）**
+├── kdczyz-dsh-model/              ← **合并版插件（当前部署的就是它）**
 │   ├── lib/index.js                 WorkBuddy 半边：provider 注册 + 管理页接口 + 热重载兜底
 │   ├── lib/trae.js                  Trae 半边（上游宿主 lib/index.js 并入；浏览器半边已移除）
 │   ├── lib/wb-auth.mjs              WorkBuddy 登录协议（客户端 OAuth 轮询换 token）
@@ -147,8 +147,8 @@ dsh-kdczyz-mode/
 │   ├── test/trae-auth.test.mjs      Trae 登录协议单测（71 项）
 │   ├── test/trae-pool.test.mjs      Trae 账号池与凭据落盘单测（46 项）
 │   └── vendor/xdpool/               WorkBuddy 模型池（含已修复的核心逻辑）
-├── dsh-workbuddy-console/         ← 合并前的 WorkBuddy 单插件（归档）
-├── dsh-connect-trae/              ← 合并前的 Trae 插件原版归档（v3.0.0，未改动）
+├── archive-workbuddy/             ← 合并前的 WorkBuddy 单插件（**归档**，不是活跃代码）
+├── archive-trae/                  ← 合并前的 Trae 插件原版归档（v3.0.0，未改动）
 ├── patches/                       ← WorkBuddy 相对官方 2.0.48 的补丁
 │   ├── 03-vendor-pool.patch         工具定义丢失修复 + 流式桥接接线
 │   ├── 04-dsml-bridge.mjs           新增文件：DSML → tool_calls 桥接层
@@ -156,7 +156,20 @@ dsh-kdczyz-mode/
 │   ├── obsolete-console/            控制台时代的历史补丁与原文（已失效）
 │   └── originals/                   官方 2.0.48 原文（回滚/对照用）
 ├── docs/
+│   ├── platforms/                 平台**文字**清单（三份：能力对照 / 登录差异 / 诊断）
 │   └── upstream-issue-workbuddy.md 给插件作者的问题报告草稿（复现步骤 + 根因 + 修复建议，可直接粘贴）
+├── platforms/                     ← **平台归档视图**：按平台分开的符号链接（**不是副本**）
+│   ├── README.md                    为什么用链接而不是搬移 + 平台归属总表
+│   ├── workbuddy/                   index.js / wb-auth.mjs / xdpool/ + 3 测试
+│   ├── trae/                        trae.js / trae-auth.mjs + 3 测试
+│   ├── qoder/                       qoder.js + 8 个 qoder-*.mjs + 15 测试
+│   └── shared/                      console.mjs / client.js / credit-store.mjs / volatile.mjs + 4 测试
+│                                   ⚠️ 链接指向 kdczyz-dsh-model/，改链接目标 = 改真实代码
+│
+│  📌 命名规则（避免混淆）：根目录归档一律带 `archive-` 前缀，
+│     `platforms/` 下才是不带前缀的平台名。所以：
+│       platforms/workbuddy/  = 链接视图（活跃代码）   archive-workbuddy/ = 归档（改了不起作用）
+│       platforms/trae/       = 链接视图（活跃代码）   archive-trae/      = 归档（改了不起作用）
 ├── backup/                        ← **整体快照**：一个压缩包把插件全部文件整合在一起
 │   ├── dsh-wotr-console-1.1.0-20261011.tar.gz  插件本体 + 安装壳 + README（解包即用，含 sha256）
 │   └── README.md                    快照说明：raw 直链下载、怎么校验、里面没有什么
@@ -223,7 +236,7 @@ dsh-kdczyz-mode/
 ## 三、部署
 
 ```sh
-cd dsh-kdczyz-mode            # 改成你实际克隆下来的目录
+cd kdczyz-dsh-model            # 改成你实际克隆下来的目录
 ./tools/apply-wotr.sh --dry-run    # 先看计划（不改 profile）
 ./tools/apply-wotr.sh              # 真正部署
 ```
@@ -232,9 +245,9 @@ cd dsh-kdczyz-mode            # 改成你实际克隆下来的目录
 
 1. **源码门禁** —— 校验 `client.js` 内联块与 `console.mjs` 同步；在仓库内的插件目录挂一层宿主内包软链（裸 Node 跑单测用，见「零、安装」）；再跑 **24 套单测 + host-assembly**（`npm test` 一条链跑完 25 套）；任一失败即停，不把坏版本推上去（失败会复跑一次并把失败的断言打出来）。
 2. **备份** profile 的 `package.json` / `cordis.patch.yml` / `pnpm-lock.yaml` 与两个旧包到 `~/.dsh/wotr-merge-backup/<时间戳>/`。
-3. `rsync --delete` 同步 `dsh-kdczyz-mode/`。
+3. `rsync --delete` 同步 `kdczyz-dsh-model/`。
 4. 改 profile `package.json`：依赖换成 `link:` 指向本仓库，`bundles` 里两个旧包换成新包。
-5. 改 profile `cordis.patch.yml`：旧包名替换为 `dsh-kdczyz-mode`，移除独立的 `dsh-connect-trae` 条目（entry id 保持不变）。
+5. 改 profile `cordis.patch.yml`：旧包名替换为 `kdczyz-dsh-model`，移除独立的 `dsh-connect-trae` 条目（entry id 保持不变）。
 6. **移除三个旧包目录**（`dsh-workbuddy-console`、`dsh-connect-trae`、`dsh-workbuddy-xdpool`）—— 必须删，否则与新包争用同一批 entry id 会导致加载两次。
 7. 校验目标文件语法与 `exports["./qoder"]` 白名单。
 8. 把宿主内包装配进 profile，再跑 `host-assembly` 自检（三个入口在该 profile 下**真的能加载**）。
@@ -264,8 +277,8 @@ cd ~/.dsh/profiles/desktop && "$NODE" "$PNPM" install     # 应显示 Packages: 
 > 只想要补丁、想自己打到新版插件上：见 `patches/README.md`。
 > 注意：控制台移除与管理页新增都是**文件级改动**，不能用 patch 表达，需要直接替换/同步 `lib/` 下的文件。
 
-> **改界面**：改 `dsh-kdczyz-mode/lib/console.mjs`（唯一事实来源），然后运行
-> `node dsh-kdczyz-mode/scripts/gen-console-inline.mjs` 把源码内联进 `lib/client.js`。
+> **改界面**：改 `kdczyz-dsh-model/lib/console.mjs`（唯一事实来源），然后运行
+> `node kdczyz-dsh-model/scripts/gen-console-inline.mjs` 把源码内联进 `lib/client.js`。
 > 忘了跑这步界面上不会有任何变化，也不报错 —— `apply-wotr.sh` 会拦下来。
 
 ---
@@ -280,7 +293,7 @@ cd tools && "$NODE" dsml-test.mjs
 
 # 2) 全部单测 = 部署门禁（24 套 + 装配后的 host-assembly = 25 套，见「三、部署」）
 cd .. && ./tools/apply-wotr.sh --dry-run      # 一次跑完所有套件
-cd dsh-kdczyz-mode                            # 或单独复跑某几套：
+cd kdczyz-dsh-model                            # 或单独复跑某几套：
 "$NODE" test/credit-store.test.mjs    # 数据层
 "$NODE" test/client-apply.test.mjs    # **防 DSH 启动失败**
 "$NODE" test/console-render.test.mjs  # **防设置面板白屏**
@@ -311,7 +324,7 @@ curl -s "http://127.0.0.1:19387/plugins/dsh-workbuddy-xdpool/status?region=globa
 curl -s "http://127.0.0.1:19387/plugins/dsh-connect-trae/usage?region=cn"          | head -c 300
 curl -s "http://127.0.0.1:19387/plugins/dsh-connect-trae/usage?region=ai"          | head -c 300
 # 管理页自己的数据接口（前缀是**合并后的包名**；sample 只收 POST，GET 返回 405 正常）
-curl -s "http://127.0.0.1:19387/plugins/dsh-kdczyz-mode/history-summary"
+curl -s "http://127.0.0.1:19387/plugins/kdczyz-dsh-model/history-summary"
 
 # 9) profile 里应只剩合并版一个包
 ls ~/.dsh/profiles/desktop/node_modules/
@@ -324,7 +337,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 > **路由前缀有两套，别搞混**：
 > - `/plugins/dsh-workbuddy-xdpool/*`、`/plugins/dsh-connect-trae/*` —— **有意沿用旧名**（都带 `dsh-` 前缀），
 >   因为 vendored 的池卡片与 Trae 卡片按各自原本的 id 注册、并按该 id 解析设置作用域，改名会让卡片变只读。
-> - `/plugins/dsh-kdczyz-mode/*` —— 管理页自己的两条接口（`history-summary`、`sample`），用合并后的包名。
+> - `/plugins/kdczyz-dsh-model/*` —— 管理页自己的两条接口（`history-summary`、`sample`），用合并后的包名。
 >
 > **来源校验**：这些接口只信任回环来源 —— 不带 `Origin` 或带 `127.0.0.1`/`localhost` 都放行，
 > 外域来源返回 `403 {"error":"origin-not-trusted"}`。用 curl 排查时不必特意加 `Origin` 头。
@@ -347,7 +360,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 | 检查项 | 结果 |
 |---|---|
 | 上游版本 | `dsh-connect-trae@3.0.0`（MIT，作者 dingminhua） |
-| 合并后位置 | `dsh-kdczyz-mode/lib/trae.js`（与原文件 diff 为空）✓ |
+| 合并后位置 | `kdczyz-dsh-model/lib/trae.js`（与原文件 diff 为空）✓ |
 | provider 注册 | `trae`、`trae-global` 都在 DSH 里 ✓ |
 | 登录态 | `signed-in`，账号 `1412`，来源 `TRAE SOLO CN`（edition `solo`），区域 `cn` ✓ |
 | 令牌到期 | 2026-10-17（未过期，自动续期）✓ |
@@ -357,7 +370,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 
 **凭据位置**：只读桌面端 `User/globalStorage/storage.json` 或 CLI 的 `trae-jwt-token`；刷新后写到 `$DSH_HOME/.trae-auth.cn.json` 与 `$DSH_HOME/.trae-auth.ai.json`，**不写进 DSH 设置**。本仓库**不含任何凭据文件**（只含插件代码）。
 
-> 合并前的单插件归档在 `dsh-connect-trae/`，仅供回滚与版本留存；
+> 合并前的单插件归档在 `archive-trae/`，仅供回滚与版本留存；
 > 恢复单插件形态用 `./tools/install-trae.sh`。
 
 ---
@@ -401,7 +414,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 >
 > 签到的粒度是**按账号**（每张卡签自己那个账号、不切换正在服务的账号）：
 > WorkBuddy 上游自己认 `accountId`；Trae 靠「拿那个账号的凭据走同一条流程」；
-> Qoder 走活动线 `me/campaigns → claim`（见 `dsh-kdczyz-mode/README.md`
+> Qoder 走活动线 `me/campaigns → claim`（见 `kdczyz-dsh-model/README.md`
 > 的「每日签到（活动线）」一节，含 `Cosy-ClientType` 必须是 `10` 这个静默坑）。
 
 ### composer 的积分胶囊：点一下看**这个平台**的全部账号
@@ -450,7 +463,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 
 浏览器登录**不是** OAuth 授权码流程（没有 client_id / redirect_uri / PKCE，
 不需要本地回调服务），而是「服务端发 authUrl → 浏览器登录 → 拿 state 轮询换 token」。
-详见 `dsh-kdczyz-mode/README.md` 的「浏览器登录添加账号」一节，含凭据明文落盘的
+详见 `kdczyz-dsh-model/README.md` 的「浏览器登录添加账号」一节，含凭据明文落盘的
 风险说明与「已验证 / 未验证」清单 —— **国际版与 Trae 侧目前未做实测**。
 
 > 插件全程不接触你的密码：登录在官方页面里完成，插件只接收登录后的令牌。
@@ -501,7 +514,7 @@ ls ~/.dsh/profiles/desktop/node_modules/
 ### 测试（都是 `apply-wotr.sh` 的硬性门禁）
 
 ```sh
-cd dsh-kdczyz-mode/dsh-kdczyz-mode
+cd kdczyz-dsh-model/kdczyz-dsh-model
 node test/credit-store.test.mjs     # 14 项：积分/历史记录的读写、去重、坏行容错
 node test/client-apply.test.mjs     # 仿浏览器执行 client.js，真正调用 apply
 node test/console-render.test.mjs   # 444 项：真正渲染三个 tab 与 composer 胶囊卡片，空数据/坏数据/边界值

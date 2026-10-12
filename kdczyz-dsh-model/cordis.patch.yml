@@ -8,8 +8,9 @@
 #
 # The `name:` must be the INSTALLED package name (`kdczyz-dsh-model`), because the
 # Loader resolves each entry by that specifier — `import 'kdczyz-dsh-model/trae'`
-# has to work from the profile. The inner directory `dsh-kdczyz-mode/` is NOT a
-# resolvable package, so naming an entry after it fails with ERR_MODULE_NOT_FOUND
+# has to work from the profile. The inner directory `kdczyz-dsh-model/` is NOT a
+# resolvable package (the INSTALLED package name is what the Loader uses), so
+# naming an entry after a directory fails with ERR_MODULE_NOT_FOUND
 # and the plugin silently never runs ("未运行" in the plugin manager, with only a
 # passing "1 entry did not activate" warning).
 #

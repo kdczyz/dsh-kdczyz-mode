@@ -1,11 +1,11 @@
 {
-  "name": "dsh-kdczyz-mode",
+  "name": "kdczyz-dsh-model",
   "version": "1.3.0",
   "description": "WorkBuddy + Trae + Qoder merged into one DSH plugin: the WorkBuddy desktop account/model pool, the Trae connector and the Qoder account pool as three independent providers, plus one settings page with six tabs — two configuration tabs (XD Pool / Trae config: provider switch, account binding, model selection and its own multi-account pool) and four management/read-only tabs (accounts [WorkBuddy + Trae + Qoder, three columns] / Qoder pool / credits / usage history).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kdczyz/kdczyz-dsh-model.git",
-    "directory": "dsh-kdczyz-mode"
+    "directory": "kdczyz-dsh-model"
   },
   "homepage": "https://github.com/kdczyz/kdczyz-dsh-model#readme",
   "license": "MIT",

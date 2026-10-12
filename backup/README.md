@@ -1,4 +1,4 @@
-# backup/ —— dsh-kdczyz-mode 的整体快照
+# backup/ —— kdczyz-dsh-model 的整体快照
 
 `dsh-wotr-console-1.1.0-20261011.tar.gz`（1.1 MB）是插件**全部文件的整合快照**：
 解包就能拿到插件本体 + 仓库根安装壳 + 完整说明，不需要克隆仓库。

@@ -2,7 +2,7 @@
  * Same as probe2 but with a unique nonce each time, so no gateway cache.
  */
 const mod = await import(
-  '../dsh-workbuddy-console/vendor/xdpool/lib/index.js'
+  '../archive-workbuddy/vendor/xdpool/lib/index.js'
 );
 const pool = new mod.WorkBuddyAccountPool({});
 await pool.scan();

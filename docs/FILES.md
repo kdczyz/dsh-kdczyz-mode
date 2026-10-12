@@ -1,8 +1,8 @@
-# 文件作用总览 —— dsh-kdczyz-mode 全仓库
+# 文件作用总览 —— kdczyz-dsh-model 全仓库
 
 > 全仓库 **284 个文件**（不含 `.git` 与 `node_modules`）。本文件逐个说明作用。
 >
-> **关键区分**：真正在运行的是 [`dsh-kdczyz-mode/`](#二核心dsh-kdczyz-mode64-文件)
+> **关键区分**：真正在运行的是 [`kdczyz-dsh-model/`](#二核心kdczyz-dsh-model64-文件)
 > 一个包（64 文件）。其余 200+ 文件是**归档、快照与备份** —— 它们不是第二份代码，
 > 而是历史留存，改它们不影响任何行为。
 
@@ -12,17 +12,18 @@
 
 | 目录 | 文件数 | 性质 | 一句话 |
 |---|---:|---|---|
-| [`dsh-kdczyz-mode/`](dsh-kdczyz-mode/) | **64** | **活跃** | **当前部署的合并版插件（唯一改这里）** |
+| [`kdczyz-dsh-model/`](kdczyz-dsh-model/) | **64** | **活跃** | **当前部署的合并版插件（唯一改这里）** |
+| [`platforms/`](platforms/) | 43 链接 + 5 文档 | 活跃 | **按平台归档的符号链接视图**（不新增代码，指向 `kdczyz-dsh-model/`） |
 | [`docs/`](docs/) | 11 | 活跃 | 诊断、取证、审计、平台清单与本文件 |
 | [`tools/`](tools/) | 17 | 活跃 | 部署、验证、打桩 |
 | [`patches/`](patches/) | 9 | 活跃 | 相对官方 2.0.48 的补丁 |
-| [`dsh-workbuddy-console/`](dsh-workbuddy-console/) | 41 | 归档 | 合并前的 WorkBuddy 单插件 |
-| [`dsh-connect-trae/`](dsh-connect-trae/) | 15 | 归档 | 合并前的 Trae 插件原版 |
+| [`archive-workbuddy/`](archive-workbuddy/) | 41 | 归档 | 合并前的 WorkBuddy 单插件 |
+| [`archive-trae/`](archive-trae/) | 15 | 归档 | 合并前的 Trae 插件原版 |
 | [`.backup-before-lite/`](.backup-before-lite/) | 54 | 备份 | 精简前的完整备份（含已删的 web 控制台） |
 | [`backup/`](backup/) | 70 | 快照 | 免 git 安装用的整体 tar.gz + 展开副本 |
 | 根文件 | 3 | 活跃 | `package.json`（安装壳）、`README.md`、`.gitignore` |
 
-**要改代码，只动 `dsh-kdczyz-mode/`。** 其余目录改了不起作用。
+**要改代码，只动 `kdczyz-dsh-model/`。** 其余目录改了不起作用。
 
 ---
 
@@ -30,13 +31,13 @@
 
 | 文件 | 作用 |
 |---|---|
-| [`package.json`](package.json) | **安装壳**。DSH 判定「组合包」只看 `dsh.bundle.patch` 字段；此壳声明它指向 `./dsh-kdczyz-mode/cordis.patch.yml`，让插件管理页能 `pnpm add github:kdczyz/kdczyz-dsh-model` 直装。同时转发 4 个 `exports` 子路径（`.` / `./trae` / `./qoder` / `./client`）。 |
+| [`package.json`](package.json) | **安装壳**。DSH 判定「组合包」只看 `dsh.bundle.patch` 字段；此壳声明它指向 `./kdczyz-dsh-model/cordis.patch.yml`，让插件管理页能 `pnpm add github:kdczyz/kdczyz-dsh-model` 直装。同时转发 4 个 `exports` 子路径（`.` / `./trae` / `./qoder` / `./client`）。 |
 | [`README.md`](README.md) | 主说明（38KB）：安装（含两个踩过的坑）、修了什么、部署、验证方法、管理页、形态对比、已知局限。 |
 | [`.gitignore`](.gitignore) | 忽略 `node_modules`、`backup/` 展开目录等。 |
 
 ---
 
-## 二、核心：`dsh-kdczyz-mode/`（64 文件）
+## 二、核心：`kdczyz-dsh-model/`（64 文件）
 
 ### 2.1 `lib/` —— 插件全部代码（18 文件）
 
@@ -98,12 +99,12 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 
 | 路径 | 作用 |
 |---|---|
-| [`cordis.patch.yml`](dsh-kdczyz-mode/cordis.patch.yml) | **三个 Loader entry**。注释详述「为什么必须三个不同模块」（cordis 按 `apply` 引用同一性登记 runtime）。**entry id 不能改名** |
-| [`package.json`](dsh-kdczyz-mode/package.json) | 插件清单：`exports` 4 子路径、peer 范围（两条版本线并集，避免 pnpm 另装遮住宿主）、25 套测试脚本 |
-| [`scripts/gen-console-inline.mjs`](dsh-kdczyz-mode/scripts/gen-console-inline.mjs) | 把 `console.mjs` 内联进 `client.js`。**支持 `--check`**（门禁用它校验同步） |
-| [`scripts/gen-xdpool-client.mjs`](dsh-kdczyz-mode/scripts/gen-xdpool-client.mjs) | 把 `vendor/xdpool/lib/client.js` 内联进 `client.js` |
-| [`README.md`](dsh-kdczyz-mode/README.md) | 插件级详述：provider 清单、三个 tab、composer 胶囊卡片、Qoder 全链路、反代原理 |
-| [`LICENSE`](dsh-kdczyz-mode/LICENSE) / [`THIRD-PARTY.md`](dsh-kdczyz-mode/THIRD-PARTY.md) | MIT + 第三方声明 |
+| [`cordis.patch.yml`](kdczyz-dsh-model/cordis.patch.yml) | **三个 Loader entry**。注释详述「为什么必须三个不同模块」（cordis 按 `apply` 引用同一性登记 runtime）。**entry id 不能改名** |
+| [`package.json`](kdczyz-dsh-model/package.json) | 插件清单：`exports` 4 子路径、peer 范围（两条版本线并集，避免 pnpm 另装遮住宿主）、25 套测试脚本 |
+| [`scripts/gen-console-inline.mjs`](kdczyz-dsh-model/scripts/gen-console-inline.mjs) | 把 `console.mjs` 内联进 `client.js`。**支持 `--check`**（门禁用它校验同步） |
+| [`scripts/gen-xdpool-client.mjs`](kdczyz-dsh-model/scripts/gen-xdpool-client.mjs) | 把 `vendor/xdpool/lib/client.js` 内联进 `client.js` |
+| [`README.md`](kdczyz-dsh-model/README.md) | 插件级详述：provider 清单、三个 tab、composer 胶囊卡片、Qoder 全链路、反代原理 |
+| [`LICENSE`](kdczyz-dsh-model/LICENSE) / [`THIRD-PARTY.md`](kdczyz-dsh-model/THIRD-PARTY.md) | MIT + 第三方声明 |
 | `icons/`（2 文件） | Trae 图标 64/128 px（继承自上游） |
 | `vendor/xdpool/`（12 文件） | **WorkBuddy 模型池实现**，自上游 1.7.1 并入、**未改动**。见下 |
 
@@ -121,7 +122,38 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 
 ---
 
-## 三、`docs/`（11 文件）
+## 二·五、`platforms/` —— 按平台归档的视图（43 链接 + 5 文档）
+
+**不含任何真实代码**，全部是指向 `kdczyz-dsh-model/` 的**符号链接**。
+目的：想「只看某个平台的反代文件」时，不必在 6000 行的混合文件里翻。
+
+| 文件夹 | 内容 | 链接数 |
+|---|---|---:|
+| [`platforms/workbuddy/`](platforms/workbuddy/) | `index.js`（入口）、`wb-auth.mjs`、`xdpool/`（vendored 池）+ 3 测试 | 6 |
+| [`platforms/trae/`](platforms/trae/) | `trae.js`（入口）、`trae-auth.mjs` + 3 测试 | 5 |
+| [`platforms/qoder/`](platforms/qoder/) | `qoder.js`（入口）+ 8 个 `qoder-*.mjs` + 15 测试 | 24 |
+| [`platforms/shared/`](platforms/shared/) | `console.mjs`、`client.js`、`credit-store.mjs`、`volatile.mjs` + 4 测试 | 8 |
+
+每个文件夹各有一份 `README.md` 说明该平台的作用、文件清单与专属坑；
+总览见 [`platforms/README.md`](platforms/README.md)。
+
+> **为什么不直接搬移**：`cordis.patch.yml` 的三个 entry 按包名解析、
+> `package.json` 的 4 个 `exports` 指向固定路径、25 套测试用 `../lib/...` 相对导入 ——
+> 物理搬移会让插件直接「未运行」且门禁全红。链接方案两全：
+> **链接不参与 Node 模块解析**，测试与部署完全不受影响（已验证 43 链接无断链、25 套测试全绿）。
+
+**⚠️ 本目录永不新增真实文件**；要改代码去 [`kdczyz-dsh-model/`](kdczyz-dsh-model/)。
+
+### 平台归属的三个反直觉点
+
+| 反直觉 | 事实 |
+|---|---|
+| `workbuddy/index.js` 是 WorkBuddy 专属？ | **不是**。它同时承担**三平台全部管理页路由**（`qoder` 94 次 / `trae` 20 次），并 import 了 `trae-auth`/`qoder-auth`/`qoder-pool`/`qoder-campaign` |
+| `trae-auth.mjs` 怎么也在 `workbuddy/index.js` 里被 import？ | 同上 —— 管理页后端集中在那一个模块。**不改变它的 Trae 归属** |
+| `console.mjs`／`client.js` 归哪个平台？ | **都不归**。三平台 UI 混在一起（WB 79 / Trae 203 / Qoder 274），所以放 `shared/` |
+
+---
+
 
 ### 本文件
 
@@ -195,7 +227,7 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 
 ## 六、归档与备份（180 文件，**改了不起作用**）
 
-### `dsh-workbuddy-console/`（41）—— 合并前的 WorkBuddy 单插件
+### `archive-workbuddy/`（41）—— 合并前的 WorkBuddy 单插件
 
 含已移除的控制台时代残留：`lib/console.mjs`、`credit-store.mjs`，以及
 `scripts/` 下 13 个历史脚本（`prepublish-check`、`prove-*-guard`、
@@ -204,7 +236,7 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 > 它的 `lib/account-check.mjs` 等 7 个后端模块**已在此目录中被删除**，
 > 完整版见 `.backup-before-lite/`。
 
-### `dsh-connect-trae/`（15）—— 合并前的 Trae 插件原版
+### `archive-trae/`（15）—— 合并前的 Trae 插件原版
 
 上游 `dsh-connect-trae@3.0.0`，**未改动**。含 `lib/index.js`（Trae 宿主侧）、
 `lib/client.js`（已被合并版移除的浏览器半边）、`docs/assets/` 截图、
@@ -238,10 +270,10 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 
 | 疑问 | 答案 |
 |---|---|
-| 为什么 `vendor/xdpool/` 出现在 4 个地方？ | `dsh-kdczyz-mode/` 里是**活跃的**；`dsh-workbuddy-console/` 是旧插件的；`.backup-before-lite/` 是备份的；`backup/*/` 是快照的。**只有第一个在跑** |
-| `dsh-workbuddy-console/` 和 `.backup-before-lite/dsh-workbuddy-console/` 有何不同？ | 后者是**精简前**的版本，多 7 个后端模块 + `web/` 控制台 |
+| 为什么 `vendor/xdpool/` 出现在 4 个地方？ | `kdczyz-dsh-model/` 里是**活跃的**；`archive-workbuddy/` 是旧插件的；`.backup-before-lite/` 是备份的；`backup/*/` 是快照的。**只有第一个在跑** |
+| `archive-workbuddy/` 和 `.backup-before-lite/dsh-workbuddy-console/` 有何不同？ | 后者是**精简前**的版本，多 7 个后端模块 + `web/` 控制台 |
 | `backup/` 里的展开目录要提交吗？ | **不要**，已在 `.gitignore` 里。它只是 tar.gz 的解包结果 |
-| 改 `dsh-workbuddy-console/` 里的代码有用吗？ | **没有**。它已被合并版取代，且部署脚本会**主动删除**它 |
+| 改 `archive-workbuddy/` 里的代码有用吗？ | **没有**。它已被合并版取代，且部署脚本会**主动删除**它 |
 
 ---
 
@@ -249,11 +281,12 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 
 | 想做什么 | 改哪里 |
 |---|---|
-| 改设置面板界面 | [`dsh-kdczyz-mode/lib/console.mjs`](dsh-kdczyz-mode/lib/console.mjs) → 跑 `scripts/gen-console-inline.mjs` |
+| 改设置面板界面 | [`kdczyz-dsh-model/lib/console.mjs`](kdczyz-dsh-model/lib/console.mjs) → 跑 `scripts/gen-console-inline.mjs` |
 | 改某个 provider 的行为 | 对应入口：`lib/index.js`（WB）/ `lib/trae.js` / `lib/qoder.js` |
 | 改账号池策略 | `vendor/xdpool/lib/index.js`（WB）或 `lib/qoder-pool.mjs`（Qoder） |
-| 加一个管理页接口 | [`dsh-kdczyz-mode/lib/index.js`](dsh-kdczyz-mode/lib/index.js)（共用后端） |
+| 加一个管理页接口 | [`kdczyz-dsh-model/lib/index.js`](kdczyz-dsh-model/lib/index.js)（共用后端） |
 | 部署 | [`tools/apply-wotr.sh`](tools/apply-wotr.sh)（先 `--dry-run`） |
+| 只想看某平台的反代文件 | [`platforms/`](platforms/)（**只读视图，别在这里改**） |
 | 打补丁给上游 | [`patches/README.md`](patches/README.md) |
 | 其它任何目录 | **不用改** |
 
@@ -263,5 +296,5 @@ Qoder 15 套：`qoder-auth`、`qoder-pool`、`qoder-pool-route`、`qoder-dedup`�
 
 - 主说明：[`README.md`](README.md)
 - 平台清单：[`docs/platforms/`](docs/platforms/)
-- 入口分工：[`dsh-kdczyz-mode/lib/README.md`](dsh-kdczyz-mode/lib/README.md)
+- 入口分工：[`kdczyz-dsh-model/lib/README.md`](kdczyz-dsh-model/lib/README.md)
 - 快照说明：[`backup/README.md`](backup/README.md)

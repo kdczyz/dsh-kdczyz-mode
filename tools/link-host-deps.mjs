@@ -82,7 +82,11 @@ const PLUGIN_DIR_ARG = args.find((a) => a.startsWith('--plugin='))?.slice('--plu
 const PROFILE = profileArg ?? path.join(os.homedir(), '.dsh', 'profiles', 'desktop');
 const VENDOR_NM = path.join(PROFILE, '.dsh-runtime-deps', 'node_modules');
 const PROFILE_NM = path.join(PROFILE, 'node_modules');
-const PLUGIN_DIR = PLUGIN_DIR_ARG ?? path.join(PROFILE_NM, 'dsh-kdczyz-mode');
+// 安装形态是「wrapper 根 + 内层包」：profile/node_modules/kdczyz-dsh-model/ 下只有
+// package.json / README / LICENSE，真正的入口（lib/index.js 等）在内层同名目录里。
+// 指向错一层会让自检报「插件目录里没有 lib/」，看起来像依赖没装配好。
+const PLUGIN_DIR =
+  PLUGIN_DIR_ARG ?? path.join(PROFILE_NM, 'kdczyz-dsh-model', 'kdczyz-dsh-model');
 
 const log = (msg) => console.log(msg);
 

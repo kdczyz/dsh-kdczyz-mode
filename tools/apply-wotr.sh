@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# 把合并版 dsh-kdczyz-mode 部署到 DSH profile，并**移除**被它取代的两个旧插件。
+# 把合并版 kdczyz-dsh-model 部署到 DSH profile，并**移除**被它取代的两个旧插件。
 #
 #   ./tools/apply-wotr.sh              部署到 desktop profile
 #   ./tools/apply-wotr.sh --dry-run    只显示计划，不改 profile
@@ -16,8 +16,8 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(dirname "$HERE")"
-SRC="$ROOT/dsh-kdczyz-mode"
-NEW_PKG="dsh-kdczyz-mode"
+SRC="$ROOT/kdczyz-dsh-model"
+NEW_PKG="kdczyz-dsh-model"
 OLD_PKGS=("dsh-wotr-console" "dsh-workbuddy-console" "dsh-connect-trae")
 # 旧包遗留的独立 vendor 依赖（合并版已把 xdpool 内联进 vendor/）
 OLD_EXTRA=("dsh-workbuddy-xdpool")
@@ -37,6 +37,10 @@ PROFILE="${ARG:-$HOME/.dsh/profiles/desktop}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$HOME/.dsh/wotr-merge-backup/$STAMP"
 TARGET="$PROFILE/node_modules/$NEW_PKG"
+# 安装形态是「wrapper 根 + 内层包」：$TARGET 只有 package.json / README / LICENSE，
+# 真正的代码在 $TARGET/$NEW_PKG/ 里（见第 6 步的 rsync 与 npm tarball 布局）。
+# 校验与自检必须查内层，否则会误报「目标缺少 lib/index.js」。
+INNER="$TARGET/$NEW_PKG"
 
 if [ ! -d "$SRC" ]; then echo "找不到源目录: $SRC" >&2; exit 1; fi
 if [ ! -d "$PROFILE" ]; then echo "找不到 profile: $PROFILE" >&2; exit 1; fi
@@ -125,13 +129,38 @@ else
   echo "[dry-run] 将备份 package.json / cordis.patch.yml / pnpm-lock.yaml 与两个旧包"
 fi
 
-# —— 3) 同步新包 ——
+# —— 3) 同步新包（**wrapper 形态**：根 manifest + 内层子目录）——
+#
+# 必须按 npm 发布形态安装（对照 kdczyz-dsh-model@1.3.0 的 tarball）：
+#
+#   kdczyz-dsh-model/          <- wrapper 根：只有 package.json / README / LICENSE
+#   ├── package.json              唯一声明 dsh.client 与 exports["./client"] 的地方
+#   └── kdczyz-dsh-model/      <- 内层：lib / vendor / icons / scripts / test / cordis.patch.yml
+#
+# 两个坑，都踩过：
+#   ① 只把**内层**铺到 TARGET → 根没有 dsh.client → DSH 拿不到浏览器侧 bundle
+#      → 插件页显示「异常」。
+#   ② **不清理** TARGET 就把根级文件铺上去 → 上一版残留在根上的 lib/ test/ vendor/
+#      cordis.patch.yml 会留在 wrapper 根，目录形状与 npm 包不一致（DSH 按包名
+#      向上找最近的同名 manifest，多余的根级 lib/ 会让它解析到错误位置）。
+#
+# 所以：先清掉 TARGET 里的旧内容（保留 node_modules —— 那是依赖装配的产物），
+# 再按白名单铺根级文件 + 内层目录。
 if [ "$DRY" = 0 ]; then
   mkdir -p "$TARGET"
-  rsync -a --delete --exclude node_modules "$SRC/" "$TARGET/"
-  echo "已同步: $SRC -> $TARGET"
+  # 清掉旧内容，但**保留 node_modules**（宿主依赖闭包装配在那，删了要重装）
+  find "$TARGET" -mindepth 1 -maxdepth 1 -not -name node_modules -exec rm -rf {} +
+  # 根级文件（照着根 package.json 的 files 白名单：本体目录 + README + LICENSE）
+  for f in package.json README.md LICENSE; do
+    [ -e "$ROOT/$f" ] && rsync -a "$ROOT/$f" "$TARGET/"
+  done
+  # 内层插件目录（排除 node_modules，它在 profile 里由依赖装配提供）
+  rsync -a --delete --exclude node_modules "$SRC/" "$TARGET/$NEW_PKG/"
+  echo "已同步 wrapper: $ROOT -> $TARGET（内层 $NEW_PKG/，根级已清理）"
 else
-  echo "[dry-run] rsync -a --delete $SRC/ -> $TARGET/"
+  echo "[dry-run] 清理 $TARGET（保留 node_modules）后 rsync wrapper:"
+  echo "[dry-run]   $ROOT/{package.json,README.md,LICENSE} -> $TARGET/"
+  echo "[dry-run]   $SRC/ -> $TARGET/$NEW_PKG/"
 fi
 
 # —— 4) 改 profile/package.json ——
@@ -144,12 +173,15 @@ const [profile, root, dryStr] = process.argv.slice(2);
 const dry = dryStr === '1';
 const file = path.join(profile, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
-const NEW = 'dsh-kdczyz-mode';
+const NEW = 'kdczyz-dsh-model';
 const OLD = ['dsh-wotr-console', 'dsh-workbuddy-console', 'dsh-connect-trae'];
 
 pkg.dependencies = pkg.dependencies || {};
 for (const o of OLD) delete pkg.dependencies[o];
-pkg.dependencies[NEW] = 'link:' + path.join(root, 'dsh-kdczyz-mode').replace(/\\/g, '/');
+// ⚠️ 必须指向**仓库根**（wrapper），不能指向内层 kdczyz-dsh-model/ 子目录。
+// 只有根 manifest 声明了 `dsh.client` 与 `exports["./client"]`；内层包两者都没有。
+// 指向内层 : DSH 加载不到浏览器侧 bundle → 插件管理页显示「异常」。
+pkg.dependencies[NEW] = 'link:' + root.replace(/\\/g, '/');
 
 const bundles = (pkg.dsh?.profile?.bundles) ?? [];
 const kept = bundles.filter((b) => !OLD.includes(b));
@@ -183,13 +215,13 @@ let raw = fs.readFileSync(file, 'utf8');
 const before = raw;
 // 上一代合并包名 → 本次包名。三条：裸名、/trae、/qoder。
 // 只改 name，条目与其 config 一律保留；正则里的 \s*$ 保证不会误伤子路径行。
-raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\s*$/gm, '$1dsh-kdczyz-mode');
-raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\/trae\s*$/gm, '$1dsh-kdczyz-mode/trae');
-raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\/qoder\s*$/gm, '$1dsh-kdczyz-mode/qoder');
+raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\s*$/gm, '$1kdczyz-dsh-model');
+raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\/trae\s*$/gm, '$1kdczyz-dsh-model/trae');
+raw = raw.replace(/^(\s*name:\s*)dsh-wotr-console\/qoder\s*$/gm, '$1kdczyz-dsh-model/qoder');
 // 旧包名 → 合并后的包名（两处：WorkBuddy 半边、Trae 半边）
-raw = raw.replace(/^(\s*name:\s*)dsh-workbuddy-console\s*$/gm, '$1dsh-kdczyz-mode');
+raw = raw.replace(/^(\s*name:\s*)dsh-workbuddy-console\s*$/gm, '$1kdczyz-dsh-model');
 // 独立的旧 trae 包名 → 合并包名的子路径。**只改 name，原文与 config 一律保留。**
-raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-kdczyz-mode/trae');
+raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1kdczyz-dsh-model/trae');
 
 // —— 补 Qoder 条目 ——
 //
@@ -198,16 +230,16 @@ raw = raw.replace(/^(\s*name:\s*)dsh-connect-trae\s*$/gm, '$1dsh-kdczyz-mode/tra
 // `- insert:` 只保证条目**存在**（不带 config）——实测这份 profile 里其余两个
 // 条目都是手写的，Qoder 那条从没被加进来，所以这里显式补齐。
 //
-// 幂等：已经有 `name: dsh-kdczyz-mode/qoder` 就跳过，不重复插入、不覆盖
+// 幂等：已经有 `name: kdczyz-dsh-model/qoder` 就跳过，不重复插入、不覆盖
 // 可能已存在的用户 config。
-if (!/^\s*name:\s*dsh-kdczyz-mode\/qoder\s*$/m.test(raw)) {
+if (!/^\s*name:\s*kdczyz-dsh-model\/qoder\s*$/m.test(raw)) {
   const block = [
     '- id: dsh-connect-qoder',
-    '  name: dsh-kdczyz-mode/qoder',
+    '  name: kdczyz-dsh-model/qoder',
     '',
   ].join('\n');
   raw = raw.replace(/\n*$/, '\n') + block;
-  console.log('  cordis.patch.yml: 已补上 Qoder 条目（dsh-connect-qoder → dsh-kdczyz-mode/qoder）');
+  console.log('  cordis.patch.yml: 已补上 Qoder 条目（dsh-connect-qoder → kdczyz-dsh-model/qoder）');
 }
 
 raw = raw.replace(/\n{3,}/g, '\n\n');
@@ -219,8 +251,8 @@ if (raw !== before) {
 }
 EOF
 else
-  echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-wotr-console（含 /trae、/qoder 子路径）改为 dsh-kdczyz-mode，dsh-workbuddy-console 改为 dsh-kdczyz-mode，dsh-connect-trae 改为 dsh-kdczyz-mode/trae（条目与其 config 一律保留）"
-  echo "[dry-run] 将在缺失时补上 Qoder 条目：dsh-connect-qoder → dsh-kdczyz-mode/qoder"
+  echo "[dry-run] 将把 cordis.patch.yml 里的 dsh-wotr-console（含 /trae、/qoder 子路径）改为 kdczyz-dsh-model，dsh-workbuddy-console 改为 kdczyz-dsh-model，dsh-connect-trae 改为 kdczyz-dsh-model/trae（条目与其 config 一律保留）"
+  echo "[dry-run] 将在缺失时补上 Qoder 条目：dsh-connect-qoder → kdczyz-dsh-model/qoder"
 fi
 
 # —— 6) 卸掉旧包目录 ——
@@ -279,11 +311,11 @@ if [ "$DRY" = 0 ]; then
   }
   # 装配后再跑一次 host-assembly —— 这一步才真正回答「宿主里能不能加载」。
   # 它是本项目唯一能抓到「源码全绿、真机全废」那类故障的测试。
-  if "$NODE" "$TARGET/test/host-assembly.test.mjs" >/dev/null 2>&1; then
+  if "$NODE" "$INNER/test/host-assembly.test.mjs" >/dev/null 2>&1; then
     echo "  ✓ host-assembly（三个入口在该 profile 下均可加载）"
   else
     echo "  ✗ host-assembly 未通过 —— 插件在宿主里加载不了，provider 不会出现" >&2
-    echo "    手动查看：\"$NODE\" $TARGET/test/host-assembly.test.mjs" >&2
+    echo "    手动查看：\"$NODE\" $INNER/test/host-assembly.test.mjs" >&2
     exit 1
   fi
 else
@@ -303,7 +335,7 @@ echo "  「从 Qoder 刷新」= 拉取即落盘（全部启用 + 图片/上下�
 echo "  拉取失败时一个字段都不写（不把内置兜底表固化成白名单）。"
 echo "  含图请求要两处接线都通（模型层声明 image + pi-ai 适配器的 resolveAttachments），"
 echo "  重启后确认进程里真的是这一版代码："
-echo "    curl -s http://127.0.0.1:19387/plugins/dsh-kdczyz-mode/qoder/models/refresh"
+echo "    curl -s http://127.0.0.1:19387/plugins/kdczyz-dsh-model/qoder/models/refresh"
 echo "  回执里 capabilities.imageAttachments 必须为 true —— null/false 说明还是旧代码；"
 echo "  同一份回执里每个模型都带正整数 contextWindow 与布尔 supportsImages。）"
 [ "$DRY" = 0 ] && echo "回滚：把 $BACKUP 里的文件拷回 profile，并恢复两个旧包目录。"

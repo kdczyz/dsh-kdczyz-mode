@@ -13,22 +13,22 @@
   "license": "MIT",
   "author": "dhdbvcg",
   "contributors": [
-    "XDTrees (dsh-workbuddy-xdpool, vendored under dsh-kdczyz-mode/vendor/xdpool — MIT)",
-    "dingminhua (dsh-connect-trae, merged in as dsh-kdczyz-mode/lib/trae.js)"
+    "XDTrees (dsh-workbuddy-xdpool, vendored under kdczyz-dsh-model/vendor/xdpool — MIT)",
+    "dingminhua (dsh-connect-trae, merged in as kdczyz-dsh-model/lib/trae.js)"
   ],
   "type": "module",
   "files": [
-    "dsh-kdczyz-mode",
-    "!dsh-kdczyz-mode/node_modules",
+    "kdczyz-dsh-model",
+    "!kdczyz-dsh-model/node_modules",
     "README.md",
     "LICENSE"
   ],
-  "main": "./dsh-kdczyz-mode/lib/index.js",
+  "main": "./kdczyz-dsh-model/lib/index.js",
   "exports": {
-    ".": "./dsh-kdczyz-mode/lib/index.js",
-    "./trae": "./dsh-kdczyz-mode/lib/trae.js",
-    "./qoder": "./dsh-kdczyz-mode/lib/qoder.js",
-    "./client": "./dsh-kdczyz-mode/lib/client.js",
+    ".": "./kdczyz-dsh-model/lib/index.js",
+    "./trae": "./kdczyz-dsh-model/lib/trae.js",
+    "./qoder": "./kdczyz-dsh-model/lib/qoder.js",
+    "./client": "./kdczyz-dsh-model/lib/client.js",
     "./package.json": "./package.json"
   },
   "keywords": [
@@ -66,13 +66,13 @@
     }
   },
   "scripts": {
-    "build:console": "npm --prefix dsh-kdczyz-mode run build:console",
-    "check:console": "npm --prefix dsh-kdczyz-mode run check:console",
-    "test": "npm --prefix dsh-kdczyz-mode run test"
+    "build:console": "npm --prefix kdczyz-dsh-model run build:console",
+    "check:console": "npm --prefix kdczyz-dsh-model run check:console",
+    "test": "npm --prefix kdczyz-dsh-model run test"
   },
   "dsh": {
     "bundle": {
-      "patch": "./dsh-kdczyz-mode/cordis.patch.yml"
+      "patch": "./kdczyz-dsh-model/cordis.patch.yml"
     },
     "client": {
       "inject": [
