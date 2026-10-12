@@ -341,6 +341,12 @@ ok('not_found 不重试', qoderRelayRetryable('not_found') === false);
   ok('去重（同 id 只留一个）', parseQoderModelList({ models: [{ id: 'a' }, { id: 'a' }] }).length === 1);
   ok('缺 id 的条目跳过', parseQoderModelList({ models: [{ name: 'x' }, { id: 'a' }] }).length === 1);
   ok('带 name 时保留', parseQoderModelList({ models: [{ id: 'a', name: 'Qwen' }] })[0].name === 'Qwen');
+  ok('price_factor 解析为 priceFactor', parseQoderModelList({ models: [{ id: 'a', price_factor: 0.8 }] })[0].priceFactor === 0.8);
+  ok('priceFactor（camel）也认', parseQoderModelList({ models: [{ id: 'a', priceFactor: 1.62 }] })[0].priceFactor === 1.62);
+  ok('price_factor 为 0 也保留（免费）', parseQoderModelList({ models: [{ id: 'a', price_factor: 0 }] })[0].priceFactor === 0);
+  ok('price_factor 非数字不带上', parseQoderModelList({ models: [{ id: 'a', price_factor: 'x0.8' }] })[0].priceFactor === undefined);
+  ok('price_factor 负数不带上', parseQoderModelList({ models: [{ id: 'a', price_factor: -1 }] })[0].priceFactor === undefined);
+  ok('无 price_factor 不含该字段', parseQoderModelList({ models: [{ id: 'a' }] })[0].priceFactor === undefined);
   ok('非对象条目跳过', parseQoderModelList({ models: ['a', 1, null] }).length === 0);
   ok('坏 JSON 不抛且返回空', parseQoderModelList('not json').length === 0);
   ok('无候选容器返回空', parseQoderModelList({ foo: 1 }).length === 0);
@@ -352,7 +358,7 @@ ok('not_found 不重试', qoderRelayRetryable('not_found') === false);
   // `display_name`。这两条错了就表现为「列出一堆选不了/发出去 404 的模型」。
   const live = {
     chat: [
-      { key: 'qmodel_38max', display_name: 'Qwen3.8-Max', is_vl: true, is_reasoning: true, max_input_tokens: 180000, enable: true, format: 'openai' },
+      { key: 'qmodel_38max', display_name: 'Qwen3.8-Max', is_vl: true, is_reasoning: true, max_input_tokens: 180000, enable: true, format: 'openai', price_factor: 0.8 },
       { key: 'gfmodel', display_name: 'GLM-5.3-Flash', max_input_tokens: 1000000, enable: true },
       { key: 'disabled_one', display_name: 'Disabled', enable: false },
     ],
@@ -362,6 +368,7 @@ ok('not_found 不重试', qoderRelayRetryable('not_found') === false);
   ok('真机形状：取 chat 组的模型', liveModels.length === 2, JSON.stringify(liveModels.map((m) => m.id)));
   ok('真机形状：id 用 key 而不是 display_name', liveModels[0].id === 'qmodel_38max', liveModels[0].id);
   ok('真机形状：display_name 存成 name', liveModels[0].name === 'Qwen3.8-Max', liveModels[0].name);
+  ok('真机形状：price_factor 落到 priceFactor', liveModels[0].priceFactor === 0.8, String(liveModels[0].priceFactor));
   ok('真机形状：max_input_tokens 落到 contextWindow', liveModels[0].contextWindow === 180000, String(liveModels[0].contextWindow));
   ok('真机形状：各模型窗口不拉平（1M 那个保留 1M）', liveModels[1].contextWindow === 1000000, String(liveModels[1].contextWindow));
   ok('真机形状：enable:false 的条目跳过', !liveModels.some((m) => m.id === 'disabled_one'));

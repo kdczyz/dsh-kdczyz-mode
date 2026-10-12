@@ -673,7 +673,7 @@ export function buildQoderFingerprintedModelsRequest({
  * 「取不到就跳过」，绝不因为一个字段缺失让整个目录变成空 —— 空目录会让
  * provider 直接下线，比少几个模型严重得多。
  *
- * @returns {Array<{id:string,name?:string,contextWindow?:number,maxTokens?:number,supportsImages?:boolean}>}
+ * @returns {Array<{id:string,name?:string,contextWindow?:number,maxTokens?:number,supportsImages?:boolean,priceFactor?:number}>}
  */
 export function parseQoderModelList(body) {
   let doc = body;
@@ -741,6 +741,14 @@ export function parseQoderModelList(body) {
     // 都是 `true`。
     const vl = item.is_vl ?? item.isVL;
     if (typeof vl === 'boolean') entry.supportsImages = vl;
+    // 积分倍率：真机字段是 `price_factor`（官方客户端解析成 `priceFactor`，
+    // 渲染成 `x倍率` 后缀）。`0` 是官方对「免费」的拼写；负值/NaN/非数字一律
+    // 当作「上游没说」→ 不带上，模型名保持原名。这个字段本就是随目录返回的
+    // 静态属性，不想刷新与否（见 qoder-catalog.mjs 的模块注释）。
+    const priceFactor = item.price_factor ?? item.priceFactor;
+    if (typeof priceFactor === 'number' && Number.isFinite(priceFactor) && priceFactor >= 0) {
+      entry.priceFactor = priceFactor;
+    }
     out.push(entry);
   }
   return out;

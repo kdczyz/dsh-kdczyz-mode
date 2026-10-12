@@ -6,11 +6,11 @@
 ## 直接下载（其他机器用这个）
 
 ```
-https://raw.githubusercontent.com/kdczyz/dsh-kdczyz-mode/main/backup/dsh-wotr-console-1.1.0-20261011.tar.gz
+https://raw.githubusercontent.com/kdczyz/kdczyz-dsh-model/main/backup/dsh-wotr-console-1.1.0-20261011.tar.gz
 ```
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/kdczyz/dsh-kdczyz-mode/main/backup/dsh-wotr-console-1.1.0-20261011.tar.gz
+curl -fsSLO https://raw.githubusercontent.com/kdczyz/kdczyz-dsh-model/main/backup/dsh-wotr-console-1.1.0-20261011.tar.gz
 shasum -a 256 -c dsh-wotr-console-1.1.0-20261011.tar.gz.sha256   # 先校验再解包
 tar -xzf dsh-wotr-console-1.1.0-20261011.tar.gz
 ```

@@ -100,6 +100,51 @@ function withRequirements(entry) {
 }
 
 /**
+ * 分隔符 —— 与 WorkBuddy（`DISPLAY_SEPARATOR`）逐字同值，保证三家 provider
+ * 的模型名后缀肉眼一致。用 ` · `（带空格的中点）而不是模型名自身可能带的中杠
+ * 或点号，避免歧义。
+ */
+export const QODER_DISPLAY_SEPARATOR = ' · ';
+
+/**
+ * 把一个积分倍率格式成后缀碎片（不含分隔符）。
+ *
+ * 对齐官方 Qoder 客户端的 `formatFactor`（`index-nRmb_3VI.js` reverse 结果）：
+ *
+ *   - 整数直接转字符串（`1` → `"1"`，避免 `"1.00"` 的啰嗦）；
+ *   - 非整数 `toFixed(2)` 再去尾 0 和尾点（`0.80` → `"0.8"`，`1.62` → `"1.62"`）。
+ *
+ * `priceFactor === 0` 是官方对「免费/限时免费」（`LIMITED_TIME_FREE_MODEL_TAG`）
+ * 的拼写，后缀给「免费」而不是 `x0`，与模型名分开、可读性更好。
+ *
+ * @param {number} factor
+ * @returns {string|undefined} 后缀碎片；非有限数返回 `undefined`
+ */
+export function qoderFactorSuffix(factor) {
+  if (typeof factor !== 'number' || !Number.isFinite(factor)) return undefined;
+  if (factor === 0) return '免费';
+  const text = Number.isInteger(factor)
+    ? String(factor)
+    : factor.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  return `x${text}`;
+}
+
+/**
+ * 模型的 DSH 显示名：名称后面接积分倍率后缀（如 `Qwen3.8-Max · x0.8`）。
+ *
+ * `priceFactor` 是**纯展示**字段：它不参与任何请求参数（wire 用 `id`），只决定
+ * 用户在看到模型名时知道「每一积分的消耗倍率」。这与 WorkBuddy 的
+ * `withCatalogDisplay`、Trae 的 `traeModelDisplayName` 同一套路。缺失（上游没给）
+ * 时保持原名 —— 不虚构数值，与 Trae ai 版不显示倍率的语义一致。
+ */
+export function qoderModelDisplayName(model) {
+  const base = model?.name ?? model?.id;
+  if (typeof base !== 'string' || base === '') return base;
+  const suffix = qoderFactorSuffix(model?.priceFactor);
+  return suffix === undefined ? base : `${base}${QODER_DISPLAY_SEPARATOR}${suffix}`;
+}
+
+/**
  * 模型能否收图 —— **全链路唯一的判据**。
  *
  * ⚠️ `toPiModel`（推理链）与 `registerModelDiscovery`（DSH 目录）必须共用它。

@@ -452,8 +452,8 @@ const statusFixture = {
   // 顶层 distribution：WorkBuddy 的分配策略是**池级单键**（一个池实例），
   // 账号页左列的「账号使用方式」直接读它。
   distribution: 'round-robin',
-  // 「当前账号」：本区域请求固定用它。u1 被固定 —— 左列必须因此出现
-  // 「当前使用 / 取消固定」，u2 显示「备用 / 设为当前」。
+  // 「当前账号」：本区域请求固定用它。u1 是当前账号 —— 左列必须因此出现
+  // 「当前使用」，u2 显示「备用 / 切换到此账号」。
   selectedAccountId: 'u1',
   // 「最近真正服务过请求的账号」。与 selectedAccountId 刻意**同值**：这里要测
   // 的是「固定账号」那套 UI，两者不同值会另外把「本次调用」标签也带进来，
@@ -740,7 +740,8 @@ for (const [tabId, label, mustHave] of [
       'qoder-backup@example.com',
       // 单账号语义（Trae 同款）：**恰好一张**卡是「当前使用」，其余是「备用」，
       // 换账号靠备用卡上的「切换到此账号」。没有「设为当前 / 取消固定」这对
-      // 旧按钮 —— 它们写的是管理页自己的池，provider 根本读不到。
+      // 旧按钮 —— 它们写的是管理页自己的池，provider 根本读不到；WorkBuddy 的
+      // 「取消固定」更进一步：它让池子从此没有当前账号，每次请求都失败。
       '当前使用',
       '备用',
       '切换到此账号',
@@ -2513,23 +2514,21 @@ await (async () => {
 })();
 
 /**
- * —— 2g-3c) XD Pool「切换到此账号 / 取消固定」：真点一次，断言请求打对了地方 ——
+ * —— 2g-3c) XD Pool「切换到此账号」：真点一次，断言请求打对了地方 ——
  *
- * 这一页先前**没有**切换账号的入口：页面顶部写着「当前使用：xxx 已固定，优先用它」，
- * 但想换人只能绕到「账号」页左列去点 —— 同一个池子的两个界面，能力不一样。
- * 补齐之后盯三件事（都属于「按钮画出来了但点下去写错地方」这类不会让别的测试变红的退化）：
+ * 这一页先前**没有**切换账号的入口：页面顶部写着「当前使用：xxx」，但想换人只能
+ * 绕到「账号」页左列去点 —— 同一个池子的两个界面，能力不一样。补齐之后盯三件事
+ * （都属于「按钮画出来了但点下去写错地方」这类不会让别的测试变红的退化）：
  *
  *   1. 每张**非当前**的卡都有「切换到此账号」，**当前使用的那张没有** —— 与另两页
- *      同一条规矩（Trae / Qoder 的当前卡下面什么都不摆）。先前这里也给当前卡，理由
- *      是「在服务 ≠ 已固定，想钉住它得有地方点」；但三页里两张样子就是不一致，而
- *      真要钉住正在服务的那个，「账号」页左列每张卡都有「设为当前」；
- *   2. 已固定的那张换成「取消固定」（与「账号」页同一个词），固定之后仍有一条
- *      退回号池轮换的路（Trae / Qoder 的池没有这条路，所以那两页不给这个按钮）；
- *   3. 点下去真的 `POST …/accounts/select?region=…`，body 是 `{accountId}`；
- *      取消固定发 `{accountId: null}`；写完重新拉一次状态（否则界面不会变）。
- *
- * 区域参数是这里最容易写错、又最难发现的一处：写错区域不报错，只会把「固定」落进
- * 另一个区域的池子，界面上看就是点了没反应。所以连国际版一起断言。
+ *      同一条规矩（Trae / Qoder 的当前卡下面什么都不摆）。WorkBuddy 先前例外：
+ *      当前那张给的是「取消固定」（`{accountId:null}`），而完全手动语义下那等于
+ *      「把服务弄坏」—— 池的 `resolveSelected()` 立刻落空，之后每一次请求都 503。
+ *      按钮已删除，所以这里连「整页不出现取消固定」一起断言；
+ *   2. 点下去真的 `POST …/accounts/select?region=…`，body 是 `{accountId}`；
+ *      写完重新拉一次状态（否则界面不会变）；
+ *   3. 区域参数是这里最容易写错、又最难发现的一处：写错区域不报错，只会把「切换」
+ *      落进另一个区域的池子，界面上看就是点了没反应。所以连国际版一起断言。
  */
 await (async () => {
   const prevFetch = globalThis.fetch;
@@ -2612,7 +2611,7 @@ await (async () => {
     );
     ok('切换成功后重新拉了池状态', statusCalls > beforeCalls, `${beforeCalls} → ${statusCalls}`);
 
-    // ② u1 已固定：那张换成「取消固定」，另一张照旧
+    // ② u1 是当前账号：那张什么都不给（切换按钮也没有），另一张照旧
     const pinned = await render({
       ...poolStatusFixture,
       selectedAccountId: 'u1',
@@ -2620,24 +2619,20 @@ await (async () => {
       ignored: [],
     });
     const cardsB = collectByClass(pinned, 'wbc-card').map((c) => textOfNode(c));
-    ok('已固定的那张卡给「取消固定」', cardsB[0].includes('取消固定') === true, cardsB[0]);
-    ok('已固定的那张不再给「切换到此账号」', cardsB[0].includes('切换到此账号') === false, cardsB[0]);
+    ok('当前使用的那张卡不给「切换到此账号」', cardsB[0].includes('切换到此账号') === false, cardsB[0]);
+    ok('整页不出现「取消固定」（按钮已删除）', textOfNode(pinned).includes('取消固定') === false);
     ok(
       '未固定的那张仍是「切换到此账号」',
       cardsB[1].includes('切换到此账号') === true && cardsB[1].includes('取消固定') === false,
       cardsB[1],
     );
-    const unpin = buttonsOf(pinned, '取消固定');
-    ok('「取消固定」拿得到 onClick', unpin.length === 1 && typeof unpin[0] === 'function');
-    posts.length = 0;
-    await unpin[0]();
-    ok(
-      '取消固定发 {"accountId":null}（服务端把 null 当清除）',
-      posts.length === 1 && posts[0].body === JSON.stringify({ accountId: null }),
-      String(posts[0]?.body),
-    );
+    // 当前那张仍留着「签到领取」：签到是按账号的，不随选中状态消失
+    ok('当前使用的那张仍留着「签到领取」', cardsB[0].includes('签到领取') === true, cardsB[0]);
+    // 当前那张不给切换按钮 ⇒ 整页只有另一张卡那一颗
+    const pinnedSwitches = buttonsOf(pinned, '切换到此账号');
+    ok('已选中时整页只剩一颗「切换到此账号」', pinnedSwitches.length === 1, `n=${pinnedSwitches.length}`);
 
-    // ③ 国际版：区域参数必须跟着走，否则「固定」会落进另一个池子
+    // ③ 国际版：区域参数必须跟着走，否则「切换」会落进另一个池子
     const globalPage = await render(
       { ...poolStatusFixture, selectedAccountId: null, activeAccountId: 'u1', ignored: [] },
       { 1: 'global' },
@@ -4359,14 +4354,33 @@ console.log('\n胶囊展开的账号卡片\n');
     calls.map((c) => c.url).join(' '),
   );
   const row = findRow(node, '国内号');
-  ok('每行都有「切换到此账号」按钮', findByClass(row, 'wotr-credit-mini') !== null, text);
   ok(
-    '被固定的那一行标明「已固定」，并且按钮变成「取消固定」',
+    '当前账号那一行**没有**切换按钮（已经是当前了）',
+    findByClass(row, 'wotr-credit-mini') === null,
+    text,
+  );
+  ok(
+    '备用那一行有「切换到此账号」按钮',
+    findByClass(findRow(node, '国内备用'), 'wotr-credit-mini') !== null,
+    text,
+  );
+  ok(
+    '当前账号那一行标「当前使用」，其余行没有这个标签',
     (() => {
       const out2 = [];
       collectText(row, out2);
-      return out2.join('').includes('已固定') && out2.join('').includes('取消固定');
+      const outOther = [];
+      collectText(findRow(node, '国内备用'), outOther);
+      return (
+        out2.join('').includes('当前使用') === true &&
+        outOther.join('').includes('当前使用') === false
+      );
     })(),
+    text,
+  );
+  ok(
+    '整张卡片不再出现「取消固定 / 已固定」（按钮已删除）',
+    text.includes('取消固定') === false && text.includes('已固定') === false,
     text,
   );
   ok(
@@ -4378,7 +4392,7 @@ console.log('\n胶囊展开的账号卡片\n');
   globalThis.fetch = prevFetch;
 }
 
-// C) WorkBuddy 的「切换到此账号」：走 /accounts/select?region=，已固定的那行是取消固定
+// C) WorkBuddy 的「切换到此账号」：走 /accounts/select?region=
 {
   const prevFetch = globalThis.fetch;
   const calls = routeFetch([
@@ -4398,21 +4412,21 @@ console.log('\n胶囊展开的账号卡片\n');
     await new Promise((r) => setTimeout(r, 0));
     first.react.reset();
     node = first.Pill({ sessionId: 's1', resolveModelDirectory: () => makeModelStore('workbuddy-xdpool').store });
-    // 再点已成为「当前」的那一行 = 取消固定
-    findByClass(findRow(node, '国内备用'), 'wotr-credit-mini')?.props?.onClick?.();
-    await new Promise((r) => setTimeout(r, 0));
+    // 已成为「当前」的那一行**不再有按钮**：它下面是空的（`hideSelect`），
+    // 所以这里按 class 找只能是 undefined —— 断言它确实找不到。
+    cardRefresh(node);
   } catch (e) {
     err = e;
   }
   const selects = calls.filter((c) => c.url.includes('/accounts/select'));
   ok(
     'WorkBuddy 的切换走 /accounts/select?region=cn（POST）',
-    err === null && selects.length === 2 && selects[0].method === 'POST' && selects[0].url.includes('region=cn'),
+    err === null && selects.length === 1 && selects[0].method === 'POST' && selects[0].url.includes('region=cn'),
     err?.message ?? selects.map((c) => `${c.method} ${c.url}`).join(' | '),
   );
   ok(
-    '先带 accountId，再点同一个是 null（取消固定 = 未选择，请求会失败直到手动切换）',
-    JSON.parse(String(selects[0]?.body))?.accountId === 'cn2' && JSON.parse(String(selects[1]?.body))?.accountId === null,
+    'body 是 {"accountId":"cn2"}（不再有发 null 的「取消固定」路径）',
+    JSON.parse(String(selects[0]?.body))?.accountId === 'cn2',
     selects.map((c) => String(c.body)).join(' | '),
   );
   globalThis.fetch = prevFetch;

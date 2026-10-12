@@ -153,7 +153,7 @@ xdpool 管理，它用 `currentApi().pool` 拿的是**已解密**的凭证，问
 |---|---|---|
 | [`test/wb-auth.test.mjs`](../../dsh-kdczyz-mode/test/wb-auth.test.mjs) | 64 | 登录 state 轮询、凭据落盘 |
 | [`test/wb-fingerprint.test.mjs`](../../dsh-kdczyz-mode/test/wb-fingerprint.test.mjs) | — | 出站指纹头装配 |
-| [`test/wb-pool-selected.test.mjs`](../../dsh-kdczyz-mode/test/wb-pool-selected.test.mjs) | — | 「切换到此账号 / 取消固定」的池选中语义 |
+| [`test/wb-pool-selected.test.mjs`](../../dsh-kdczyz-mode/test/wb-pool-selected.test.mjs) | — | 「当前账号」的池选中语义（选中才放行、未选即失败） |
 
 WorkBuddy 侧的**数据层与桥接层**另有测试在仓库 `tools/` 下：
 [`tools/dsml-test.mjs`](../../tools/dsml-test.mjs)（44 项，含文本重复 bug 的回归）。
