@@ -9,28 +9,18 @@
  * **按账号一个文件** `.qoder-auth.cn.<accountId>.json`。
  *
  * 本模块就是把这些文件读成一个池，并给出「这一请求用哪个账号」的决策。
- * 语义与 lib/trae.js 的 TraeAccountPool **刻意保持一致**，这样两边的行为、
- * 配置项名、UI 文案可以复用，用户不必学两套：
+ * **完全手动取号**（本 fork 语义）：
  *
- * - 「当前使用」一个账号 + 其余全部是「备用」：请求优先用当前账号，它确实
- *   不可用（停用 / 冷却中 / 该模型冷却中 / 不在池里）时才让位给下一个可用的
- *   —— 与 Trae 的 priority 同一条语义，界面也如实标出这一轮调用的是谁
- * - `cooldownMs` 短冷却（限流）/ `exhaustCooldownMs` 长冷却（额度耗尽）
- * - 逐模型冷却：Qoder 的限流是按模型计的，一个模型 429 不该带走整个账号
- * - `disabledIds` 停用、`creditReserves` 保留额度
+ * - 界面上的「当前使用」就是用户通过「切换到此账号」选中的那个账号；
+ *   `selectedAccountId` 持久化在设置里（见 lib/qoder.js 的 Config），重启后
+ *   仍是它；
+ * - **没有分配策略**（priority / round-robin / balanced 均已删除），没有
+ *   冷却机制，没有保留额度 —— 选中账号不可用（被停用 / 不在池里）时请求
+ *   直接失败并写明原因，**不会自动让位、不会自动换号**；
+ * - `disabledIds` 停用、`remove` 移出池子保留（手动管理）。
  *
- * **没有分配策略**：轮换（round-robin）与均衡（balanced）已从池里删除。它们
- * 与「哪个账号在服务必须由用户手动切换决定」直接冲突 —— 同一份配置下每两次
- * 请求落到不同账号上，用户无法回答「这一轮扣的是谁的钱」，界面上的「当前使用」
- * 也失去意义。留在这里的只有优先模式：一个账号一直用到它不可用为止。
- *
- * 「当前账号」存在 `selectedId`，但**不是真相来源**：真相是设置里的
- * `selectedAccountId`（见 lib/qoder.js 的 Config），provider 在
- * `loader/volatile-update` 时把它推给池。池自身不落盘 —— 管理页与 provider
- * 是两个入口，各自建池会各记一份选择，早先的 bug 就是这么来的。
- *
- * 与 Trae 侧的**唯一实质差别**在入池方式（显式登录 vs 扫本机），池本身的行为
- * 完全同构。
+ * 所有配置项都能通过 `applyConfig` 在运行时改（设置页保存后立即生效），
+ * 不必重建池。
  */
 
 import { readdir, readFile } from 'node:fs/promises';
@@ -41,12 +31,6 @@ import { QODER_AUTH_VERSION, qoderAccountIdOf, qoderOwnAccountAuthPath } from '.
 /* ------------------------------------------------------------------ *
  * 常量
  * ------------------------------------------------------------------ */
-
-/** 号池默认短冷却：限流后先歇 60 秒再试这个账号。 */
-export const QODER_COOLDOWN_MS = 6e4;
-
-/** 号池默认长冷却：额度耗尽后歇 30 分钟（等上游额度重置）。 */
-export const QODER_EXHAUST_COOLDOWN_MS = 18e5;
 
 /** 刷新余量：过期前 5 分钟内触发一次续期。 */
 const QODER_REFRESH_MARGIN_MS = 3e5;
@@ -268,16 +252,11 @@ export class QoderCredentialStore {
  *
  *   - 池负责**存**所有账号的凭据与余额（每个账号一份文件，见
  *     qoder-auth.mjs），并给出完整列表供 UI 展示；
- *   - 请求优先用 `selectedId` 指向的那一个账号（界面上标「当前使用」）；
+ *   - 请求**只用** `selectedId` 指向的那一个账号（界面上标「当前使用」）；
  *   - 用户点「切换到此账号」才改变当前账号，**选择持久化在设置里**
  *     （`selectedAccountId`，见 lib/qoder.js 的 Config），重启后仍是它；
- *   - 当前账号不可用时让位给下一个可用账号（界面上那一张标「备用」，
- *     并由 `servingAccount()` 如实报出这一轮真正扣的是谁）。
- *
- * 为什么要保留「让位」而不是直接锁死：Qoder 的凭据会因令牌过期或文件被删
- * 而消失，锁死会让请求直接失败，而用户看到的却是「我已经选了账号」。
- * 让位只在当前账号**确实不可用**时发生，且写一条 warn 日志（见
- * {@link fallbackReason}），不会静默换号。
+ *   - 选中账号不可用（被停用 / 不在池里）时请求**直接失败**并写明原因，
+ *     **不自动让位、不自动换号**（完全手动语义，见文件头注释）。
  *
  * 所有配置项都能通过 `applyConfig` 在运行时改（设置页保存后立即生效），
  * 不必重建池。
@@ -286,8 +265,6 @@ export class QoderAccountPool {
   constructor(options = {}) {
     this.logger = options.logger;
     this.store = options.store;
-    this.cooldownMs = options.cooldownMs ?? QODER_COOLDOWN_MS;
-    this.exhaustCooldownMs = options.exhaustCooldownMs ?? QODER_EXHAUST_COOLDOWN_MS;
 
     /** 池内账号快照。 */
     this.accounts = [];
@@ -304,13 +281,11 @@ export class QoderAccountPool {
     this.selectedId = undefined;
     /** 用户在卡片上关掉的账号 id。 */
     this.disabledIds = new Set();
-    /** 每个账号的额度下限；0 / 缺省 = 用光为止。 */
-    this.creditReserves = new Map();
     /** 每个账号最近一次已知余额。 */
     this.creditBalances = new Map();
     /** 每个账号余额**读到的时刻**（`creditsAt()` 用它做显示侧节流）。 */
     this.creditReadAt = new Map();
-    /** 每个账号最近一次实际服务请求的时刻（空闲加权读它）。 */
+    /** 每个账号最近一次实际服务请求的时刻（界面「当前使用中」读它）。 */
     this.lastUsedAt = new Map();
   }
 
@@ -321,9 +296,9 @@ export class QoderAccountPool {
    *
    * 只记 id，不校验它是否存在：账号可能还没扫进来（刚登录、盘还没扫），
    * 此时拒绝写入会让「切换」在 UI 上静默失效。取号时由
-   * {@link resolveSelected} 决定是否让位给备用账号。
+   * {@link resolveSelected} 判定是否可用；**不可用即失败，不让位**。
    *
-   * `undefined` / 空串 = 清除选择（回到「第一个账号」这个确定性默认值）。
+   * `undefined` / 空串 = 清除选择（此后请求无账号可用，报 no-selection）。
    */
   selectAccount(accountId) {
     this.selectedId = typeof accountId === 'string' && accountId !== '' ? accountId : undefined;
@@ -336,25 +311,24 @@ export class QoderAccountPool {
   }
 
   /**
-   * 界面上该标「当前使用」的那一个账号 id —— **Trae 同款规则**。
+   * 界面上该标「当前使用」的那一个账号 id。
    *
-   * 显式选中且它还在池里 → 就是它；否则回退到池里第一个账号（确定性默认值，
-   * 与 `acquire()` 的让位顺序一致）。刻意不看「是否可用」：可用性由卡片上的
-   * 冷却/停用标签回答，把「当前使用」跟着冷却一起跳会让界面每 60 秒换一个
-   * 「当前账号」，用户更看不懂自己在用谁。
+   * 完全手动语义：**只有**用户显式选中且还在池里的账号是「当前使用」；
+   * 没选或选的不在池里 → undefined（界面上显示「未选择账号」），
+   * 不自动回退到第一个账号。
    */
   effectiveSelectedAccountId() {
     if (this.selectedId !== undefined && this.accounts.some((a) => a.id === this.selectedId)) {
       return this.selectedId;
     }
-    return this.accounts[0]?.id;
+    return undefined;
   }
 
   /**
    * 「当前账号」实际对应的池内条目。
    *
-   * 返回 undefined 的三种情形（都走让位）：没选、选的账号不在池里、
-   * 选的账号当前不可用（被停用 / 冷却中 / 该模型冷却中）。
+   * 返回 undefined 的三种情形（都直接判失败）：没选、选的账号不在池里、
+   * 选的账号不可用（被停用）。
    */
   resolveSelected(now = Date.now(), modelId) {
     if (this.selectedId === undefined) return undefined;
@@ -366,74 +340,30 @@ export class QoderAccountPool {
   /** 单个账号此刻能否服务请求（不写状态，便于单测）。 */
   isUsable(account, now = Date.now(), modelId) {
     if (this.disabledIds.has(account.id)) return false;
-    const reserve = this.creditReserves.get(account.id);
-    if (reserve !== undefined && reserve > 0) {
-      const balance = this.creditBalances.get(account.id);
-      if (balance !== undefined && balance <= reserve) return false;
-    }
-    if (account.cooldownUntilMs > now) return false;
-    if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now) return false;
     return true;
   }
 
   /**
-   * 当前账号因为限流/额度耗尽而不可用时，是否还能退回到轮换。
+   * 选中账号此刻**为什么**不能服务请求；可用时返回 undefined。
    *
-   * 这是「单账号」与「号池」的分界：选中的账号不可用时不静默换号会让请求
-   * 直接失败，但**无条件**换号又等于没改。折中是——只有选中账号确实不可用
-   * 才回退，且在日志里说清楚。
+   * 完全手动语义下这些原因就是请求失败的原因，写进日志/错误里，
+   * **不会**触发任何换号或让位。
    */
   fallbackReason(now = Date.now(), modelId) {
     if (this.selectedId === undefined) return 'no-selection';
     const account = this.accounts.find((item) => item.id === this.selectedId);
     if (account === undefined) return 'selected-missing';
     if (this.disabledIds.has(account.id)) return 'selected-disabled';
-    if (account.cooldownUntilMs > now) return 'selected-cooling';
-    if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now)
-      return 'selected-model-cooling';
-    const reserve = this.creditReserves.get(account.id);
-    if (reserve !== undefined && reserve > 0) {
-      const balance = this.creditBalances.get(account.id);
-      if (balance !== undefined && balance <= reserve) return 'selected-reserved';
-    }
     return undefined;
   }
 
   /* -------- 配置 -------- */
 
   applyConfig(options = {}) {
-    if (options.cooldownMs !== undefined && options.cooldownMs >= 1e3) {
-      this.cooldownMs = options.cooldownMs;
-    }
-    if (options.exhaustCooldownMs !== undefined && options.exhaustCooldownMs >= 1e3) {
-      this.exhaustCooldownMs = options.exhaustCooldownMs;
-    }
     if (options.selectedAccountId !== undefined) this.selectAccount(options.selectedAccountId);
     if (options.disabledAccountIds !== undefined) {
       this.disabledIds = new Set(options.disabledAccountIds);
     }
-    if (options.creditReserves !== undefined) this.setCreditReserves(options.creditReserves);
-  }
-
-  setCreditReserves(reserves) {
-    const next = new Map();
-    for (const [id, value] of Object.entries(reserves ?? {})) {
-      if (Number.isFinite(value) && value > 0) next.set(id, Math.floor(value));
-    }
-    this.creditReserves = next;
-  }
-
-  creditReservesInOrder() {
-    const out = {};
-    for (const account of this.accounts) {
-      const reserve = this.creditReserves.get(account.id);
-      if (reserve !== undefined && reserve > 0) out[account.id] = reserve;
-    }
-    return out;
-  }
-
-  creditReserveOf(accountId) {
-    return this.creditReserves.get(accountId) ?? 0;
   }
 
   creditsOf(accountId) {
@@ -474,9 +404,6 @@ export class QoderAccountPool {
           id,
           label: credential.userName || credential.userId || 'Qoder 账号',
           credential,
-          cooldownUntilMs: 0,
-          modelCooldowns: {},
-          rateLimitHits: 0,
         });
         continue;
       }
@@ -493,7 +420,6 @@ export class QoderAccountPool {
     for (const id of [...this.lastUsedAt.keys()]) if (!next.has(id)) this.lastUsedAt.delete(id);
     for (const id of [...this.creditBalances.keys()]) if (!next.has(id)) this.creditBalances.delete(id);
     for (const id of [...this.creditReadAt.keys()]) if (!next.has(id)) this.creditReadAt.delete(id);
-    for (const id of [...this.creditReserves.keys()]) if (!next.has(id)) this.creditReserves.delete(id);
     for (const id of [...this.disabledIds]) if (!next.has(id)) this.disabledIds.delete(id);
 
     this.accounts = [...next.values()];
@@ -508,72 +434,40 @@ export class QoderAccountPool {
   /* -------- 选号 -------- */
 
   /**
-   * 当前可服务请求的账号。
+   * 未被停用的账号（界面「备用」候选）。
    *
-   * 带 `modelId` 时：账号既不能整体冷却，该模型也不能在它上面冷却 ——
-   * Qoder 按模型限流，一个模型 429 不该带走该账号的其它模型。
+   * 完全手动语义下它只用于界面展示 —— 真正的取号只认
+   * {@link resolveSelected} 选中的那一个，这里不再参与任何自动选择。
    */
   available(now = Date.now(), modelId) {
-    return this.accounts.filter((account) => {
-      if (this.disabledIds.has(account.id)) return false;
-      const reserve = this.creditReserves.get(account.id);
-      if (reserve !== undefined && reserve > 0) {
-        const balance = this.creditBalances.get(account.id);
-        if (balance !== undefined && balance <= reserve) return false;
-      }
-      if (account.cooldownUntilMs > now) return false;
-      if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now) return false;
-      return true;
-    });
+    return this.accounts.filter((account) => !this.disabledIds.has(account.id));
   }
 
   /**
    * 取一个账号来服务本次请求。
    *
-   * ## 「当前账号」优先（默认路径）
+   * ## 完全手动（唯一路径）
    *
-   * `selectedId` 指向的账号**只要可用就一定用它**，不看别的、不轮换。
+   * `selectedId` 指向的账号**只要可用就一定用它**。没选 / 选的不在池里 /
+   * 被停用时直接返回 undefined（请求失败，原因见 {@link fallbackReason}），
+   * **不轮换、不让位、不冷却换号**。
    *
-   * ## 让位（仅在当前账号确实不可用时）
+   * 首次使用时自动扫描；池为空时再扫一次 —— 刚登录一个新账号是走出
+   * 「池子空」的常规手段。
    *
-   * 当前账号被停用 / 冷却中 / 该模型冷却中 / 不在池里时，按**池内顺序**取第一个
-   * 可用账号（Trae 的 priority 语义：一个账号一直用到它不可用，再换下一个）。
-   * 这就是「限流或额度耗尽的账号会自动让位给备用账号」那条行为；让位会写一条
-   * warn 日志说明原因（见 {@link fallbackReason}），界面上则由
-   * `servingAccount()` 如实标出这一轮真正扣的是谁，不会变成静默换号。
-   *
-   * 首次使用时自动扫描；**全池都冷却时再扫一次** —— 刚登录一个新账号是
-   * 走出「池子耗尽」的常规手段。
-   *
-   * @returns {Promise<object|undefined>} 选中的账号；无可用账号时 undefined。
+   * @returns {Promise<object|undefined>} 选中的账号；不可用时 undefined。
    */
   async acquire(modelId) {
     if (this.accounts.length === 0) await this.scan();
-    let pool = this.available(Date.now(), modelId);
-    if (pool.length === 0) {
-      await this.scan();
-      pool = this.available(Date.now(), modelId);
-    }
-    if (pool.length === 0) return undefined;
-
-    // ① 「当前账号」优先：可用则必定用它。
-    const selected = this.resolveSelected(Date.now(), modelId);
-    if (selected !== undefined) {
-      await this.ensureFresh(selected);
-      return selected;
-    }
-    // ② 当前账号不可用 → 记一笔再让位，别让换号变成静默行为。
     const reason = this.fallbackReason(Date.now(), modelId);
-    if (reason !== undefined && reason !== 'no-selection') {
-      this.logger?.warn?.(
-        `qoder-pool: 当前账号不可用（${reason}），本次改用备用账号 ${pool[0].label ?? pool[0].id}`,
-      );
+    if (reason !== undefined) {
+      this.logger?.warn?.(`qoder-pool: 当前无可用账号（${reason}），请求失败，请手动切换账号`);
+      return undefined;
     }
-
-    const account = pool[0];
-    if (account === undefined) return undefined;
-    await this.ensureFresh(account);
-    return account;
+    const selected = this.resolveSelected(Date.now(), modelId);
+    if (selected === undefined) return undefined;
+    await this.ensureFresh(selected);
+    return selected;
   }
 
   isDisabled(accountId) {
@@ -670,18 +564,14 @@ export class QoderAccountPool {
   }
 
   /**
-   * **下一个**会被用来服务请求的账号（无副作用地预览）。
+   * **当前**会被用来服务请求的账号（无副作用地预览）。
    *
    * 与 {@link acquire} 同一套判据，但**不**续期令牌、**不**写日志 —— 它只回答
-   * 「如果现在发一个请求，会落到谁头上」，用于「还没有任何请求时」在界面上
-   * 如实预告余额来源。
+   * 「如果现在发一个请求，会落到谁头上」。完全手动语义：只有选中的账号，
+   * 不可用就是 undefined。
    */
   resolveNext(now = Date.now(), modelId) {
-    const pool = this.available(now, modelId);
-    if (pool.length === 0) return undefined;
-    const selected = this.resolveSelected(now, modelId);
-    if (selected !== undefined) return selected;
-    return pool[0];
+    return this.resolveSelected(now, modelId);
   }
 
   /**
@@ -738,61 +628,12 @@ export class QoderAccountPool {
     await this.ensureFresh(account);
   }
 
-  /* -------- 冷却（换号的核心） -------- */
+  /* -------- 状态与诊断 -------- */
 
-  /**
-   * 额度耗尽 → 冷却整个账号。
-   *
-   * 额度耗尽是**账号级**的：该账号上每个模型都不可用，直到上游额度重置。
-   * 所以这里冷却整个账号，而不是某一个模型。
-   */
-  penalizeExhausted(accountId) {
-    const until = Date.now() + this.exhaustCooldownMs;
-    this.penalize(accountId, until);
-    this.logger?.warn?.(
-      `qoder-pool: 账号额度耗尽，冷却到 ${new Date(until).toISOString()}`,
-    );
-  }
-
-  /**
-   * 标记账号（或它的某个模型）被限流。
-   *
-   * 带 `modelId` 时只冷却那个模型，对齐 Qoder 的**按模型限流**；不带则冷却
-   * 整个账号。`resetAtMs` 由上游给出时以它为准（比本地估算准）。
-   */
-  penalize(accountId, resetAtMs, modelId) {
-    const account = this.accounts.find((item) => item.id === accountId);
-    if (account === undefined) return;
-    account.rateLimitHits += 1;
-    const until = resetAtMs ?? Date.now() + this.cooldownMs;
-    if (modelId !== undefined && modelId !== '') {
-      account.modelCooldowns[modelId] = Math.max(account.modelCooldowns[modelId] ?? 0, until);
-      this.logger?.warn?.(
-        `qoder-pool: ${account.label} 在模型 ${modelId} 上限流，该模型冷却到 ${new Date(until).toISOString()}`,
-      );
-      return;
-    }
-    account.cooldownUntilMs = Math.max(account.cooldownUntilMs, until);
-    this.logger?.warn?.(
-      `qoder-pool: ${account.label} 被限流，账号冷却到 ${new Date(until).toISOString()}`,
-    );
-  }
-
-  /** 清空全部冷却（设置页「重置冷却」按钮）。 */
-  resetCooldowns() {
-    for (const account of this.accounts) {
-      account.cooldownUntilMs = 0;
-      account.modelCooldowns = {};
-      account.rateLimitHits = 0;
-    }
-  }
-
-  /** 诊断快照：总数、冷却数、上次扫描时间。 */
+  /** 诊断快照：账号数、上次扫描时间。 */
   status() {
-    const now = Date.now();
     return {
       count: this.accounts.length,
-      cooling: this.accounts.filter((account) => account.cooldownUntilMs > now).length,
       lastScanAtMs: this.lastScanAtMs,
     };
   }

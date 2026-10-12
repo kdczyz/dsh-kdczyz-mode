@@ -2390,8 +2390,8 @@ function readAtRestKey() {
 //#region src/accounts.ts
 /**
 * Account pool: discovers every WorkBuddy credential snapshot the desktop app
-* has left on this machine and hands out one healthy account per request,
-* rotating away from any account the upstream has rate-limited.
+* has left on this machine. 完全手动语义（本 fork）：请求只用「当前账号」，
+* 不做任何轮换 / 冷却换号（见 {@link WorkBuddyAccountPool}）。
 *
 * Discovery is read-only: the desktop app's files are never written. Each
 * account is keyed by its billing identity (`uin`, falling back to `uid`), so
@@ -2694,52 +2694,30 @@ function candidateAuthDirs(env = process.env) {
 	const override = nonEmptyEnv(env[WORKBUDDY_AUTH_FILE_ENV]);
 	if (override !== void 0) dirs.push(override.toLowerCase().endsWith(".info") ? resolve(override, "..") : override);
 	dirs.push(...defaultDesktopAuthDirs(process.env["DSH_TEST_PLATFORM"]));
+	// 插件自有凭据目录（本 fork 新增，对齐 Trae 半边）：`$DSH_HOME/.wb-auth`。
+	// 插件「添加账号」的 `*.info` 写在这里，不随桌面端 app 的目录生死；
+	// 与桌面端登录态并存 —— 扫描两处，同账号按 id 合并、取较新的那份。
+	dirs.push(join(dshHome(env), ".wb-auth"));
 	return dirs;
 }
 /**
-* Read-only pool of every discovered WorkBuddy account, with rate-limit
-* cooldown and round-robin failover.
-*/
-/** Idle bonus per hour an account has been unused (reference-panel default). */
-const IDLE_WEIGHT_PER_HOUR = .5;
-/** Ceiling for the idle bonus, so an idle account cannot dominate forever. */
-const IDLE_WEIGHT_MAX = 5;
-/**
-* Weight one account by how long it has been idle.
+* Read-only pool of every discovered WorkBuddy account.
 *
-* The base of 1 keeps every eligible account in play: an account that served a
-* moment ago still has a small chance, so a single unhealthy account cannot pin
-* the pool to itself, and the weights never sum to zero.
+* ## 完全手动取号（本 fork 语义）
 *
-* `lastUsedAt === undefined` means "never used in this process", which earns the
-* full bonus: on a fresh start every account ties, and the weighted draw spreads
-* the first requests instead of always picking the first entry.
+* 请求**只用** `selectedIds`（按区域）指向的那一个账号（界面「切换到此账号」
+* 写入），它不可用（未选 / 停用 / 不在池里 / 区域不符）时请求直接失败，
+* **不自动让位、不自动换号**。分配策略（priority / round-robin / balanced）、
+* 冷却机制、保留额度均已删除；`disabledIds` 停用与 `ignoredIds` 移出池子
+* 保留（手动管理）。
 */
-function idleWeight(lastUsedAt, now) {
-	if (lastUsedAt === void 0) return 6;
-	const hours = (now - lastUsedAt) / 36e5;
-	return 1 + Math.min(Math.max(hours, 0) * IDLE_WEIGHT_PER_HOUR, IDLE_WEIGHT_MAX);
-}
-/** Default rest for an account whose credits ran out (packs reset on their own schedule). */
-const EXHAUST_COOLDOWN_MS = 18e5;
 var WorkBuddyAccountPool = class {
 	logger;
 	authDirs;
-	cooldownMs;
-	/**
-	* How long an account stays out of rotation after the upstream reports its
-	* credits are spent. Credit packs reset on their own schedule rather than on a
-	* rate-limit window, so this is much longer than `cooldownMs`.
-	*/
-	exhaustCooldownMs;
 	client;
 	refreshMarginMs;
 	accounts = [];
-	distribution;
-	/** Cursor for round-robin mode; unused under priority distribution. */
-	cursor = 0;
 	lastScanAtMs = 0;
-	preferredId;
 	/**
 	* Account ids the user switched off on the card.
 	*
@@ -2764,32 +2742,15 @@ var WorkBuddyAccountPool = class {
 	*/
 	ignoredIds = /* @__PURE__ */ new Set();
 	/**
-	* Per-account credit floor, keyed by account id. 0 (or absent) means "spend
-	* it all".
-	*
-	* A reserved balance is protection, not a hard limit the upstream knows
-	* about: the pool simply stops picking that account once its last known
-	* balance is at or below the floor, so the user keeps a cushion instead of
-	* draining every account to zero.
-	*/
-	creditReserves = /* @__PURE__ */ new Map();
-	/**
 	* Last known credit balance per account, epoch ms aside.
 	*
-	* Refreshed in the background after a successful request, so a pick can
-	* consult it. An account with no reading is treated as usable: refusing to
-	* pick an account just because its balance has not been checked yet would
-	* strand a healthy pool, and the first 402 still cools it as before.
+	* Refreshed in the background after a successful request, so the card can
+	* show it. In-memory only; not consulted for picking (no reserve semantics).
 	*/
 	creditBalances = /* @__PURE__ */ new Map();
 	/**
-	* Last time each account served a request, epoch ms. Drives the idle term
-	* of the priority-mode weighting below: an account that just served loses to
-	* one that has been idle, so a small pool stops hammering a single account.
-	*
-	* In-memory on purpose: it only biases the next pick, so a cold start that
-	* treats every account as idle is the right default. Not keyed by id lookup
-	* misses because a removed account simply disappears from the map on re-scan.
+	* Last time each account served a request, epoch ms. Drives the "who served"
+	* display only.
 	*/
 	lastUsedAt = /* @__PURE__ */ new Map();
 	/**
@@ -2797,12 +2758,9 @@ var WorkBuddyAccountPool = class {
 	*
 	* Added by this fork, aligned with the Trae half (`effectiveAccountFor` /
 	* `accounts.{cn,ai}` in lib/trae.js): the pool still stores every discovered
-	* login, but a request is served by THIS account whenever it is usable.
+	* login, but a request is served by THIS account, and this account alone.
 	* Region-keyed because the two WorkBuddy editions are separate providers
 	* with separate accounts.
-	*
-	* Distinct from {@link preferredId}: that one is "prefer, but let cooldowns
-	* override"; this one is "serve this account, or explain why not".
 	*
 	* Not persisted here — the host writes it through `applyConfig` from
 	* settings, the same way `disabledAccountIds` is re-applied after a scan.
@@ -2812,11 +2770,8 @@ var WorkBuddyAccountPool = class {
 	constructor(options = {}) {
 		this.logger = options.logger;
 		this.authDirs = options.authDirs ?? candidateAuthDirs();
-		this.cooldownMs = options.cooldownMs ?? 6e4;
-		this.exhaustCooldownMs = options.exhaustCooldownMs ?? EXHAUST_COOLDOWN_MS;
 		this.client = options.client;
 		this.refreshMarginMs = options.refreshMarginMs ?? 3e5;
-		this.distribution = options.distribution ?? "priority";
 	}
 	/* -------- 当前账号（本 fork 新增，对齐 Trae 半边） -------- */
 	/**
@@ -2825,7 +2780,7 @@ var WorkBuddyAccountPool = class {
 	* The id is recorded without checking that it exists: an account may not
 	* have been scanned in yet (just signed in, disk not re-read), and refusing
 	* the write would make the card's switch silently do nothing.
-	* {@link resolveSelected} decides the fallback at pick time.
+	* {@link resolveSelected} decides the outcome at pick time.
 	*/
 	selectAccount(region, accountId) {
 		if (typeof accountId !== "string" || accountId === "") this.selectedIds.delete(region);
@@ -2838,9 +2793,9 @@ var WorkBuddyAccountPool = class {
 	/**
 	* The pool entry the region's "current account" resolves to, or undefined.
 	*
-	* Undefined means "fall back to the distribution" — the selection is absent,
-	* points at an account no longer in the pool, or that account is currently
-	* unusable (switched off, cooled, or its model is cooled).
+	* Undefined means "request fails" — the selection is absent, points at an
+	* account no longer in the pool, that account is switched off, or it belongs
+	* to the wrong region. 完全手动语义：这里不再有任何自动让位。
 	*/
 	resolveSelected(region, now = Date.now(), modelId) {
 		const id = this.selectedIds.get(region);
@@ -2853,20 +2808,13 @@ var WorkBuddyAccountPool = class {
 	/** Whether one account can serve a request right now (no state written). */
 	isUsable(account, now = Date.now(), modelId) {
 		if (this.disabledIds.has(account.id)) return false;
-		const reserve = this.creditReserves.get(account.id);
-		if (reserve !== undefined && reserve > 0) {
-			const balance = this.creditBalances.get(account.id);
-			if (balance !== undefined && balance <= reserve) return false;
-		}
-		if (account.cooldownUntilMs > now) return false;
-		if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now) return false;
 		return true;
 	}
 	/**
 	* Why the region's selected account cannot serve, or undefined when it can.
 	*
-	* Written to the log before a fallback so "I picked A, why was B billed?"
-	* is answerable after the fact.
+	* Written to the log before a failed request so "I picked A, why did the
+	* request fail?" is answerable after the fact.
 	*/
 	fallbackReason(region, now = Date.now(), modelId) {
 		const id = this.selectedIds.get(region);
@@ -2875,27 +2823,16 @@ var WorkBuddyAccountPool = class {
 		if (account === undefined) return "selected-missing";
 		if (region !== undefined && regionOf(account.credential.domain) !== region) return "selected-wrong-region";
 		if (this.disabledIds.has(account.id)) return "selected-disabled";
-		if (account.cooldownUntilMs > now) return "selected-cooling";
-		if (modelId !== undefined && (account.modelCooldowns[modelId] ?? 0) > now) return "selected-model-cooling";
-		const reserve = this.creditReserves.get(account.id);
-		if (reserve !== undefined && reserve > 0) {
-			const balance = this.creditBalances.get(account.id);
-			if (balance !== undefined && balance <= reserve) return "selected-reserved";
-		}
 		return void 0;
 	}
 	/**
-	* Re-apply configuration that only affects discovery and cooldown policy,
-	* without rebuilding the pool. A later `scan()` uses the new auth dirs and
-	* cooldown window; existing accounts keep their in-memory state.
+	* Re-apply configuration that only affects discovery and the disabled list,
+	* without rebuilding the pool. A later `scan()` uses the new auth dirs;
+	* existing accounts keep their in-memory state.
 	*/
 	applyConfig(options) {
 		if (options.authDirs !== void 0 && options.authDirs.length > 0) this.authDirs = options.authDirs;
-		if (options.cooldownMs !== void 0 && options.cooldownMs >= 1e3) this.cooldownMs = options.cooldownMs;
-		if (options.exhaustCooldownMs !== void 0 && options.exhaustCooldownMs >= 1e3) this.exhaustCooldownMs = options.exhaustCooldownMs;
-		if (options.distribution !== void 0) this.distribution = options.distribution;
 		if (options.disabledAccountIds !== void 0) this.disabledIds = new Set(options.disabledAccountIds);
-		if (options.creditReserves !== void 0) this.setCreditReserves(options.creditReserves);
 		// 本 fork 新增：按区域的「当前账号」。`cn` / `global` 各自一份。
 		if (options.selectedAccountIds !== void 0) this.setSelectedAccounts(options.selectedAccountIds);
 	}
@@ -2961,10 +2898,7 @@ var WorkBuddyAccountPool = class {
 				byId.set(id, {
 					id,
 					label: accountLabel(credential),
-					credential,
-					cooldownUntilMs: 0,
-					modelCooldowns: {},
-					rateLimitHits: 0
+					credential
 				});
 				continue;
 			}
@@ -2980,129 +2914,45 @@ var WorkBuddyAccountPool = class {
 		this.lastScanAtMs = Date.now();
 		return this.accounts;
 	}
-	/** All accounts, cooldown state included. */
+	/** All accounts. */
 	list(region) {
 		if (region === void 0) return this.accounts;
 		return this.accounts.filter((account) => regionOf(account.credential.domain) === region);
 	}
 	/**
-	* Accounts currently eligible to serve a request.
+	* Accounts not switched off by the user (display-side "available").
 	*
-	* With a `modelId`, an account is eligible when it is not account-wide cooled
-	* AND that model is not cooling on it — so a 429 on `hy4-preview` only keeps
-	* that model out while `hy3` on the same account stays usable. Without a
-	* model id the legacy account-wide check applies (callers that cannot name a
-	* model, e.g. CLI diagnostics).
+	* 完全手动语义下它只用于界面展示 —— 真正的取号只认
+	* {@link WorkBuddyAccountPool#resolveSelected} 选中的那一个，这里不再参与
+	* 任何自动选择。
 	*/
 	available(now, modelId, region) {
 		return this.accounts.filter((account) => {
 			if (this.disabledIds.has(account.id)) return false;
-			const reserve = this.creditReserves.get(account.id);
-			if (reserve !== void 0 && reserve > 0) {
-				const balance = this.creditBalances.get(account.id);
-				if (balance !== void 0 && balance <= reserve) return false;
-			}
-			if (account.cooldownUntilMs > now) return false;
-			if (modelId !== void 0 && (account.modelCooldowns[modelId] ?? 0) > now) return false;
 			if (region !== void 0 && regionOf(account.credential.domain) !== region) return false;
 			return true;
 		});
 	}
-	/** Round-robin: the legacy cursor walk, kept for the distribution that asks for it. */
-	pickRoundRobin(pool) {
-		const index = this.cursor % pool.length;
-		const account = pool[index];
-		if (account === void 0) return void 0;
-		this.cursor = (index + 1) % pool.length;
-		return account;
-	}
-	/**
-	* Priority mode: weighted random over the eligible accounts.
-	*
-	* The weight is an idle bonus — `1 + min(idleHours * perHour, max)` — so an
-	* account that has never served (or has been idle for a while) outranks one
-	* that just answered. Reference panel logic drops its success-rate term
-	* entirely because a lifetime error counter penalises an account forever;
-	* instantaneous health is already handled by cooldowns, which is why those
-	* accounts never reach this list.
-	*
-	* A pool with no idle history (fresh process) hashes to equal weights, which
-	* spreads the very first picks instead of always returning index 0.
-	*/
-	pickByWeight(pool) {
-		if (pool.length === 1) return pool[0];
-		const now = Date.now();
-		const weights = pool.map((account) => idleWeight(this.lastUsedAt.get(account.id), now));
-		const total = weights.reduce((sum, weight) => sum + weight, 0);
-		if (!Number.isFinite(total) || total <= 0) return pool[0];
-		let roll = Math.random() * total;
-		for (let index = 0; index < pool.length; index += 1) {
-			roll -= weights[index] ?? 0;
-			if (roll < 0) return pool[index];
-		}
-		return pool[pool.length - 1];
-	}
 	/**
 	* Pick the account to serve a request.
 	*
-	* Two distributions, chosen by the `distribution` setting:
+	* ## 完全手动（唯一路径）
 	*
-	* - **priority** (default, and what the card ships with): one account serves
-	*   every request until it is rate-limited, then the next in order takes over.
-	*   Credits drain one account at a time, and a cooling account returns to the
-	*   head of the queue the moment its window resets — it was never consumed, so
-	*   it resumes straight away.
-	* - **round-robin**: consecutive requests rotate through the pool so spend
-	*   spreads evenly across every account.
+	* `selectedIds`（按区域）指向的账号**只要在池里、未被停用且区域相符就一定
+	* 用它**。没选 / 选的不在池里 / 被停用 / 区域不符时直接返回 undefined
+	* （请求失败），**不轮换、不让位、不冷却换号**。
 	*
-	* In both modes an explicit user selection (`prefer`) heads the list, a
-	* cooling account is skipped for that model only, and an unrecognised setting
-	* falls back to priority.
-	*
-	* Scans on first use, and rescans when every known account is cooling down: a
-	* fresh desktop login is the usual way out of an exhausted pool.
+	* Scans on first use, and rescans when the pool is empty: a fresh login is
+	* the usual way out of an empty pool.
 	*/
 	async acquire(modelId, region) {
 		if (this.accounts.length === 0) await this.scan();
-		let pool = this.available(Date.now(), modelId, region);
-		if (pool.length === 0) {
-			await this.scan();
-			pool = this.available(Date.now(), modelId, region);
-		}
-		if (pool.length === 0) return void 0;
-		/**
-		* ① 本 fork 新增：「当前账号」优先。
-		*
-		* 该区域的 selectedId 只要可用就一定用它，不看 distribution、不轮换 ——
-		* 这就是与 Trae 半边对齐后的「单账号」行为。选中账号不可用时才回退到
-		* 下面的分配策略，并先写一条 warn 说明原因。
-		*/
 		const selected = this.resolveSelected(region, Date.now(), modelId);
 		if (selected !== void 0) {
 			await this.ensureFresh(selected);
 			return selected;
 		}
-		const reason = this.fallbackReason(region, Date.now(), modelId);
-		if (reason !== undefined && reason !== "no-selection") this.logger?.warn?.(`workbuddy-pool: 当前账号不可用（${region}/${reason}），本次回退到号池轮换`);
-		if (this.preferredId !== void 0) {
-			const preferred = pool.find((account) => account.id === this.preferredId);
-			if (preferred !== void 0) {
-				await this.ensureFresh(preferred);
-				return preferred;
-			}
-		}
-		const account = this.distribution === "round-robin" ? this.pickRoundRobin(pool) : this.distribution === "balanced" ? this.pickByWeight(pool) : pool[0];
-		if (account === void 0) return void 0;
-		await this.ensureFresh(account);
-		return account;
-	}
-	/** Pin the account the plugin card should prefer; tokens stay out of settings. */
-	/** How the pool currently spreads requests. Shown on the card. */
-	currentDistribution() {
-		return this.distribution;
-	}
-	prefer(accountId) {
-		this.preferredId = accountId;
+		return void 0;
 	}
 	/** Whether the user switched this account off on the card. */
 	isDisabled(accountId) {
@@ -3116,9 +2966,8 @@ var WorkBuddyAccountPool = class {
 	* Record that an account actually served a request.
 	*
 	* Called by the shim once the upstream answers 200 — only then is the account
-	* the one the user is really being served by. `balanced` mode reads the same map
-	* for its idle weighting, so a request that failed over to another account must
-	* not count as used for the account that was merely tried.
+	* the one the user is really being served by. The "who served" display reads
+	* the same map.
 	*/
 	noteServed(accountId) {
 		if (!this.accounts.some((account) => account.id === accountId)) return;
@@ -3127,10 +2976,9 @@ var WorkBuddyAccountPool = class {
 	/**
 	* Record an account latest known credit balance.
 	*
-	* Called after a request and by the card balance refresh, so the reserve
-	* check has something to compare against. A reading for an unknown account is
-	* dropped: `scan()` rebuilds the account list and a stale id would otherwise
-	* accumulate forever.
+	* Called after a request and by the card balance refresh, so the card can
+	* show it. A reading for an unknown account is dropped: `scan()` rebuilds the
+	* account list and a stale id would otherwise accumulate forever.
 	*/
 	noteCredits(accountId, balance) {
 		if (!Number.isFinite(balance)) return;
@@ -3140,40 +2988,6 @@ var WorkBuddyAccountPool = class {
 	/** Last known balance for one account, or undefined when never read. */
 	creditsOf(accountId) {
 		return this.creditBalances.get(accountId);
-	}
-	/** The credit floor the user set for one account; 0 when unset. */
-	creditReserveOf(accountId) {
-		return this.creditReserves.get(accountId) ?? 0;
-	}
-	/**
-	* Replace every reserve. Called from settings on each apply, so the map
-	* mirrors the saved document exactly instead of accumulating old keys.
-	*/
-	setCreditReserves(reserves) {
-		const next = /* @__PURE__ */ new Map();
-		for (const [id, value] of Object.entries(reserves)) if (Number.isFinite(value) && value > 0) next.set(id, Math.floor(value));
-		this.creditReserves = next;
-	}
-	/** Every reserve currently in force, keyed by account id. */
-	creditReservesInOrder() {
-		const out = {};
-		for (const account of this.accounts) {
-			const reserve = this.creditReserves.get(account.id);
-			if (reserve !== void 0 && reserve > 0) out[account.id] = reserve;
-		}
-		return out;
-	}
-	/**
-	* Whether an account is held back only by its reserve.
-	*
-	* Separates "resting to protect credits" from every other reason an account
-	* is out of rotation, which is what the card shows the user.
-	*/
-	isReserved(accountId) {
-		const reserve = this.creditReserves.get(accountId);
-		if (reserve === void 0 || reserve <= 0) return false;
-		const balance = this.creditBalances.get(accountId);
-		return balance !== void 0 && balance <= reserve;
 	}
 	/**
 	* The account that served the most recent request, if any.
@@ -3246,59 +3060,10 @@ var WorkBuddyAccountPool = class {
 			this.refreshInflight.delete(account.id);
 		}
 	}
-	/**
-	* Cool a whole account after the upstream reports its credits are spent.
-	*
-	* Credit exhaustion is an ACCOUNT condition, unlike a model rate limit: every
-	* model on that account is unusable until the quota resets, so this cools the
-	* account as a whole (no `modelId`) for the configured exhaustion window. The
-	* shim then rotates to a different account instead of failing the request.
-	*/
-	penalizeExhausted(accountId) {
-		const until = Date.now() + this.exhaustCooldownMs;
-		this.penalize(accountId, until);
-		this.logger?.warn(`
-dsh-workbuddy-xdpool: account credits exhausted; cooling the whole account until 
-
-${new Date(until).toISOString()}
-`);
-	}
-	/**
-	* Mark an account (or one of its models) rate-limited.
-	*
-	* With `modelId`, only that model on the account is cooled — the account's
-	* other models stay in rotation, matching the upstream's per-model rate
-	* limit ("可切换其他模型继续使用"). Without a model id the whole account is
-	* cooled, which callers should reserve for limits that truly span every model.
-	*/
-	penalize(accountId, resetAtMs, modelId) {
-		const account = this.accounts.find((item) => item.id === accountId);
-		if (account === void 0) return;
-		account.rateLimitHits += 1;
-		const until = resetAtMs ?? Date.now() + this.cooldownMs;
-		if (modelId !== void 0 && modelId !== "") {
-			account.modelCooldowns[modelId] = Math.max(account.modelCooldowns[modelId] ?? 0, until);
-			this.logger?.warn(`dsh-workbuddy-xdpool: ${account.label} rate-limited on model ${modelId}; cooling that model until ${new Date(until).toISOString()}`);
-			return;
-		}
-		account.cooldownUntilMs = Math.max(account.cooldownUntilMs, until);
-		this.logger?.warn(`dsh-workbuddy-xdpool: account ${account.label} rate-limited; cooling until ${new Date(until).toISOString()}`);
-	}
-	/** Clear all cooldowns (account-wide and per-model), e.g. from a reset command. */
-	resetCooldowns() {
-		for (const account of this.accounts) {
-			account.cooldownUntilMs = 0;
-			account.modelCooldowns = {};
-			account.rateLimitHits = 0;
-		}
-	}
-	/** Diagnostics snapshot. Account-wide cooling count (per-model cooling excluded:
-	*  the account as a whole stays usable when only one model is limited). */
+	/** Diagnostics snapshot: total count, last scan time. */
 	status() {
-		const now = Date.now();
 		return {
 			count: this.accounts.length,
-			cooling: this.accounts.filter((account) => account.cooldownUntilMs > now).length,
 			lastScanAtMs: this.lastScanAtMs
 		};
 	}
@@ -4883,8 +4648,6 @@ function expertChatEvents(expert, conversationId, requestId) {
 const POOL_STATUS_PATH = "/plugins/dsh-workbuddy-xdpool/status";
 /** Plugin-owned local account rescan endpoint (re-read desktop snapshots). */
 const POOL_RESCAN_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/rescan";
-/** Plugin-owned cooldown reset endpoint (clear all 429 cooldowns). */
-const POOL_RESET_COOLDOWN_PATH = "/plugins/dsh-workbuddy-xdpool/cooldowns/reset";
 /** Plugin-owned daily check-in action endpoint (claim today's reward). */
 const POOL_CHECKIN_PATH = "/plugins/dsh-workbuddy-xdpool/checkin";
 /** Plugin-owned model-selection save endpoint (writes the settings section). */
@@ -4897,7 +4660,8 @@ const POOL_ACCOUNT_DISABLE_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/disabl
 * Added by this fork, mirroring lib/trae.js's per-region account selection.
 * Distinct from the disable route: disabling is "keep this account out of the
 * pool", this is "serve every request from this account". Passing `null` (or an
-* empty id) clears the selection and returns the region to pool rotation.
+* empty id) clears the selection — 完全手动语义下清空后请求直接失败，不会自动
+* 回到任何轮换。
 */
 const POOL_ACCOUNT_SELECT_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/select";
 /**
@@ -4909,8 +4673,6 @@ const POOL_ACCOUNT_SELECT_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/select"
 const POOL_ACCOUNT_IGNORE_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/ignored";
 /** Run one automation job immediately, so the card can verify it on demand. */
 const POOL_AUTOMATION_RUN_PATH = "/plugins/dsh-workbuddy-xdpool/automation/run";
-/** Set or clear one account's reserved-credit floor. */
-const POOL_CREDIT_RESERVE_PATH = "/plugins/dsh-workbuddy-xdpool/accounts/credit-reserve";
 /**
 * The schedule every automation job falls back to.
 *
@@ -5107,9 +4869,8 @@ function isFireHour(now, hours) {
 	const { hour } = zonedParts(now);
 	return hours.includes(Number(hour));
 }
-/** Whether this account may be used: not switched off, not cooling. */
+/** Whether this account may be used by the points automation: not global. */
 function eligible(account, now) {
-	if (account.cooldownUntilMs > now) return false;
 	if (regionOf(account.credential.domain) === "global") return false;
 	return true;
 }
@@ -6490,11 +6251,14 @@ function createWorkBuddyShim(options) {
 		} catch {}
 	}
 	/**
-	* Serve one chat completion, rotating accounts on rate limits.
+	* Serve one chat completion.
 	*
-	* A rate-limited account is cooled for exactly the window the upstream
-	* reports (when parseable) and the next account is tried immediately, so a
-	* pool with any healthy member never surfaces a 429 to the caller.
+	* ## 完全手动（本 fork 语义）
+	*
+	* 只用池里「当前账号」取号一次：没选 / 不可用直接失败（503），
+	* `hard_credit` / `soft_rate` **不惩罚账号、不换号**，把失败原样返回，由
+	* 用户手动切换账号；`session_dead` 刷新该账号令牌一次并重试同账号（令牌
+	* 过期是常见原因，账号本身仍有效）。
 	*/
 	async function chatCompletions(req, res) {
 		if (!isJsonContentType(req)) {
@@ -6513,74 +6277,53 @@ function createWorkBuddyShim(options) {
 			modelId = void 0;
 		}
 		const prepared = applyDefaultEffort(client.prepareChatBody(raw), modelId);
-		const tried = [];
-		let last;
-		let exhaustedByRateLimit = false;
-		for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-			if (controller.signal.aborted) return;
-			const account = await pool.acquire(modelId, region);
-			if (account === void 0) {
-				if (exhaustedByRateLimit && last !== void 0) {
-					const subject = modelId === void 0 ? "every WorkBuddy account is rate-limited" : `every account is rate-limited for model ${modelId}`;
-					writeOpenAIError(res, KIND_STATUS[last.kind], last.kind, `${subject} (tried ${tried.length}: ${tried.join(", ")}); resets at the upstream window — ${last.message.slice(0, 200)}`);
-					return;
-				}
-				writeOpenAIError(res, 401, "not_signed_in", "no WorkBuddy credential found; sign in on the desktop app (or set WORKBUDDY_AUTH_FILE)");
-				return;
-			}
-			tried.push(account.label);
-			const result = await client.chatStream(account.credential, prepared, controller.signal);
-			if (result.ok) {
-				await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, modelId);
-				return;
-			}
-			last = {
-				kind: result.kind,
-				status: result.status,
-				message: result.message
-			};
-			/**
-			* 上游失败的现场记录：状态码 + 错误文本 + 出错模型。
-			*
-			* 「Image request width must be a positive integer」这句话在本地所有包里
-			* 都搜不到（app.asar 整包、npm 全局 2728 个文件、pi-ai dist），
-			* 只能来自上游 —— 但**是哪个请求触发的**之前完全不可见。
-			* 这里把现场落盘：出错模型 + HTTP 状态 + 上游原文（截断）。
-			* 只记错误文本，不记请求内容。
-			*/
-			try {
-				const dir = pluginDataDir();
-				mkdirSync(dir, { recursive: true });
-				const file = join(dir, "upstream-errors.log");
-				rotateProbeFile(file);
-				appendFileSync(file, new Date().toISOString()
-					+ " model=" + (modelId ?? "?")
-					+ " account=" + account.label
-					+ " kind=" + result.kind
-					+ " status=" + result.status
-					+ " msg=" + String(result.message).slice(0, 300).replace(/\s+/g, " ")
-					+ "\n");
-			} catch {}
-			if (result.kind === "session_dead") {
-				logger?.warn(`dsh-workbuddy-xdpool: ${account.label} session dead; refreshing token and retrying`);
-				await pool.refreshAccount(account.id);
-				continue;
-			}
-			if (result.kind === "hard_credit") {
-				pool.penalizeExhausted(account.id);
-				logger?.warn(`dsh-workbuddy-xdpool: ${account.label} has no credits left (attempt ${attempt + 1}/${maxAttempts}); rotating`);
-				continue;
-			}
-			if (result.kind !== "soft_rate") break;
-			exhaustedByRateLimit = true;
-			pool.penalize(account.id, parseRateLimitReset(result.message), modelId);
-			logger?.warn(`dsh-workbuddy-xdpool: ${account.label} rate-limited on ${modelId ?? "(no model)"} (attempt ${attempt + 1}/${maxAttempts}); rotating`);
-		}
-		if (last === void 0) {
-			writeOpenAIError(res, 500, "internal", "chat request exhausted without a result");
+		if (controller.signal.aborted) return;
+		const account = await pool.acquire(modelId, region);
+		if (account === void 0) {
+			const reason = pool.fallbackReason(region, Date.now(), modelId);
+			logger?.warn?.(`dsh-workbuddy-xdpool: 当前账号不可用（${region}/${reason ?? "unknown"}），请求失败；请在管理页手动切换账号`);
+			writeOpenAIError(res, 503, "no_selected_account", "no WorkBuddy account selected or selected account unavailable; switch accounts on the WorkBuddy settings page");
 			return;
 		}
-		if (isContextTooLong(last.message)) {
+		const result = await client.chatStream(account.credential, prepared, controller.signal);
+		if (result.ok) {
+			await serveSuccessfulStream(res, account, result, logger, refreshBalance, pool, modelId);
+			return;
+		}
+		/**
+		* 上游失败的现场记录：状态码 + 错误文本 + 出错模型。
+		*
+		* 「Image request width must be a positive integer」这句话在本地所有包里
+		* 都搜不到（app.asar 整包、npm 全局 2728 个文件、pi-ai dist），
+		* 只能来自上游 —— 但**是哪个请求触发的**之前完全不可见。
+		* 这里把现场落盘：出错模型 + HTTP 状态 + 上游原文（截断）。
+		* 只记错误文本，不记请求内容。
+		*/
+		try {
+			const dir = pluginDataDir();
+			mkdirSync(dir, { recursive: true });
+			const file = join(dir, "upstream-errors.log");
+			rotateProbeFile(file);
+			appendFileSync(file, new Date().toISOString()
+				+ " model=" + (modelId ?? "?")
+				+ " account=" + account.label
+				+ " kind=" + result.kind
+				+ " status=" + result.status
+				+ " msg=" + String(result.message).slice(0, 300).replace(/\s+/g, " ")
+				+ "\n");
+		} catch {}
+		if (result.kind === "session_dead") {
+			logger?.warn(`dsh-workbuddy-xdpool: ${account.label} session dead; refreshing token and retrying`);
+			await pool.refreshAccount(account.id);
+			const retry = await client.chatStream(account.credential, prepared, controller.signal);
+			if (retry.ok) {
+				await serveSuccessfulStream(res, account, retry, logger, refreshBalance, pool, modelId);
+				return;
+			}
+			writeOpenAIError(res, KIND_STATUS[retry.kind], retry.kind, `workbuddy upstream ${retry.kind} (http ${retry.status}) after token refresh: ${retry.message.slice(0, 400)}`);
+			return;
+		}
+		if (isContextTooLong(result.message)) {
 			const recovered = await recoverFromContextOverrun({
 				raw,
 				modelId,
@@ -6599,7 +6342,7 @@ function createWorkBuddyShim(options) {
 			writeOpenAIError(res, 400, "context_length_exceeded", contextOverflowMessage(modelId, recovered.detail));
 			return;
 		}
-		writeOpenAIError(res, KIND_STATUS[last.kind], last.kind, `workbuddy upstream ${last.kind} (http ${last.status}) after ${tried.length} account(s) [${tried.join(" → ")}]: ${last.message.slice(0, 400)}`);
+		writeOpenAIError(res, KIND_STATUS[result.kind], result.kind, `workbuddy upstream ${result.kind} (http ${result.status}): ${result.message.slice(0, 400)}`);
 	}
 	return {
 		ready,
@@ -6763,51 +6506,31 @@ async function recoverFromContextOverrun(options) {
 		detail: compactionDetail === "" ? "compaction could not reduce the prompt" : compactionDetail
 	};
 	const retryBody = client.buildChatBody(parsed, compacted);
-	const tried = [];
-	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-		if (controller.signal.aborted) return {
-			ok: false,
-			detail: "client disconnected"
-		};
-		const account = await pool.acquire(modelId, region);
-		if (account === void 0) return {
-			ok: false,
-			detail: "no account available after compaction"
-		};
-		tried.push(account.label);
-		const result = await client.chatStream(account.credential, retryBody, controller.signal);
-		if (result.ok) {
-			logger?.info?.(`dsh-workbuddy-xdpool: recovered from context overrun on ${modelId ?? "(no model)"} (summarised: ${summary === void 0 ? "no" : "yes"})`);
-			return {
-				ok: true,
-				account,
-				result
-			};
-		}
-		if (isContextTooLong(result.message)) return {
-			ok: false,
-			detail: "prompt still exceeded the window after compaction"
-		};
-		if (result.kind === "session_dead") {
-			await pool.refreshAccount(account.id);
-			continue;
-		}
-		if (result.kind === "hard_credit") {
-			pool.penalizeExhausted(account.id);
-			continue;
-		}
-		if (result.kind === "soft_rate") {
-			pool.penalize(account.id, parseRateLimitReset(result.message), modelId);
-			continue;
-		}
+	if (controller.signal.aborted) return {
+		ok: false,
+		detail: "client disconnected"
+	};
+	const account = await pool.acquire(modelId, region);
+	if (account === void 0) return {
+		ok: false,
+		detail: "no account selected or selected account unavailable after compaction"
+	};
+	const result = await client.chatStream(account.credential, retryBody, controller.signal);
+	if (result.ok) {
+		logger?.info?.(`dsh-workbuddy-xdpool: recovered from context overrun on ${modelId ?? "(no model)"} (summarised: ${summary === void 0 ? "no" : "yes"})`);
 		return {
-			ok: false,
-			detail: `upstream ${result.kind} after compaction`
+			ok: true,
+			account,
+			result
 		};
 	}
+	if (isContextTooLong(result.message)) return {
+		ok: false,
+		detail: "prompt still exceeded the window after compaction"
+	};
 	return {
 		ok: false,
-		detail: `no account served the compacted request (tried ${tried.length})`
+		detail: `upstream ${result.kind} after compaction (no automatic account switch; switch manually)`
 	};
 }
 //#endregion
@@ -6819,36 +6542,24 @@ async function buildStatus(options) {
 	const now = Date.now();
 	const rows = [];
 	for (const account of accounts) {
-		const modelCooldowns = Object.entries(account.modelCooldowns).filter(([, until]) => until > now).sort((a, b) => a[1] - b[1]).map(([modelId, until]) => ({
-			modelId,
-			until: new Date(until).toISOString()
-		}));
 		const row = {
 			id: account.id,
 			label: account.label,
 			...account.credential.nickname === void 0 ? {} : { nickname: account.credential.nickname },
 			domain: account.credential.domain,
 			...account.credential.expiresAtMs === 0 ? {} : { expiresAt: new Date(account.credential.expiresAtMs).toISOString() },
-			cooling: account.cooldownUntilMs > now,
-			...account.cooldownUntilMs > now ? { cooldownUntil: new Date(account.cooldownUntilMs).toISOString() } : {},
-			...modelCooldowns.length === 0 ? {} : { modelCooldowns },
-			rateLimitHits: account.rateLimitHits,
 			sourcePath: account.credential.sourcePath
 		};
-		if (options.includeCredits === true && !row.cooling) try {
+		if (options.includeCredits === true) try {
 			Object.assign(row, { credits: await client.fetchCredits(account.credential) });
 		} catch (error) {
 			Object.assign(row, { creditsError: String(error).slice(0, 200) });
 		}
 		rows.push(row);
 	}
-	const cooling = rows.filter((row) => row.cooling).length;
-	const firstUsable = accounts.find((account) => account.cooldownUntilMs <= now);
 	return {
-		ok: accounts.length > 0 && cooling < accounts.length,
+		ok: accounts.length > 0,
 		accounts: rows,
-		...firstUsable === void 0 ? {} : { activeAccountId: firstUsable.id },
-		cooling,
 		models: catalog.current().map((model) => ({
 			id: model.id,
 			name: model.name,
@@ -6861,7 +6572,7 @@ async function buildStatus(options) {
 /** Format the status document for a terminal. */
 function formatStatus(status) {
 	const lines = [];
-	lines.push(`WorkBuddy XD Pool: ${status.accounts.length} account(s), ${status.cooling} cooling`);
+	lines.push(`WorkBuddy XD Pool: ${status.accounts.length} account(s)`);
 	lines.push(`Shim: ${status.shim.running ? "running" : "stopped"}${status.shim.baseUrl === void 0 ? "" : ` at ${status.shim.baseUrl}`}`);
 	lines.push("");
 	if (status.accounts.length === 0) {
@@ -6870,9 +6581,7 @@ function formatStatus(status) {
 		return lines.join("\n");
 	}
 	for (const account of status.accounts) {
-		const flag = account.cooling ? "⏸ " : "▶ ";
-		const active = account.id === status.activeAccountId ? " (next up)" : "";
-		lines.push(`${flag}${account.label}${active}`);
+		lines.push(`▶ ${account.label}`);
 		lines.push(`    uid/uin   : ${account.id}  [${account.domain || "cn"}]`);
 		if (account.expiresAt !== void 0) lines.push(`    expires   : ${account.expiresAt}`);
 		if (account.credits !== void 0) {
@@ -6882,8 +6591,6 @@ function formatStatus(status) {
 			lines.push(`    credits   : ${parts.join(" | ") || "n/a"}`);
 		}
 		if (account.creditsError !== void 0) lines.push(`    credits   : query failed — ${account.creditsError}`);
-		if (account.cooling && account.cooldownUntil !== void 0) lines.push(`    cooldown  : until ${account.cooldownUntil} (hits ${account.rateLimitHits})`);
-		if (account.modelCooldowns !== void 0 && account.modelCooldowns.length > 0) for (const mc of account.modelCooldowns) lines.push(`    model-cool: ${mc.modelId} until ${mc.until}`);
 		lines.push(`    source    : ${account.sourcePath}`);
 		lines.push("");
 	}
@@ -7101,24 +6808,6 @@ function parseAccountIgnore(body, knownInPool, knownIgnored) {
 * an unknown name would otherwise reach the scheduler and silently do nothing,
 * which reads to the user as a broken button.
 */
-/**
-* Parse a reserved-credit update.
-*
-* The account must already be known, for the same reason the disable route
-* checks: an unknown id would sit in the settings file forever, attached to
-* nothing the card can act on. A negative or non-finite floor is rejected
-* rather than coerced.
-*/
-function parseCreditReserve(body, known) {
-	const accountId = typeof body["accountId"] === "string" ? body["accountId"].trim() : "";
-	const raw = body["reserve"];
-	if (accountId === "" || typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return void 0;
-	if (!known(accountId)) return void 0;
-	return {
-		accountId,
-		reserve: Math.floor(raw)
-	};
-}
 function parseAutomationRun(body) {
 	const job = typeof body["job"] === "string" ? body["job"].trim() : "";
 	if (job !== "all" && !isAutomationJobKind(job)) return void 0;
@@ -7129,26 +6818,14 @@ function parseAutomationRun(body) {
 		...force === void 0 ? {} : { force }
 	};
 }
-function toWebAccount(account, disabled, reserve, reserved) {
-	const now = Date.now();
-	const cooling = account.cooldownUntilMs > now;
-	const modelCooldowns = Object.entries(account.modelCooldowns).filter(([, until]) => until > now).sort((a, b) => a[1] - b[1]).map(([modelId, until]) => ({
-		modelId,
-		until: new Date(until).toISOString()
-	}));
+function toWebAccount(account, disabled) {
 	return {
 		id: account.id,
 		label: account.label,
 		...account.credential.nickname === void 0 ? {} : { nickname: account.credential.nickname },
 		domain: account.credential.domain,
 		...account.credential.expiresAtMs === 0 ? {} : { expiresAt: new Date(account.credential.expiresAtMs).toISOString() },
-		cooling,
-		...cooling ? { cooldownUntil: new Date(account.cooldownUntilMs).toISOString() } : {},
-		...modelCooldowns.length === 0 ? {} : { modelCooldowns },
-		disabled,
-		creditReserve: reserve,
-		reserved,
-		rateLimitHits: account.rateLimitHits
+		disabled
 	};
 }
 function toWebModel(model, selection) {
@@ -7191,36 +6868,32 @@ async function poolWebStatus(deps, region = "cn") {
 	* 与串行版的语义一致；`noteCredits` 在 JS 单线程里写各自的键，并发安全。
 	*/
 	const rows = await Promise.all(accounts.map(async (account) => {
-		const row = toWebAccount(account, deps.pool.isDisabled(account.id), deps.pool.creditReserveOf(account.id), deps.pool.isReserved(account.id));
+		const row = toWebAccount(account, deps.pool.isDisabled(account.id));
 		const earned = deps.scheduler?.().earningsToday[account.id];
 		if (earned !== void 0) Object.assign(row, { automationToday: earned });
-		if (!row.cooling) {
-			const creditsPatch = deps.client.fetchCredits(account.credential).then((credits) => {
-				deps.pool.noteCredits(account.id, credits.total);
-				return { credits: {
-					total: credits.total,
-					packages: credits.packages,
-					...credits.expiringSoon === void 0 ? {} : { expiringSoon: credits.expiringSoon },
-					...credits.nearestExpiryMs === void 0 ? {} : { nearestExpiryMs: credits.nearestExpiryMs }
-				} };
-			}, (error) => ({ creditsError: safeMessage(error) }));
-			const checkinPatch = deps.client.fetchCheckinStatus(account.credential).then((checkin) => ({ checkin: {
-				active: checkin.active,
-				todayCheckedIn: checkin.todayCheckedIn,
-				streakDays: checkin.streakDays,
-				dailyCredit: checkin.dailyCredit,
-				todayCredit: checkin.todayCredit,
-				isStreakDay: checkin.isStreakDay,
-				nextStreakDay: checkin.nextStreakDay,
-				streakBonusCredit: checkin.streakBonusCredit
-			} }), (error) => ({ checkinError: safeMessage(error) }));
-			Object.assign(row, ...await Promise.all([creditsPatch, checkinPatch]));
-		}
+		const creditsPatch = deps.client.fetchCredits(account.credential).then((credits) => {
+			deps.pool.noteCredits(account.id, credits.total);
+			return { credits: {
+				total: credits.total,
+				packages: credits.packages,
+				...credits.expiringSoon === void 0 ? {} : { expiringSoon: credits.expiringSoon },
+				...credits.nearestExpiryMs === void 0 ? {} : { nearestExpiryMs: credits.nearestExpiryMs }
+			} };
+		}, (error) => ({ creditsError: safeMessage(error) }));
+		const checkinPatch = deps.client.fetchCheckinStatus(account.credential).then((checkin) => ({ checkin: {
+			active: checkin.active,
+			todayCheckedIn: checkin.todayCheckedIn,
+			streakDays: checkin.streakDays,
+			dailyCredit: checkin.dailyCredit,
+			todayCredit: checkin.todayCredit,
+			isStreakDay: checkin.isStreakDay,
+			nextStreakDay: checkin.nextStreakDay,
+			streakBonusCredit: checkin.streakBonusCredit
+		} }), (error) => ({ checkinError: safeMessage(error) }));
+		Object.assign(row, ...await Promise.all([creditsPatch, checkinPatch]));
 		return row;
 	}));
-	const cooling = rows.filter((row) => row.cooling).length;
 	const lastServed = deps.pool.lastServedId();
-	const firstUsable = lastServed !== void 0 ? accounts.find((account) => account.id === lastServed) : accounts.find((account) => account.cooldownUntilMs <= now);
 	let shim;
 	if (deps.shim === void 0) shim = { running: false };
 	else try {
@@ -7248,18 +6921,16 @@ async function poolWebStatus(deps, region = "cn") {
 		runInProgress: false
 	};
 	return {
-		ok: accounts.length > 0 && cooling < accounts.length,
+		ok: accounts.length > 0,
 		accounts: rows,
-		...firstUsable === void 0 ? {} : { activeAccountId: firstUsable.id },
 		/**
 		* 本 fork 新增：该区域的「当前账号」。
 		*
-		* 请求固定用它（它不可用时才回退到轮换，见 `acquire`）。卡片据此把对应
-		* 那张卡标成「当前使用」，并提供「设为当前」的切换入口。
-		* null = 没选，走号池轮换。
+		* 完全手动语义：请求**只用**它（未选 / 不可用 = 请求失败，不自动让位）。
+		* 卡片据此把对应那张卡标成「当前使用」，并提供「切换到此账号」的入口。
+		* null = 没选，请求会失败并提示手动切换。
 		*/
 		selectedAccountId: deps.pool.selectedAccountId(region) ?? null,
-		cooling,
 		models: deps.catalogs[region].current().map((model) => toWebModel({
 			id: model.id,
 			name: model.name,
@@ -7273,11 +6944,9 @@ async function poolWebStatus(deps, region = "cn") {
 		}, selection)),
 		selection,
 		region,
-		distribution: deps.pool.currentDistribution(),
 		regions,
 		shim,
 		automation,
-		creditReserves: deps.pool.creditReservesInOrder(),
 		ignored: deps.ignoredAccounts?.() ?? []
 	};
 }
@@ -7328,16 +6997,6 @@ function registerPoolStatusRoute(ctx, deps) {
 				} catch (error) {
 					json(res, 500, { error: safeMessage(error) });
 				}
-			}
-		});
-		const disposeReset = ctx.webServer.register({
-			kind: "exact",
-			path: POOL_RESET_COOLDOWN_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
-				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
-				deps.pool.resetCooldowns();
-				json(res, 200, { ok: true });
 			}
 		});
 		const disposeCheckin = ctx.webServer.register({
@@ -7518,44 +7177,13 @@ function registerPoolStatusRoute(ctx, deps) {
 				}
 			}
 		});
-		/**
-		* Set or clear one account's reserved-credit floor.
-		*
-		* POST only, loopback origin only, and the id must already be a known
-		* account: the card cannot invent an id, and a stale tab must not leave
-		* orphan keys in the settings file.
-		*/
-		const disposeCreditReserve = ctx.webServer.register({
-			kind: "exact",
-			path: POOL_CREDIT_RESERVE_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
-				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
-				if (deps.setCreditReserve === void 0) return json(res, 503, { error: "settings service unavailable; the reserve cannot be saved" });
-				try {
-					const body = await readJsonBody(req);
-					const known = new Set(deps.pool.list().map((account) => account.id));
-					const parsed = parseCreditReserve(body, (id) => known.has(id));
-					if (parsed === void 0) return json(res, 400, { error: "invalid credit reserve payload" });
-					await deps.setCreditReserve(parsed.accountId, parsed.reserve);
-					json(res, 200, {
-						ok: true,
-						...parsed
-					});
-				} catch (error) {
-					json(res, 500, { error: safeMessage(error) });
-				}
-			}
-		});
 		return () => {
 			disposeAutomationRun();
-			disposeCreditReserve();
 			disposeAccountIgnore();
 			disposeCheckin();
 			disposeAccountDisable();
 			disposeAccountSelect();
 			disposeModelsSave();
-			disposeReset();
 			disposeRescan();
 			disposeStatus();
 		};
@@ -7819,10 +7447,6 @@ const modelSelectionSchema = z.object({
 * every tick and a missing field must mean "off" rather than "undefined".
 * The hour lists fall back in the scheduler itself, so they stay optional here
 * and an absent list keeps the documented schedule.
-*
-* `exhaustCooldownMs` is mirrored from the pool options: the card offers it as
-* part of the automation block, since how long a spent account rests only
-* matters to the automation that has to work around it.
 */
 const automationSchema = z.object({
 	enabled: z.boolean().default(false).description("Run the daily points automation"),
@@ -7830,8 +7454,7 @@ const automationSchema = z.object({
 	reportHours: z.array(z.number().step(1).min(0).max(23)).description("Local hours for the activity report (runs before tasks)"),
 	taskHours: z.array(z.number().step(1).min(0).max(23)).description("Local hours for task enrolment and claiming"),
 	streakHours: z.array(z.number().step(1).min(0).max(23)).description("Local hours for streak redemption"),
-	travelHours: z.array(z.number().step(1).min(0).max(23)).description("Local hours for the buddy travel loop"),
-	exhaustCooldownMs: z.number().step(1).min(1e3).description("How long a spent account rests, in milliseconds")
+	travelHours: z.array(z.number().step(1).min(0).max(23)).description("Local hours for the buddy travel loop")
 });
 /** Settings key holding one region's saved selection. */
 const modelSelectionKeyFor = (region) => region === "cn" ? "modelSelectionCn" : "modelSelectionGlobal";
@@ -7855,15 +7478,8 @@ const modelSelectionKeyFor = (region) => region === "cn" ? "modelSelectionCn" : 
 */
 const Config = z.object({
 	authFile: asVolatile(z.string().description("WorkBuddy desktop auth file (defaults to the app own location)")),
-	cooldownMs: asVolatile(z.number().step(1).min(1e3).default(6e4).description("Rate-limit cooldown per account, in milliseconds")),
-	distribution: asVolatile(z.union([
-		"priority",
-		"round-robin",
-		"balanced"
-	]).default("priority").description("How requests are spread: priority (drain one), round-robin (in order), or balanced (idle-weighted random)")),
 	disabledAccountIds: asVolatile(z.array(z.string()).default([]).description("Account ids excluded from the pool (empty = every discovered account participates)")),
-	creditReserves: asVolatile(z.dict(z.number().step(1).min(0)).default({}).description("Per-account credit floor: stop using an account once its balance reaches this value")),
-	selectedAccountIds: asVolatile(z.dict(z.string()).default({}).description("本 fork 新增：按区域的「当前账号」，键为 cn / global。请求固定用该账号，它不可用时才回退到号池轮换；留空表示不固定")),
+	selectedAccountIds: asVolatile(z.dict(z.string()).default({}).description("本 fork 新增：按区域的「当前账号」，键为 cn / global。完全手动语义：请求只用该账号，未选/不可用即失败；留空 = 请求失败并提示手动切换")),
 	enabledModelIds: asVolatile(z.array(z.string()).default([]).description("Legacy shared model-id list; used by a region that has no per-region selection yet")),
 	imageModelIds: asVolatile(z.array(z.string()).default([]).description("Legacy shared image-id list; used by a region that has no per-region selection yet")),
 	contextBudgets: asVolatile(z.dict(z.number().step(1).min(1)).default({}).description("Legacy shared context budgets; used by a region with no per-region selection yet")),
@@ -7956,17 +7572,13 @@ function apply(ctx, config = {}) {
 		}
 	};
 	const applyConfigFromSource = () => {
-		const { authFile, cooldownMs, distribution, disabledAccountIds, creditReserves, selectedAccountIds, enabledModelIds, imageModelIds, contextBudgets, modelSelectionCn, modelSelectionGlobal, automation } = current();
+		const { authFile, disabledAccountIds, selectedAccountIds, enabledModelIds, imageModelIds, contextBudgets, modelSelectionCn, modelSelectionGlobal, automation } = current();
 		core.pool.applyConfig({
 			...authFile === void 0 ? {} : { authDirs: [dirname(authFile)] },
-			...cooldownMs === void 0 ? {} : { cooldownMs },
-			distribution: distribution ?? "priority",
 			...disabledAccountIds === void 0 ? {} : { disabledAccountIds },
-			...creditReserves === void 0 ? {} : { creditReserves },
 			// 本 fork 新增：按区域的「当前账号」。整批替换，所以省略一个区域
 			// 就等于清除该区域的选择（卡片上的「取消固定」走这条路径）。
-			...selectedAccountIds === void 0 ? {} : { selectedAccountIds },
-			...automation?.exhaustCooldownMs === void 0 ? {} : { exhaustCooldownMs: automation.exhaustCooldownMs }
+			...selectedAccountIds === void 0 ? {} : { selectedAccountIds }
 		});
 		const legacySelection = {
 			...enabledModelIds === void 0 ? {} : { enabledModelIds },
@@ -8141,12 +7753,6 @@ function apply(ctx, config = {}) {
 			else next[region] = accountId;
 			await setSetting("selectedAccountIds", next, next);
 		},
-		setCreditReserve: async (accountId, reserve) => {
-			const next = { ...current().creditReserves ?? {} };
-			if (reserve > 0) next[accountId] = reserve;
-			else delete next[accountId];
-			await setSetting("creditReserves", next, next);
-		},
 		setAccountIgnored: async (accountId, ignored) => {
 			if (ignored) {
 				const known = core.pool.list().find((account) => account.id === accountId);
@@ -8179,9 +7785,6 @@ function apply(ctx, config = {}) {
 				shim: shimInfo("cn"),
 				includeCredits
 			});
-		},
-		resetCooldowns() {
-			core.pool.resetCooldowns();
 		}
 	};
 	core.scheduler.start();
@@ -8291,4 +7894,4 @@ function apply(ctx, config = {}) {
 	});
 }
 //#endregion
-export { downgradeUnsupportedImages, readImageSize, normalizeDeepImages, policyToHostTarget, withToolImageDowngrade, APPEARANCE_THEME_KEY, AUTOMATION_JOB_KINDS, AUTOMATION_TICK_MS, BUDDY_APP_ID, BUDDY_APP_NAME, Config, DEFAULT_AUTOMATION_HOURS, DEFAULT_CONTEXT_BUDGET, EVENT_SCORE_WAIT_MS, FALLBACK_WORKBUDDY_MODELS, IGNORED_FILE_NAME, LIBRARY_DOC_URL, LIGHTHOUSE_EXPERT_ID, PLAYBOOK_CASE_ID, PLAYBOOK_CASE_NAME, PLUGIN_DATA_DIR_NAME, POOL_ACCOUNT_IGNORE_PATH, POOL_ACCOUNT_SELECT_PATH, POOL_AUTOMATION_RUN_PATH, POOL_CHECKIN_PATH, POOL_CREDIT_RESERVE_PATH, POOL_MODELS_SAVE_PATH, POOL_RESCAN_PATH, POOL_RESET_COOLDOWN_PATH, POOL_STATUS_PATH, SKILL_ID, SKILL_NAME, TEMPLATE_PRESETS, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_LIVE_FILENAME, WORKBUDDY_POOL_PROVIDER, WORKBUDDY_POOL_SETTINGS_NS, WorkBuddyAccountPool, WorkBuddyCatalog, WorkBuddyScheduler, WorkBuddyUpstreamClient, appearanceChain, apply, automationChain, automationOptions, buddyAppChain, buddyAppEvents, buildStatus, candidateAuthDirs, canvasChain, chatChain, chatHeaders, classifyUpstreamError, conversationHeaders, createCore, createWorkBuddyAdapter, createWorkBuddyShim, currentApi, dayKey, defaultDesktopAuthDirs, desktopAutomationCreatedEvent, desktopCanvasEvents, desktopChatEvents, dshHome, expertActualUseEvent, expertChatEvents, expertSummonEvents, formatRates, formatStatus, ignoreAccount, ignoredIdsPath, inject, isAutomationJobKind, isFireHour, libraryReadChain, modelSelectionKeyFor, name, parseRateLimitReset, parseWorkBuddyAuth, playbookChain, pluginDataDir, poolWebStatus, readIgnoredAccounts, readIgnoredAccountsSync, registerPoolStatusRoute, setApi, skillChain, templateChain, templateChains, unignoreAccount, workbuddyAccountId, writeIgnoredAccounts };
+export { downgradeUnsupportedImages, readImageSize, normalizeDeepImages, policyToHostTarget, withToolImageDowngrade, APPEARANCE_THEME_KEY, AUTOMATION_JOB_KINDS, AUTOMATION_TICK_MS, BUDDY_APP_ID, BUDDY_APP_NAME, Config, DEFAULT_AUTOMATION_HOURS, DEFAULT_CONTEXT_BUDGET, EVENT_SCORE_WAIT_MS, FALLBACK_WORKBUDDY_MODELS, IGNORED_FILE_NAME, LIBRARY_DOC_URL, LIGHTHOUSE_EXPERT_ID, PLAYBOOK_CASE_ID, PLAYBOOK_CASE_NAME, PLUGIN_DATA_DIR_NAME, POOL_ACCOUNT_IGNORE_PATH, POOL_ACCOUNT_SELECT_PATH, POOL_AUTOMATION_RUN_PATH, POOL_CHECKIN_PATH, POOL_MODELS_SAVE_PATH, POOL_RESCAN_PATH, POOL_STATUS_PATH, SKILL_ID, SKILL_NAME, TEMPLATE_PRESETS, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_LIVE_FILENAME, WORKBUDDY_POOL_PROVIDER, WORKBUDDY_POOL_SETTINGS_NS, WorkBuddyAccountPool, WorkBuddyCatalog, WorkBuddyScheduler, WorkBuddyUpstreamClient, appearanceChain, apply, automationChain, automationOptions, buddyAppChain, buddyAppEvents, buildStatus, candidateAuthDirs, canvasChain, chatChain, chatHeaders, classifyUpstreamError, conversationHeaders, createCore, createWorkBuddyAdapter, createWorkBuddyShim, currentApi, dayKey, defaultDesktopAuthDirs, desktopAutomationCreatedEvent, desktopCanvasEvents, desktopChatEvents, dshHome, expertActualUseEvent, expertChatEvents, expertSummonEvents, formatRates, formatStatus, ignoreAccount, ignoredIdsPath, inject, isAutomationJobKind, isFireHour, libraryReadChain, modelSelectionKeyFor, name, parseRateLimitReset, parseWorkBuddyAuth, playbookChain, pluginDataDir, poolWebStatus, readIgnoredAccounts, readIgnoredAccountsSync, registerPoolStatusRoute, setApi, skillChain, templateChain, templateChains, unignoreAccount, workbuddyAccountId, writeIgnoredAccounts };

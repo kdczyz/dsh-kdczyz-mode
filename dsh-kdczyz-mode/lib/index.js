@@ -611,11 +611,10 @@ export function mountConsoleRoutes(ctx, config) {
               if (r.status === 'pending') return json(res, 200, { status: 'pending' });
               if (r.status === 'failed') return json(res, 200, { status: 'failed', error: r.error });
 
-              // 登录完成 → 落盘凭据，让池下次扫描就能认出这个新账号
-              const dir = await wbAuth.pickAuthDir(
-                xdpoolModule.defaultDesktopAuthDirs?.() ?? [],
-                xdpoolModule.pluginDataDir?.() ?? join(homedir(), '.dsh', 'plugin-data'),
-              );
+              // 登录完成 → 落盘凭据到 DSH 主目录下的 `.wb-auth`（vendored 池
+              // 现在也扫这个目录），让池下次扫描就能认出这个新账号；不写桌面端
+              // app 目录 —— 删掉桌面 app 也不影响插件账号，桌面登录态照常被扫。
+              const dir = wbAuth.dshAuthDir(xdpoolModule.dshHome?.() ?? join(homedir(), '.dsh'));
               const saved = await wbAuth.saveCredential({
                 dir,
                 credential: r.credential,
@@ -854,26 +853,25 @@ export function mountConsoleRoutes(ctx, config) {
               const pool = qoderPool();
               await pool.scan();
               const now = Date.now();
-              // `?model=` 只影响「还没有任何请求时」的预告选号（逐模型冷却会
-              // 让不同模型落到不同账号上）；解析失败就按不带模型处理。
+              // `?model=` 曾用于逐模型冷却的预告选号；冷却已删除，仅保留解析
+              // 以兼容旧调用。
               const modelId = modelIdOf(req);
               /**
-               * 界面上标「当前使用」的那一个 —— Trae 同款规则：显式选中且还在
-               * 池里就是它，否则是池里第一个账号（见
-               * `QoderAccountPool.effectiveSelectedAccountId`）。
+               * 界面上标「当前使用」的那一个 —— 完全手动语义：只有用户显式选中
+               * 且还在池里的账号（见 `QoderAccountPool.effectiveSelectedAccountId`），
+               * 没选就是 null。
                *
                * 刻意**不是**「本次调用」那一个：`serving` 回答的是「这一轮真的
-               * 扣了谁的钱」（可能因为限流让位而变成备用账号），两者都要如实
-               * 展示，混成一个字段就再也说不清「我选的」和「实际用的」。
+               * 扣了谁的钱」，两者都要如实展示，混成一个字段就再也说不清
+               * 「我选的」和「实际用的」。
                */
               const effectiveSelected = pool.effectiveSelectedAccountId() ?? null;
               json(res, 200, {
                 ok: true,
                 disabledIds: pool.disabledIdsInOrder(),
-                creditReserves: pool.creditReservesInOrder(),
-                // 用户**显式**选中的账号（null = 没选过，界面按第一个账号算）。
+                // 用户**显式**选中的账号（null = 没选过，界面提示手动切换）。
                 selectedAccountId: pool.selectedAccountId() ?? null,
-                // 实际会显示成「当前使用」的那一个（含上面那条默认值）。
+                // 实际会显示成「当前使用」的那一个。
                 effectiveSelectedAccountId: effectiveSelected,
                 lastServedId: pool.lastServedId() ?? null,
                 status: pool.status(),
@@ -885,12 +883,7 @@ export function mountConsoleRoutes(ctx, config) {
                   expired: (account.credential.expiresAtMs ?? 0) > 0 && (account.credential.expiresAtMs ?? 0) <= now,
                   disabled: pool.isDisabled(account.id),
                   selected: effectiveSelected === account.id,
-                  creditReserve: pool.creditReserveOf(account.id),
                   credits: pool.creditsOf(account.id) ?? null,
-                  cooldownUntilMs: account.cooldownUntilMs,
-                  cooling: account.cooldownUntilMs > now,
-                  modelCooldowns: account.modelCooldowns,
-                  rateLimitHits: account.rateLimitHits,
                 })),
                 // 「谁在被调用 + 它还剩多少」—— 界面与额度胶囊**唯一**该读的字段。
                 // 见 resolveQoderServing 的注释（为什么要单独算、为什么要按需读一次）。
@@ -903,7 +896,7 @@ export function mountConsoleRoutes(ctx, config) {
         }),
       );
 
-      // —— 池配置（分配策略 / 停用 / 保留额度 / 当前账号）**没有路由** ——
+      // —— 池配置（停用 / 当前账号）**没有路由** ——
       //
       // 这四件事以前各有 POST 路由（`/qoder/pool/config`、`/pool/account`、
       // `/pool/select`、`/pool/credit-reserve`），但它们改的只是**本入口**这个
@@ -914,24 +907,23 @@ export function mountConsoleRoutes(ctx, config) {
       // 现在与 Trae 半边**同一条链**：
       //
       //   设置页写 `dsh-connect-qoder` 的 `selectedAccountId` /
-      //   `disabledAccountIds` / `creditReserves`（见 lib/console.mjs 的
-      //   qoder* 写入助手，读回确认落地）
+      //   `disabledAccountIds`（见 lib/console.mjs 的 qoder* 写入助手，读回
+      //   确认落地）
       //     → 宿主发 `loader/volatile-update`
       //     → lib/qoder.js 重新解引用配置并 `pool.applyConfig()`
       //     → `pool.acquire()` 用新的「当前账号」
       //
-      // 三件套因此都**持久化**（重启后仍是它），并且只有一个真相来源。
+      // 两件套因此都**持久化**（重启后仍是它），并且只有一个真相来源。
       // 管理页这边只读不写：上面的 `/qoder/pool` 快照会先调
       // `syncPoolConfig()` 再出数据，所以点完按钮刷新看到的立刻是新值。
-      // 运行时状态（冷却 / 使用时刻）与池配置的区别照旧：前者不落盘，
-      // 由「重置冷却」那条路由单独清。
+      // 冷却 / 保留额度 / 分配策略已随「完全手动」一并删除，无运行时状态可清。
 
       // —— 刷新上游积分额度 ——
       //
       // 逐账号打 `GET {openapi}/api/v2/quota/usage`，把三池合计记回号池，
-      // 于是「保留额度」判据立刻有值可用。失败的账号**不写余额**（保持
-      // 未知），卡片显示「—」而不是「0」—— 把查不到显示成 0 会让用户
-      // 误删好账号。单个账号失败不影响其它账号，故整体仍返回 200。
+      // 卡片据此显示余额。失败的账号**不写余额**（保持未知），卡片显示
+      // 「—」而不是「0」—— 把查不到显示成 0 会让用户误删好账号。
+      // 单个账号失败不影响其它账号，故整体仍返回 200。
       disposers.push(
         webServer.register({
           kind: 'exact',
@@ -1083,26 +1075,6 @@ export function mountConsoleRoutes(ctx, config) {
                 credits,
                 checkedAtMs: Date.now(),
               });
-            } catch (e) {
-              json(res, 500, { ok: false, error: e?.message ?? String(e) });
-            }
-          },
-        }),
-      );
-
-      // —— 重置全部冷却 ——
-      disposers.push(
-        webServer.register({
-          kind: 'exact',
-          path: `${BASE}/qoder/cooldowns/reset`,
-          handler: async (req, res) => {
-            if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' });
-            if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' });
-            try {
-              const pool = qoderPool();
-              await pool.scan();
-              pool.resetCooldowns();
-              json(res, 200, { ok: true, status: pool.status() });
             } catch (e) {
               json(res, 500, { ok: false, error: e?.message ?? String(e) });
             }

@@ -1646,39 +1646,19 @@ var TraeCredentialStore = class {
 //#endregion
 //#region src/pool.ts
 /**
-* Idle bonus per hour an account has gone unused, and its ceiling.
+* Read-only pool of every discovered Trae account.
 *
-* Same shape as the WorkBuddy pool on purpose: two connectors that behave
-* differently for no reason are two things to explain. An idle account must not
-* dominate forever, hence the cap.
-*/
-const TRAE_IDLE_WEIGHT_PER_HOUR = .5;
-const TRAE_IDLE_WEIGHT_MAX = 5;
-/**
-* Weight one account by how long it has been idle.
-*
-* The base of 1 keeps every eligible account in play, so a single unhealthy
-* account cannot pin the pool to itself and the weights never sum to zero.
-* `lastUsedAt === undefined` (never used in this process) earns the full bonus:
-* on a fresh start every account ties and the first requests spread out instead
-* of always landing on the first entry.
-*/
-function traeIdleWeight(lastUsedAt, now) {
-	if (lastUsedAt === void 0) return 6;
-	const hours = (now - lastUsedAt) / 36e5;
-	return 1 + Math.min(Math.max(hours, 0) * TRAE_IDLE_WEIGHT_PER_HOUR, TRAE_IDLE_WEIGHT_MAX);
-}
-/**
-* Read-only pool of every discovered Trae account, with rate-limit cooldown and
-* failover between accounts.
+* **完全手动取号**（本 fork 语义）：请求**只用** `preferredId` 指向的那一个
+* 账号（界面「切换到此账号」写入），它不可用（停用 / 不在池里）时请求直接
+* 失败，**不自动让位、不自动换号**。没有分配策略（priority / round-robin /
+* balanced 均已删除）、没有冷却机制、没有保留额度；`disabledIds` 停用保留
+* （手动管理）。
 *
 * Trae's credential store already lists every login on the machine (desktop
 * installs per edition, the CLI token, and the plugin's own per-account files —
 * see {@link TraeCredentialStore#readAll}); before this existed the request
-* chain called `store.resolve()`, which always returns the ONE bound account, so
-* a rate-limited or exhausted login failed the request outright even with other
-* logins available. The pool wraps that list with the same rotate/cool logic the
-* WorkBuddy half has always had.
+* chain called `store.resolve()`, which always returns the ONE bound account.
+* The pool wraps that list so the user can manually pick who serves.
 *
 * Region is fixed per pool instance: Trae CN and international credentials are
 * not interchangeable, and each region is its own provider.
@@ -1686,52 +1666,21 @@ function traeIdleWeight(lastUsedAt, now) {
 var TraeAccountPool = class {
 	logger;
 	store;
-	cooldownMs;
-	/** How long an account rests after the upstream reports its credits are spent. */
-	exhaustCooldownMs;
-	distribution;
 	accounts = [];
-	/** Cursor for round-robin; unused under priority distribution. */
-	cursor = 0;
 	lastScanAtMs = 0;
 	preferredId;
 	/** Account ids the user switched off on the card. */
 	disabledIds = /* @__PURE__ */ new Set();
-	/** Per-account credit floor; 0 (or absent) means "spend it all". */
-	creditReserves = /* @__PURE__ */ new Map();
 	/** Last known general balance per account, epoch ms aside. */
 	creditBalances = /* @__PURE__ */ new Map();
-	/** Last time each account served a request; drives idle weighting. */
+	/** Last time each account served a request; drives the "who served" display. */
 	lastUsedAt = /* @__PURE__ */ new Map();
 	constructor(options = {}) {
 		this.logger = options.logger;
 		this.store = options.store;
-		this.cooldownMs = options.cooldownMs ?? 6e4;
-		this.exhaustCooldownMs = options.exhaustCooldownMs ?? 18e5;
-		this.distribution = options.distribution ?? "priority";
 	}
 	applyConfig(options) {
-		if (options.cooldownMs !== void 0 && options.cooldownMs >= 1e3) this.cooldownMs = options.cooldownMs;
-		if (options.exhaustCooldownMs !== void 0 && options.exhaustCooldownMs >= 1e3) this.exhaustCooldownMs = options.exhaustCooldownMs;
-		if (options.distribution !== void 0) this.distribution = options.distribution;
 		if (options.disabledAccountIds !== void 0) this.disabledIds = new Set(options.disabledAccountIds);
-		if (options.creditReserves !== void 0) this.setCreditReserves(options.creditReserves);
-	}
-	setCreditReserves(reserves) {
-		const next = /* @__PURE__ */ new Map();
-		for (const [id, value] of Object.entries(reserves ?? {})) if (Number.isFinite(value) && value > 0) next.set(id, Math.floor(value));
-		this.creditReserves = next;
-	}
-	creditReservesInOrder() {
-		const out = {};
-		for (const account of this.accounts) {
-			const reserve = this.creditReserves.get(account.id);
-			if (reserve !== void 0 && reserve > 0) out[account.id] = reserve;
-		}
-		return out;
-	}
-	creditReserveOf(accountId) {
-		return this.creditReserves.get(accountId) ?? 0;
 	}
 	creditsOf(accountId) {
 		return this.creditBalances.get(accountId);
@@ -1739,10 +1688,10 @@ var TraeAccountPool = class {
 	/**
 	* Rescan the machine's Trae logins and merge them into the pool.
 	*
-	* Existing entries keep their cooldown and usage state — `scan()` runs on
-	* every exhausted pick, and an account that is cooling must not be reset by
-	* that. Only the credential itself is replaced, and only when the fresh read
-	* expires later (a browser login in another window is how an account changes).
+	* Existing entries keep their identity and usage state — `scan()` runs on
+	* every status read, and a pool entry must not be rebuilt from scratch. Only
+	* the credential itself is replaced, and only when the fresh read expires
+	* later (a browser login in another window is how an account changes).
 	*/
 	async scan() {
 		if (this.store === void 0) return this.accounts;
@@ -1756,10 +1705,7 @@ var TraeAccountPool = class {
 				byId.set(id, {
 					id,
 					label: credential.accountName ?? credential.userId ?? "Trae account",
-					credential,
-					cooldownUntilMs: 0,
-					modelCooldowns: {},
-					rateLimitHits: 0
+					credential
 				});
 				continue;
 			}
@@ -1777,79 +1723,33 @@ var TraeAccountPool = class {
 		return this.accounts;
 	}
 	/**
-	* Accounts currently eligible to serve a request.
+	* Accounts not switched off by the user (display-side "available").
 	*
-	* With a `modelId`, an account is eligible when it is not account-wide cooled
-	* AND that model is not cooling on it — Trae rate-limits per model, so a 429
-	* on one model must not take the account's other models out of rotation.
+	* 完全手动语义下它只用于界面展示 —— 真正的取号只认
+	* {@link TraeAccountPool#resolvePreferred} 选中的那一个，这里不再参与任何
+	* 自动选择。
 	*/
 	available(now, modelId) {
-		return this.accounts.filter((account) => {
-			if (this.disabledIds.has(account.id)) return false;
-			const reserve = this.creditReserves.get(account.id);
-			if (reserve !== void 0 && reserve > 0) {
-				const balance = this.creditBalances.get(account.id);
-				if (balance !== void 0 && balance <= reserve) return false;
-			}
-			if (account.cooldownUntilMs > now) return false;
-			if (modelId !== void 0 && (account.modelCooldowns[modelId] ?? 0) > now) return false;
-			return true;
-		});
-	}
-	pickRoundRobin(pool) {
-		const index = this.cursor % pool.length;
-		const account = pool[index];
-		if (account === void 0) return void 0;
-		this.cursor = (index + 1) % pool.length;
-		return account;
-	}
-	/** Weighted random over eligible accounts, biased towards the idle ones. */
-	pickByWeight(pool) {
-		if (pool.length === 1) return pool[0];
-		const now = Date.now();
-		const weights = pool.map((account) => traeIdleWeight(this.lastUsedAt.get(account.id), now));
-		const total = weights.reduce((sum, weight) => sum + weight, 0);
-		if (!Number.isFinite(total) || total <= 0) return pool[0];
-		let roll = Math.random() * total;
-		for (let index = 0; index < pool.length; index += 1) {
-			roll -= weights[index] ?? 0;
-			if (roll < 0) return pool[index];
-		}
-		return pool[pool.length - 1];
+		return this.accounts.filter((account) => !this.disabledIds.has(account.id));
 	}
 	/**
 	* Pick the account to serve a request.
 	*
-	* Three distributions, matching the WorkBuddy pool:
+	* ## 完全手动（唯一路径）
 	*
-	* - **priority** (default): one account serves until it is cooled, then the
-	*   next eligible one takes over.
-	* - **round-robin**: consecutive requests rotate through the pool.
-	* - **balanced**: weighted random, favouring whichever account has been idle
-	*   longest.
+	* `preferredId` 指向的账号**只要在池里且未被停用就一定用它**。没选 / 选的
+	* 不在池里 / 被停用时直接返回 undefined（请求失败），**不轮换、不让位、
+	* 不冷却换号**。
 	*
-	* An explicit user selection (`prefer`) heads the list in every mode.
-	*
-	* Scans on first use, and rescans when every known account is cooling: a
-	* fresh login is the usual way out of an exhausted pool.
+	* Scans on first use, and rescans when the pool is empty: a fresh login is
+	* the usual way out of an empty pool.
 	*/
 	async acquire(modelId) {
 		if (this.accounts.length === 0) await this.scan();
-		let pool = this.available(Date.now(), modelId);
-		if (pool.length === 0) {
-			await this.scan();
-			pool = this.available(Date.now(), modelId);
-		}
-		if (pool.length === 0) return void 0;
-		if (this.preferredId !== void 0) {
-			const preferred = pool.find((account) => account.id === this.preferredId);
-			if (preferred !== void 0) {
-				await this.ensureFresh(preferred);
-				return preferred;
-			}
-		}
-		const account = this.distribution === "round-robin" ? this.pickRoundRobin(pool) : this.distribution === "balanced" ? this.pickByWeight(pool) : pool[0];
+		if (this.preferredId === void 0) return void 0;
+		const account = this.accounts.find((item) => item.id === this.preferredId);
 		if (account === void 0) return void 0;
+		if (this.disabledIds.has(account.id)) return void 0;
 		await this.ensureFresh(account);
 		return account;
 	}
@@ -1862,12 +1762,12 @@ var TraeAccountPool = class {
 	disabledIdsInOrder() {
 		return this.accounts.filter((account) => this.disabledIds.has(account.id)).map((account) => account.id);
 	}
-	/** Record that an account actually served a request (idle weighting reads it). */
+	/** Record that an account actually served a request ("who served" display reads it). */
 	noteServed(accountId) {
 		if (!this.accounts.some((account) => account.id === accountId)) return;
 		this.lastUsedAt.set(accountId, Date.now());
 	}
-	/** Record an account's latest known balance, so the reserve check has a value. */
+	/** Record an account's latest known balance, so the card can show it. */
 	noteCredits(accountId, balance) {
 		if (!Number.isFinite(balance)) return;
 		if (!this.accounts.some((account) => account.id === accountId)) return;
@@ -1921,53 +1821,10 @@ var TraeAccountPool = class {
 		};
 		await this.ensureFresh(account);
 	}
-	/**
-	* Cool a whole account after the upstream reports its credits are spent.
-	*
-	* Credit exhaustion is account-wide — every model on it is unusable until the
-	* quota resets — so this cools the account as a whole rather than one model.
-	*/
-	penalizeExhausted(accountId) {
-		const until = Date.now() + this.exhaustCooldownMs;
-		this.penalize(accountId, until);
-		this.logger?.warn(`dsh-connect-trae: account credits exhausted; cooling until ${new Date(until).toISOString()}`);
-	}
-	/**
-	* Mark an account (or one of its models) rate-limited.
-	*
-	* With `modelId`, only that model on that account is cooled, matching Trae's
-	* per-model rate limit ("可切换其他模型继续使用"). Without one the whole
-	* account is cooled.
-	*/
-	penalize(accountId, resetAtMs, modelId) {
-		const account = this.accounts.find((item) => item.id === accountId);
-		if (account === undefined) return;
-		account.rateLimitHits += 1;
-		const until = resetAtMs ?? Date.now() + this.cooldownMs;
-		if (modelId !== undefined && modelId !== "") {
-			account.modelCooldowns[modelId] = Math.max(account.modelCooldowns[modelId] ?? 0, until);
-			this.logger?.warn(`dsh-connect-trae: ${account.label} rate-limited on model ${modelId}; cooling that model until ${new Date(until).toISOString()}`);
-			return;
-		}
-		account.cooldownUntilMs = Math.max(account.cooldownUntilMs, until);
-		this.logger?.warn(`dsh-connect-trae: account ${account.label} rate-limited; cooling until ${new Date(until).toISOString()}`);
-	}
-	resetCooldowns() {
-		for (const account of this.accounts) {
-			account.cooldownUntilMs = 0;
-			account.modelCooldowns = {};
-			account.rateLimitHits = 0;
-		}
-	}
-	currentDistribution() {
-		return this.distribution;
-	}
-	/** Diagnostics snapshot: total, cooling count, last scan time. */
+	/** Diagnostics snapshot: total count, last scan time. */
 	status() {
-		const now = Date.now();
 		return {
 			count: this.accounts.length,
-			cooling: this.accounts.filter((account) => account.cooldownUntilMs > now).length,
 			lastScanAtMs: this.lastScanAtMs
 		};
 	}
@@ -2332,70 +2189,46 @@ function readBody(req) {
 * a rate-limited or exhausted login used to fail the request outright even when
 * other Trae logins on the same machine could serve it.
 *
-* The failover rules mirror the WorkBuddy pool:
-*   - `soft_rate` (429) → cool THIS MODEL on that account and try the next one,
-*     because Trae's limit is per model and the account's other models still work;
-*   - `hard_credit` (402) → cool the whole account (no credit means no model) and
-*     rotate;
-*   - `authentication` → refresh that account's token once and retry it, then
-*     rotate: a stale token is the common cause and the account is still good;
-*   - anything else → fail immediately. Retrying a schema/protocol error on
-*     another account only spends more quota to get the same answer.
-*
-* `maxAttempts` is bounded by the pool size so a large pool cannot turn one bad
-* request into an unbounded burst of upstream calls.
+* 完全手动语义（本 fork）：
+*   - `soft_rate` (429) / `hard_credit` (402) → **不惩罚账号、不换号**，把失败
+*     原样返回，由用户手动切换账号；
+*   - `authentication` → 刷新该账号令牌一次并重试同账号（令牌过期是常见原因，
+*     账号本身仍有效）；刷新后仍失败就原样返回。
 */
 async function routeTraeChat(options, bodyJson, signal, parsed) {
 	const pool = options.pool;
 	if (pool === undefined) return options.client.chatStream(bodyJson, signal);
 	const modelId = typeof parsed?.model === "string" && parsed.model !== "" ? parsed.model : undefined;
-	let last;
-	let sawRateLimit = false;
-	const tried = [];
-	const maxAttempts = Math.max(1, Math.min(4, (await pool.scan()).length || 1));
-	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-		if (signal?.aborted === true) return {
-			ok: false,
-			status: 400,
-			kind: "client",
-			message: "client disconnected"
-		};
-		const account = await pool.acquire(modelId);
-		if (account === undefined) {
-			return {
-				ok: false,
-				status: sawRateLimit && last !== undefined ? STATUS_BY_KIND[last.kind] : 401,
-				kind: sawRateLimit && last !== undefined ? last.kind : "authentication",
-				message: sawRateLimit && last !== undefined ? `every Trae account is rate-limited for ${modelId ?? "(no model)"} (tried ${tried.length}: ${tried.join(", ")}); resets at the upstream window — ${last.message.slice(0, 200)}` : "no Trae account available; sign in in the Trae desktop app"
-			};
-		}
-		tried.push(account.label);
-		const result = await options.client.chatStream(bodyJson, signal, undefined, account.credential);
-		if (result.ok) {
-			pool.noteServed(account.id);
-			return result;
-		}
-		last = result;
-		if (result.kind === "authentication") {
-			// One token refresh per account per request: the common cause of a 401
-			// is a stale access token, and the account itself is still usable.
-			await pool.refreshAccount(account.id);
-			continue;
-		}
-		if (result.kind === "hard_credit") {
-			pool.penalizeExhausted(account.id);
-			continue;
-		}
-		if (result.kind !== "soft_rate") break;
-		sawRateLimit = true;
-		pool.penalize(account.id, undefined, modelId);
-	}
-	return last ?? {
+
+	if (signal?.aborted === true) return {
 		ok: false,
-		status: 500,
-		kind: "server",
-		message: "chat request exhausted without a result"
+		status: 400,
+		kind: "client",
+		message: "client disconnected"
 	};
+	const account = await pool.acquire(modelId);
+	if (account === undefined) {
+		return {
+			ok: false,
+			status: 503,
+			kind: "unconfigured",
+			message: "no Trae account selected or selected account unavailable; switch accounts on the Trae settings page"
+		};
+	}
+	const result = await options.client.chatStream(bodyJson, signal, undefined, account.credential);
+	if (result.ok) {
+		pool.noteServed(account.id);
+		return result;
+	}
+	if (result.kind === "authentication") {
+		// One token refresh per request: the common cause of a 401 is a stale
+		// access token, and the account itself is still usable.
+		await pool.refreshAccount(account.id);
+		const retry = await options.client.chatStream(bodyJson, signal, undefined, account.credential);
+		if (retry.ok) pool.noteServed(account.id);
+		return retry;
+	}
+	return result;
 }
 function createTraeShim(options) {
 	const secret = randomBytes(32).toString("base64url");
@@ -4645,12 +4478,10 @@ const TRAE_ACCOUNT_CREDITS_PATH = "/plugins/dsh-connect-trae/account-credits";
 const TRAE_CHECKIN_PATH = "/plugins/dsh-connect-trae/checkin";
 /**
 * Account-pool routes. Named after the WorkBuddy pool's own routes on purpose
-* (cooldowns/reset, accounts/credit-reserve), so the two connectors expose the
-* same management actions under their own namespace.
+* (accounts/disabled), so the two connectors expose the same management actions
+* under their own namespace. 完全手动语义下不再有冷却 / 保留额度路由。
 */
-const TRAE_COOLDOWNS_RESET_PATH = "/plugins/dsh-connect-trae/cooldowns/reset";
 const TRAE_POOL_ACCOUNT_PATH = "/plugins/dsh-connect-trae/pool/account";
-const TRAE_POOL_RESERVE_PATH = "/plugins/dsh-connect-trae/pool/credit-reserve";
 /** Query parameter naming the region a card request addresses. */
 const TRAE_REGION_PARAM = "region";
 /** Every region, in card tab order. */
@@ -4958,23 +4789,14 @@ async function poolDoc(deps, region) {
 	 * 是安全的（与 WorkBuddy 池的做法一致）。
 	 */
 	await pool.scan();
-	const now = Date.now();
 	return {
 		pool: {
-			distribution: pool.currentDistribution(),
-			cooling: pool.list().filter((account) => account.cooldownUntilMs > now).length,
 			lastServedId: pool.lastServedId(),
-			creditReserves: pool.creditReservesInOrder(),
 			accounts: pool.list().map((account) => ({
 				id: account.id,
 				label: account.label,
-				cooling: account.cooldownUntilMs > now,
-				rateLimitHits: account.rateLimitHits,
 				disabled: pool.isDisabled(account.id),
-				reserved: pool.creditReserveOf(account.id) > 0 && (pool.creditsOf(account.id) ?? Number.POSITIVE_INFINITY) <= pool.creditReserveOf(account.id),
-				creditReserve: pool.creditReserveOf(account.id),
-				credits: pool.creditsOf(account.id),
-				cooldownUntilMs: account.cooldownUntilMs > now ? account.cooldownUntilMs : undefined
+				credits: pool.creditsOf(account.id)
 			}))
 		}
 	};
@@ -5363,27 +5185,6 @@ function registerTraeUsageRoute(ctx, deps) {
 			}
 		});
 		/**
-		* Clear every cooldown in one region's pool.
-		*
-		* The WorkBuddy pool has the same escape hatch, and for the same reason: a
-		* cooldown is the pool's own bookkeeping, so a stuck or over-long window is
-		* something the user must be able to clear without restarting DSH.
-		*/
-		const disposeCooldownsReset = ctx.webServer.register({
-			kind: "exact",
-			path: TRAE_COOLDOWNS_RESET_PATH,
-			handler: (req, res) => {
-				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
-				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
-				const region = requestRegion(req, res);
-				if (region === void 0) return;
-				const pool = deps.pool?.(region);
-				if (pool === undefined) return json(res, 503, { error: "account pool unavailable" });
-				pool.resetCooldowns();
-				json(res, 200, { cleared: true });
-			}
-		});
-		/**
 		* Take one account out of rotation / put it back.
 		*
 		* Disabling is a USER preference, not a property of the credential, so it
@@ -5418,43 +5219,6 @@ function registerTraeUsageRoute(ctx, deps) {
 				json(res, 200, { disabledIds: [...next] });
 			}
 		});
-		/**
-		* Set an account's credit floor.
-		*
-		* The pool stops picking an account once its last known general balance is
-		* at or below the floor, so the user keeps a cushion instead of draining
-		* every login to zero. Persisted by the card through the region's settings
-		* slot; this route applies it to the live pool immediately.
-		*/
-		const disposePoolReserve = ctx.webServer.register({
-			kind: "exact",
-			path: TRAE_POOL_RESERVE_PATH,
-			handler: async (req, res) => {
-				if (req.method !== "POST") return json(res, 405, { error: "method not allowed" });
-				if (!loopbackOrigin(req)) return json(res, 403, { error: "origin-not-trusted" });
-				const region = requestRegion(req, res);
-				if (region === void 0) return;
-				const pool = deps.pool?.(region);
-				if (pool === undefined) return json(res, 503, { error: "account pool unavailable" });
-				let body;
-				try {
-					body = JSON.parse(await readJsonBody(req));
-				} catch {
-					return json(res, 400, { error: "invalid JSON body" });
-				}
-				const accountId = typeof body?.accountId === "string" ? body.accountId : "";
-				if (accountId === "") return json(res, 400, { error: "缺少 accountId" });
-				const value = Number(body?.credits);
-				if (!Number.isFinite(value) || value < 0) return json(res, 400, { error: "credits 必须是非负数字" });
-				await pool.scan();
-				if (!pool.list().some((account) => account.id === accountId)) return json(res, 404, { error: "account not found" });
-				const reserves = { ...pool.creditReservesInOrder() };
-				if (value <= 0) delete reserves[accountId];
-				else reserves[accountId] = Math.floor(value);
-				pool.applyConfig({ creditReserves: reserves });
-				json(res, 200, { creditReserves: reserves });
-			}
-		});
 		return () => {
 			disposeCheckin();
 			disposeRefresh();
@@ -5462,9 +5226,7 @@ function registerTraeUsageRoute(ctx, deps) {
 			disposeAccounts();
 			disposeAccountCredits();
 			disposeUsage();
-			disposeCooldownsReset();
 			disposePoolAccount();
-			disposePoolReserve();
 		};
 	}, "dsh-connect-trae: Web usage route");
 }
@@ -5757,18 +5519,12 @@ const regionStateConfig = z.object({
 	imageModelIds: z.array(z.string()).default([]),
 	contextBudgets: z.dict(z.number().step(1).min(1)).default({}),
 	/**
-	* Account-pool fields, mirroring the WorkBuddy pool's own settings so the two
-	* connectors read and behave the same way. All three are optional: a region
-	* slot written before the pool existed has none of them, and must keep
-	* working exactly as before (the defaults below are the pre-pool behaviour).
+	* Account-pool field, mirroring the WorkBuddy pool's own setting so the two
+	* connectors read and behave the same way. It is optional: a region slot
+	* written before the pool existed has none, and must keep working exactly as
+	* before. 完全手动语义下只剩停用列表（分配策略与保留额度已删除）。
 	*/
-	distribution: z.union([
-		"priority",
-		"round-robin",
-		"balanced"
-	]).default("priority").description("How requests are spread across this region's accounts: priority (drain one), round-robin (in order), or balanced (idle-weighted random)"),
-	disabledAccountIds: z.array(z.string()).default([]).description("Trae account ids excluded from the pool (empty = every discovered login participates)"),
-	creditReserves: z.dict(z.number().step(1).min(0)).default({}).description("Per-account credit floor: stop using an account once its general balance reaches this value")
+	disabledAccountIds: z.array(z.string()).default([]).description("Trae account ids excluded from the pool (empty = every discovered login participates)")
 });
 const accountSelectionConfig = z.object({
 	cn: z.string().description("Selected domestic (CN) account id (never a token)"),
@@ -6186,12 +5942,10 @@ function apply(ctx, config) {
 			const stack = stacks[region];
 			const slot = regionStateOf(value, region);
 			stack.store.setSource(unwrapVolatile(value.authFile), unwrapVolatile(value.edition) ?? "auto", effectiveAccountFor(region, value));
-			// Account-pool settings: same three knobs as the WorkBuddy pool
-			// (distribution / disabled ids / per-account credit floor).
+			// Account-pool setting: 完全手动语义下只剩停用列表（分配策略 /
+			// 保留额度已删除）。选中账号经 `prefer` 单独接线（下方）。
 			stack.pool.applyConfig({
-				distribution: slot.distribution,
-				disabledAccountIds: slot.disabledAccountIds,
-				creditReserves: unwrapVolatile(slot.creditReserves)
+				disabledAccountIds: slot.disabledAccountIds
 			});
 			// A disabled-region provider serves no requests, so its pool must not
 			// hold a preferred account that the user cannot see or change.
@@ -6320,4 +6074,4 @@ function apply(ctx, config) {
 	});
 }
 //#endregion
-export { Config, FALLBACK_TRAE_MODELS, FALLBACK_TRAE_MODELS_AI, REGION_GATEWAYS, SseDecoder, TRAE_AI_PROVIDER, TRAE_CHECKIN_PATH, TRAE_CN_AGENT_TASK_PATH, TRAE_CN_TITLE_PATH, TRAE_MODELS_TEST_PATH, TRAE_MODEL_DETAIL_FUNCTIONS, TRAE_MODEL_DETAIL_PATH, TRAE_PAY_BASE, TRAE_PROBE_TIMEOUT_MS, TRAE_PROVIDER, TRAE_COOLDOWNS_RESET_PATH, TRAE_POOL_ACCOUNT_PATH, TRAE_POOL_RESERVE_PATH, TRAE_PROVIDERS, TRAE_PROVIDER_DISPLAY_NAMES, TRAE_RAW_CHAT_V1_PATH, TRAE_RAW_CHAT_V2_PATH, TRAE_REASONING_EFFORTS, TRAE_REGIONS, TRAE_REGION_PARAM, TRAE_SETTINGS_NS, TRAE_SOLO_CHAT_PATH, TRAE_SOLO_FUNCTION, TRAE_SOLO_MODELS_PATH, TRAE_SOLO_REMOTE_BASE, TRAE_STATE_DB_FILENAME, TRAE_STREAM_IDLE_TIMEOUT_MS, TRAE_USAGE_PATH, TRAE_VERSION_CODE_FALLBACK, TraeAccountPool, TraeCatalog, TraeCredentialStore, TraeDelegatingUpstreamClient, TraeFallbackUpstreamClient, TraeGatedUpstreamClient, TraeRawCapabilityController, TraeRawCapabilityState, TraeRawChatUpstreamClient, TraeSoloBridge, TraeSoloRemoteCatalogClient, TraeSoloUpstreamClient, TraeUsageClient, UnconfiguredTraeUpstreamClient, apply, applyContextBudgets, applyImageSelection, applyReasoningEffort, asVolatile, bridgeTraeSoloStream, buildTraeAgentTaskBody, buildTraeCnHeaders, buildTraeFusionRawChatEnvelope, buildTraeModelDetailRequest, buildTraeRawChatDraft, buildTraeRawChatRuntimeConfig, classifyProbeError, classifyProbeResult, classifyTraeRawChatFailure, createTraeAdapter, createTraeRawGateway, createTraeShim, decodeRawChatChunk, decodeTraeEvent, decryptTraeStorageValue, deriveCatalog, describeIdShape, describeNameShape, discoveredCatalog, fallbackModelsFor, hashTraeRawChatArg, identityHeaders, inject, legacyTraeOwnAuthPath, maskUserPath, mergeTraeModelSources, name, nextRegionEnabled, nextRegionSlots, normalizeTraeCredential, normalizeTraeVersionCode, parseObservedModelConfig, parseReasoningCapability, parseTraeAuthValue, parseTraeCachedModel, parseTraeModelExtraConfigLogLine, parseTraeRawChatBehaviorConfig, parseTraeRemoteModel, parseTraeStorageDocument, pickTraeStorageIdentity, prepareSoloBody, probeBody, probeModelsSequentially, probeOneModel, probeTraeRawChatCapability, rawCapabilityDiagnostic, rawCapabilityFingerprint, readTraeCachedModel, readTraeCliIdentity, readTraeIdentity, refreshTraeCredential, regionEnabled, regionEnabledOf, regionOfCredential, regionOfEdition, regionOfHost, regionOfTraeProvider, regionOfTraeStatusUrl, regionOfUserRegion, regionStateOf, registerTraeUsageRoute, resolveTraeIdentity, resolveTraeRawRuntime, sanitizeCatalog, settingsNamespaceOf, traeAccountId, traeEndpoint, traeInputModalities, traeModelDisplayName, traeOwnAccountAuthPath, traeOwnAuthPath, traeRawChatExtraInfo, traeStateDatabaseCandidates, traeStorageCandidates, traeWebUsage, traeWindowsAppNames, unwrapVolatile, unwrapVolatileDeep, withTraeRegion };
+export { Config, FALLBACK_TRAE_MODELS, FALLBACK_TRAE_MODELS_AI, REGION_GATEWAYS, SseDecoder, TRAE_AI_PROVIDER, TRAE_CHECKIN_PATH, TRAE_CN_AGENT_TASK_PATH, TRAE_CN_TITLE_PATH, TRAE_MODELS_TEST_PATH, TRAE_MODEL_DETAIL_FUNCTIONS, TRAE_MODEL_DETAIL_PATH, TRAE_PAY_BASE, TRAE_PROBE_TIMEOUT_MS, TRAE_PROVIDER, TRAE_POOL_ACCOUNT_PATH, TRAE_PROVIDERS, TRAE_PROVIDER_DISPLAY_NAMES, TRAE_RAW_CHAT_V1_PATH, TRAE_RAW_CHAT_V2_PATH, TRAE_REASONING_EFFORTS, TRAE_REGIONS, TRAE_REGION_PARAM, TRAE_SETTINGS_NS, TRAE_SOLO_CHAT_PATH, TRAE_SOLO_FUNCTION, TRAE_SOLO_MODELS_PATH, TRAE_SOLO_REMOTE_BASE, TRAE_STATE_DB_FILENAME, TRAE_STREAM_IDLE_TIMEOUT_MS, TRAE_USAGE_PATH, TRAE_VERSION_CODE_FALLBACK, TraeAccountPool, TraeCatalog, TraeCredentialStore, TraeDelegatingUpstreamClient, TraeFallbackUpstreamClient, TraeGatedUpstreamClient, TraeRawCapabilityController, TraeRawCapabilityState, TraeRawChatUpstreamClient, TraeSoloBridge, TraeSoloRemoteCatalogClient, TraeSoloUpstreamClient, TraeUsageClient, UnconfiguredTraeUpstreamClient, apply, applyContextBudgets, applyImageSelection, applyReasoningEffort, asVolatile, bridgeTraeSoloStream, buildTraeAgentTaskBody, buildTraeCnHeaders, buildTraeFusionRawChatEnvelope, buildTraeModelDetailRequest, buildTraeRawChatDraft, buildTraeRawChatRuntimeConfig, classifyProbeError, classifyProbeResult, classifyTraeRawChatFailure, createTraeAdapter, createTraeRawGateway, createTraeShim, decodeRawChatChunk, decodeTraeEvent, decryptTraeStorageValue, deriveCatalog, describeIdShape, describeNameShape, discoveredCatalog, fallbackModelsFor, hashTraeRawChatArg, identityHeaders, inject, legacyTraeOwnAuthPath, maskUserPath, mergeTraeModelSources, name, nextRegionEnabled, nextRegionSlots, normalizeTraeCredential, normalizeTraeVersionCode, parseObservedModelConfig, parseReasoningCapability, parseTraeAuthValue, parseTraeCachedModel, parseTraeModelExtraConfigLogLine, parseTraeRawChatBehaviorConfig, parseTraeRemoteModel, parseTraeStorageDocument, pickTraeStorageIdentity, prepareSoloBody, probeBody, probeModelsSequentially, probeOneModel, probeTraeRawChatCapability, rawCapabilityDiagnostic, rawCapabilityFingerprint, readTraeCachedModel, readTraeCliIdentity, readTraeIdentity, refreshTraeCredential, regionEnabled, regionEnabledOf, regionOfCredential, regionOfEdition, regionOfHost, regionOfTraeProvider, regionOfTraeStatusUrl, regionOfUserRegion, regionStateOf, registerTraeUsageRoute, resolveTraeIdentity, resolveTraeRawRuntime, sanitizeCatalog, settingsNamespaceOf, traeAccountId, traeEndpoint, traeInputModalities, traeModelDisplayName, traeOwnAccountAuthPath, traeOwnAuthPath, traeRawChatExtraInfo, traeStateDatabaseCandidates, traeStorageCandidates, traeWebUsage, traeWindowsAppNames, unwrapVolatile, unwrapVolatileDeep, withTraeRegion };

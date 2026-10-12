@@ -992,27 +992,13 @@ export function qoderRelayRetryable(kind) {
 /**
  * 把一次上游失败**回灌给号池**。
  *
- * 这是「号池反代」区别于「单凭据转发」的地方：失败的账号要被记一笔，下一次
- * 取号才会绕开它。三条映射：
- *
- * | kind | 池动作 | 理由 |
- * |---|---|---|
- * | `hard_credit` | `penalizeExhausted` | 额度耗尽是**整个账号**的事，换模型没用 |
- * | `soft_rate` | `penalize(id, resetAtMs, modelId)` | Qoder 是**按模型**限流，只冷却那个模型 |
- * | `session_dead` | 不做惩罚 | 凭据失效 ≠ 账号有问题，冷却它会误伤 |
- *
- * ⚠️ `signature` 与 `client` **刻意不惩罚账号**：这类失败换个账号也一样（同一个
- * 签名 bug），惩罚只会把所有账号一起冷却掉，表现为「整个池突然不可用」。
+ * 本 fork 已删除冷却机制（完全手动语义：失败不惩罚账号、不自动换号），
+ * 这里只保留一条诊断日志，**不触碰池状态** —— 429/402 之后仍会继续用
+ * 当前选中账号，由用户手动切换。
  */
 export function applyQoderRelayFailure(pool, accountId, { kind, resetAtMs, modelId } = {}) {
-  if (!pool || typeof pool.penalize !== 'function') return 'noop';
-  if (kind === 'hard_credit') {
-    pool.penalizeExhausted(accountId);
-    return 'penalizeExhausted';
-  }
-  if (kind === 'soft_rate') {
-    pool.penalize(accountId, resetAtMs, modelId);
-    return 'penalize';
-  }
+  pool?.logger?.warn?.(
+    `qoder-relay: 账号 ${accountId} 上游失败 kind=${kind}（冷却已删除，不做惩罚，请手动切换账号）`,
+  );
   return 'noop';
 }

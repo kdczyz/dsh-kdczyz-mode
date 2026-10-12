@@ -163,7 +163,7 @@ const Config = z.object({
       .string()
       .default('')
       .description(
-        '号池里「当前使用」的账号 id：请求优先用它，它不可用（停用 / 冷却 / 令牌失效）时才让位给下一个可用账号。留空 = 用池里第一个账号',
+        '号池里「当前使用」的账号 id：请求只用它，它不可用（停用 / 不在池里）时请求直接失败，由你手动切换。留空 = 无可用账号',
       ),
   ),
   disabledAccountIds: asVolatile(
@@ -171,12 +171,6 @@ const Config = z.object({
       .array(z.string())
       .default([])
       .description('不参与号池的 Qoder 账号 id（留空 = 池里每个已登录账号都参与）'),
-  ),
-  creditReserves: asVolatile(
-    z
-      .dict(z.number().step(1).min(0))
-      .default({})
-      .description('按账号的积分下限：余额降到这个值就不再从这个账号发请求'),
   ),
 });
 
@@ -190,7 +184,6 @@ function poolConfigOf(config) {
   return {
     selectedAccountId: unwrapVolatile(config?.selectedAccountId) ?? '',
     disabledAccountIds: unwrapVolatile(config?.disabledAccountIds) ?? [],
-    creditReserves: unwrapVolatile(config?.creditReserves) ?? {},
   };
 }
 
@@ -824,34 +817,33 @@ function apply(ctx, config) {
       return recalled.result;
     }
 
-    const attempts = Math.max(1, Math.min(3, pool.list().length || 1));
+    // 完全手动语义：单次尝试，只用「当前使用」账号；失败不换号重试。
     let last;
 
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
+    {
       if (signal?.aborted === true) {
         return { ok: false, status: 400, kind: 'client', message: '客户端已断开' };
       }
       const account = await pool.acquire(modelId);
       if (account === undefined) {
-        if (last !== undefined) break;
         return {
           ok: false,
           status: 503,
           kind: 'unconfigured',
-          message: 'Qoder 号池里没有可用账号：请先到「账号」页第三列或「Qoder 号池」页登录一个账号',
+          message: 'Qoder 号池里没有可用账号：请先到管理页「切换到此账号」选中一个账号（或先登录一个账号）',
         };
       }
 
       const identity = qoderIdentityOf(account.credential);
       if (identity === undefined) {
-        // 凭据缺 uid —— 这是账号本身的问题，换号才有意义。
+        // 凭据缺 uid —— 账号本身的问题，请手动切换到别的账号。
         last = {
           ok: false,
           status: 401,
           kind: 'authentication',
           message: `账号 ${account.label} 的凭据不完整（缺 userId 或 accessToken）`,
         };
-        continue;
+        return last;
       }
 
       try {
@@ -955,7 +947,7 @@ function apply(ctx, config) {
 
           relay = await firstFrame.promise;
         } catch (e) {
-          // 连接层失败：走换号重试（与原来的 catch 语义一致）。
+          // 连接层失败：不换号，直接失败（完全手动语义）。
           // origin 标明「这不是上游回的状态码，是连接层异常」。
           last = {
             ok: false,
@@ -964,7 +956,7 @@ function apply(ctx, config) {
             origin: 'transport',
             message: `Qoder 上游连接失败：${e?.message ?? String(e)}`,
           };
-          continue;
+          return last;
         }
 
         // 首帧即失败 —— 此时**响应头还没发**，可以如实给出错误码。
@@ -980,7 +972,6 @@ function apply(ctx, config) {
             upstream: relay.status,
             message: `Qoder 上游拒绝请求：${String(relay.reason).slice(0, 300)}`,
           };
-          if (kind === 'soft_rate' || kind === 'hard_credit' || kind === 'session_dead') continue;
           // 业务拒绝是确定性的：同一 body 再来必然同样被拒，记下来。
           rememberDeterministicFailure(bodyJson, { result: last });
           return last;
@@ -1002,7 +993,7 @@ function apply(ctx, config) {
           origin: 'internal',
           message: e?.message ?? String(e),
         };
-        continue;
+        return last;
       }
     }
 
@@ -1013,7 +1004,7 @@ function apply(ctx, config) {
       origin: 'internal',
       message: 'Qoder 请求未取得结果',
     };
-    // 换号重试全部用尽仍是确定性失败 → 记下来，挡住 DSH 那串指数退避重发。
+    // 确定性失败 → 记下来，挡住 DSH 那串指数退避重发。
     if (isDeterministicKind(failure.kind)) {
       rememberDeterministicFailure(bodyJson, { result: failure });
     }

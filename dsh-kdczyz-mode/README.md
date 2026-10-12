@@ -193,6 +193,25 @@ props（`opts.inject()` 求值一次，`settingsScope` 是同一对象引用）�
 - 上游源码**一行未改**，日后仍可逐字节对照升级；
 - 个别失效的 effect 按标签丢弃（见下）。
 
+### 完全手动切换账号（三渠道统一，无任何轮询/冷却策略）
+
+三个渠道（WorkBuddy / Trae / Qoder）的账号池**全部改为完全手动取号**：
+
+- **取号语义**：请求只用你「切换到此账号」选中的那一张；未选、选中账号被停用、
+  不在池里或区域不符时，请求**直接失败**（503 + 「请手动切换账号」提示），
+  **绝不自动让位 / 自动换号**；
+- **已删除**：分配策略（优先 / 轮换 / 均衡，含 `priority` / `round-robin` /
+  `balanced` 与随机权重）、「参与轮换」开关、冷却机制（`cooldownMs` /
+  `exhaustCooldownMs` / 冷却重置路由 `/cooldowns/reset`、冷却展示与
+  「清除冷却」按钮）、保留额度（`creditReserves` / `/credit-reserve` 路由）；
+- **保留**（手动管理）：停用 / 启用、移出池子 / 恢复、切换到此账号、
+  签到领取。WorkBuddy 额外保留「取消固定」（取消后 = 未选，请求失败直到手动切换）；
+  Trae / Qoder 选中即服务，没有「清空选择」状态。
+
+管理页（`console.mjs`）与号池实现（`vendor/xdpool/lib/index.js`、`lib/trae.js`、
+`lib/qoder-pool.mjs`）已同步精简：统计格、卡片标签、按钮与路由都只留下与
+「手动选中」相关的部分。
+
 ### trae tab：本包自写
 
 上游 `dsh-connect-trae` 的浏览器半边（`vendor/trae/client.js`）**已整体移除**，
@@ -453,7 +472,10 @@ Trae 的凭据刷新原本写到 `.trae-auth.<region>.json`，**每区域一个�
 
 ## 凭据
 
-- **WorkBuddy**：由 vendored xdpool 读取（用 `currentApi().pool` 拿**已解密**的凭证）
+- **WorkBuddy**：池**同时扫描两处** —— 桌面端 app 的登录态目录
+  （vendored `defaultDesktopAuthDirs()`）+ 插件自有凭据目录
+  `$DSH_HOME/.wb-auth`（`dsh-wotr-<账号id>.info`，本 fork 新增，对齐 Trae 半边）；
+  由 vendored xdpool 读取（用 `currentApi().pool` 拿**已解密**的凭证）
 - **Trae**：只读桌面端 `User/globalStorage/storage.json` 或 CLI 的
   `trae-jwt-token`，刷新后写到 `$DSH_HOME/.trae-auth.<region>.json`
 
@@ -476,8 +498,10 @@ GET  /v2/plugin/accounts                        → 账号身份（uin/uid/nickn
 没有 `client_id`、没有 `redirect_uri`、没有 PKCE、不需要本地回调服务。
 实现见 `lib/wb-auth.mjs`，路由挂在 `lib/index.js`。
 
-**凭据落盘**：写成 `dsh-wotr-<账号id>.info`，放进**池本来就在扫描的目录**
-（`defaultDesktopAuthDirs()`，不可写时退回插件数据目录），权限 `0600`。
+**凭据落盘**：写成 `dsh-wotr-<账号id>.info`，放进 **`$DSH_HOME/.wb-auth`**
+（vendored 池的 `candidateAuthDirs()` 同时扫描桌面目录与本目录，对齐 Trae 的
+`.trae-auth.*` 双源模型），权限 `0600`。删掉桌面端 app、卸载清掉它的数据目录
+**都不影响插件账号**；桌面端登录态照常被扫描，同账号按 id 合并、取较新的那份。
 池按 `*.info` 逐个解析，账号 id 由 `uin/uid` 派生，所以**多账号天然成立**：
 登录几个账号就有几个文件，互不覆盖；重复登录同一账号只会覆盖自己那份。
 
