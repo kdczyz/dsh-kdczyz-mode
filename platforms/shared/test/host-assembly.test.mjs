@@ -1,0 +1,1 @@
+../../../kdczyz-dsh-model/test/host-assembly.test.mjs

@@ -1,0 +1,1 @@
+../../../kdczyz-dsh-model/test/qoder-campaign.test.mjs

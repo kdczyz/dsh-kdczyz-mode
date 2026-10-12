@@ -1,0 +1,1 @@
+../../kdczyz-dsh-model/lib/console.mjs
