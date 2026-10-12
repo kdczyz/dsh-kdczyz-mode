@@ -415,17 +415,17 @@ ls ~/.dsh/profiles/desktop/node_modules/
 | Trae | **国内版（cn）+ 国际版（ai）**两个区域 | 当前区域里 `lastServedId` 那个账号，没有就退回「当前账号」 |
 | Qoder | 单个号池（没有区域概念，所以不画组标题） | `serving.accountId`，没有就用当前账号 |
 
-每一行有**两个控件**（用户明确要的两件不同的事）：
+每一行只有**一个控件**（原先还有一颗「参与轮换」开关，已移除 —— 完全手动语义下它
+只对「已选中的那个」有效，停用别的账号对请求毫无影响）：
 
-- **「参与轮换」开关** —— 把这个账号移出/放回轮换。WorkBuddy 走
-  `POST /plugins/dsh-workbuddy-xdpool/accounts/disabled`（服务端对当前值做合并）；
-  Trae / Qoder 是设置里那份 `disabledAccountIds`（**读-改-写合并**，不整段覆盖）。
-- **「切换到此账号」按钮** —— 让**下一次请求**优先用它。WorkBuddy 走
+- **「切换到此账号」按钮** —— 让**下一次请求**只用它。WorkBuddy 走
   `POST …/accounts/select?region=cn|global`；Trae 打 `/pool/account?region=` 并且
-  **必须同时写 `accounts` 设置**（那个路由只改内存里的活池，重启就回去了）。
-- 已经是「当前账号」的那一行：WorkBuddy 把按钮换成「**取消固定**」（它的池把
-  「没有当前账号」当正常状态，取消即交回轮换）；Trae / Qoder **不给按钮** ——
-  这两家的池永远有一个当前账号，「切换到这个已经是当前的账号」是纯 no-op。
+  **必须同时写 `accounts` 设置**（那个路由只改内存里的活池，重启就回去了）；
+  Qoder 写 `selectedAccountId`。
+- 已经是「当前账号」的那一行：三家**都不给按钮** —— 「切换到这个已经是当前的账号」
+  是纯 no-op。WorkBuddy 先前例外，给的是「**取消固定**」（`{accountId:null}`）：
+  完全手动语义下那不是「退出固定」，而是把池子清成「没有当前账号」，之后**每一次
+  请求都 503**（`no_selected_account`）。按钮已删除，换账号一律点另一张卡。
 
 几个刻意的取舍（都写进了 `console.mjs` 的注释与单测）：
 

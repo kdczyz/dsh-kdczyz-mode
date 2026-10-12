@@ -707,10 +707,11 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
     };
 
     /**
-     * 切换「当前账号」——请求从此固定用这一张；`null` = 取消固定。
+     * 切换「当前账号」——请求从此只用这一张。
      *
-     * 完全手动语义：取消固定后 `selectedAccountId` 为 null，请求**直接失败**
-     * 并提示手动切换 —— 不会回到任何自动轮换（分配策略已删除）。
+     * 完全手动语义：不选（`selectedAccountId` 为 null）时请求**直接失败**并提示
+     * 手动切换 —— 不会回到任何自动轮换（分配策略已删除）。界面因此**不给**
+     * 「清空选择」这条路：换账号只能点另一张卡上的「切换到此账号」。
      *
      * 路由与「账号」页左列**同一条**（`POST /accounts/select?region=…`），区域参数
      * 不能省：国内版与国际版是两个独立 provider，各自固定自己的账号，服务端按
@@ -718,14 +719,14 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
      */
     const onSelectAccount = (accountId) =>
       run(
-        `select-${accountId ?? 'none'}`,
+        `select-${accountId}`,
         () =>
           fetchJson(`${POOL_API}/accounts/select?region=${region}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ accountId }),
           }),
-        accountId === null ? '已取消固定，请求将失败直到手动切换账号' : '已切换到此账号',
+        '已切换到此账号',
       );
 
     // —— 自动化开关：整段写 automation（小时表原样带过，缺省补默认）——
@@ -938,7 +939,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
         ? '未选择'
         : shortAccountName(currentAccount.nickname || currentAccount.label || currentAccount.id) ||
           '未选择';
-    const currentSub = selectedId !== '' ? '已固定，仅用这个账号' : '请求会失败，请手动切换';
+    const currentSub = selectedId !== '' ? '仅用这个账号' : '请求会失败，请手动切换';
 
     return jsxs('div', {
       className: 'wbc-body',
@@ -1054,7 +1055,6 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
                 className: 'wbc-cards',
                 children: accounts.map((a) => {
                   const isCurrent = currentId !== '' && a.id === currentId;
-                  const isPinned = selectedId !== '' && a.id === selectedId;
                   const creditTotal = accountCreditsOf(a);
                   return jsx(
                       AccountCard,
@@ -1082,8 +1082,10 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
                          * 卡片底部一排主操作：**切换账号 + 签到领取**。
                          *
                          * 与另两页同一条规矩：**当前使用的那张卡不给「切换到此账号」**
-                         * —— 它已经是当前了。已固定（`isPinned`）的那张给「取消固定」：
-                         * 完全手动语义下取消固定 = 没选，请求会失败直到手动切换。
+                         * —— 它已经是当前了。先前这里还给当前卡一颗「取消固定」
+                         * （`accountId: null`）：完全手动语义下那等于「把服务弄坏」——
+                         * 池的 `resolveSelected()` 立刻落空，之后每一次请求都 503，
+                         * 而这用「切到另一张卡」更直接。所以三页现在完全同款。
                          *
                          * 签到领取在每张卡上都在（WorkBuddy 的签到路由是**按账号**的，
                          * 见 `POST /checkin {accountId}`）。
@@ -1103,24 +1105,16 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
                             {
                               className: 'wbc-card-foot',
                               children: [
-                                isPinned
-                                  ? jsx('button', {
+                                isCurrent
+                                  ? null
+                                  : jsx('button', {
                                       type: 'button',
                                       className: 'wbc-btn',
-                                      disabled: !writable || busy === 'select-none',
-                                      onClick: () => onSelectAccount(null),
-                                      children: busy === 'select-none' ? '取消中…' : '取消固定',
-                                    })
-                                  : isCurrent
-                                    ? null
-                                    : jsx('button', {
-                                        type: 'button',
-                                        className: 'wbc-btn',
-                                        disabled: !writable || busy === `select-${a.id}`,
-                                        onClick: () => onSelectAccount(a.id),
-                                        children:
-                                          busy === `select-${a.id}` ? '切换中…' : '切换到此账号',
-                                      }),
+                                      disabled: !writable || busy === `select-${a.id}`,
+                                      onClick: () => onSelectAccount(a.id),
+                                      children:
+                                        busy === `select-${a.id}` ? '切换中…' : '切换到此账号',
+                                    }),
                                 jsx('button', {
                                   type: 'button',
                                   className: 'wbc-btn',
@@ -3995,21 +3989,21 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
    * 把某个账号设成「当前账号」。
    *
    * 与停用同一条原则：写各半**真正读**的那份存储。
-   *   - WorkBuddy：`POST /accounts/select?region=`。`null` = 取消固定（未选，请求会失败）——
-   *     这是它独有的能力（它的池把「没有当前账号」当正常状态）；
+   *   - WorkBuddy：`POST /accounts/select?region=`（服务端把 `null` 当清除，
+   *     但界面已经不给这条路径了 —— 完全手动语义下「没有当前账号」= 每次请求
+   *     都失败，不是用户想要的「退出固定」）；
    *   - Trae：写 `accounts.<region>`（上游客户端 switchAccount 的同一字段）；
    *   - Qoder：写 `selectedAccountId`。
    *
-   * Trae / Qoder 不允许清空：池里必须始终有一个当前账号，写空只会悄悄回到
-   * 第一个账号，所以这里显式拒绝。
+   * 三家都不允许清空：池里必须始终有一个当前账号。Trae / Qoder 写空只会悄悄回到
+   * 第一个账号，所以这里显式拒绝；WorkBuddy 侧则由界面保证（不再有「取消固定」）。
    */
   async function selectAccountRemote(family, region, accountId) {
     if (family === 'wb') {
-      const wanted = typeof accountId === 'string' && accountId !== '' ? accountId : null;
       await fetchJson(`${POOL_API}/accounts/select?region=${region}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: wanted }),
+        body: JSON.stringify({ accountId }),
       });
       return;
     }
@@ -4406,22 +4400,26 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       refreshHeadline();
     };
 
-    /** 切换到此账号 / 取消固定 */
+    /**
+     * 切换到此账号。
+     *
+     * 三家**同一条**语义：写各自的「当前账号」，下一次请求只用它。
+     * 先前 WorkBuddy 在当前那一行上把按钮换成「取消固定」（`accountId: null`）——
+     * 完全手动语义下那不是一个「退出固定」的正常状态，而是让池子从此没有当前
+     * 账号、每一次请求都 503。已删除；换账号一律点另一张卡上的按钮。
+     */
     const onSelectRow = async (row) => {
-      // WorkBuddy 独有的「取消固定」：完全手动语义下它的池把「没有当前账号」
-      // 当正常状态（取消固定 = 未选，请求会失败）。Trae / Qoder 选中即服务。
-      const unpin = row.family === 'wb' && row.pinned === true;
       setBusyRow(row.key);
       setWriteError('');
       setNote('');
       try {
-        await selectAccountRemote(row.family, row.region, unpin ? null : row.id);
+        await selectAccountRemote(row.family, row.region, row.id);
         patchCreditRows(row.family, (r) => r.region === row.region, (r) => ({
-          pinned: unpin !== true && r.key === row.key,
+          pinned: r.key === row.key,
         }));
         // 「当前账号」换了，胶囊上那个数字的主语也就换了
         if (row.region === source.region) refreshHeadline();
-        setNote(unpin ? '已取消固定，请求将失败直到手动切换账号' : `已把 ${row.name} 设为当前账号`);
+        setNote(`已把 ${row.name} 设为当前账号`);
       } catch (e) {
         setWriteError(e?.message ?? String(e));
       } finally {
@@ -4433,13 +4431,14 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
 
     //#region 卡片渲染
 
-    /** 一行上的标签（当前使用 / 已固定 / 本次调用 / 已停用 / 凭据已过期） */
+    /** 一行上的标签（当前使用 / 本次调用 / 凭据已过期） */
     const rowTags = (row) => {
       const tags = [];
       const push = (kind, text) => tags.push({ kind, text });
-      // 「已固定」与「本次调用」是两件事，都要说：完全手动下一般同值，
-      // 但选中账号不可用时上一轮可能根本没扣到它。
-      if (row.pinned === true) push('on', row.family === 'wb' ? '已固定' : '当前使用');
+      // 「当前使用」与「本次调用」是两件事，都要说：完全手动下一般同值，
+      // 但选中账号不可用时上一轮可能根本没扣到它。三家同款词汇（WorkBuddy 先前
+      // 在这里写「已固定」，那是「取消固定」按钮的配套词，按钮删掉后一并统一）。
+      if (row.pinned === true) push('on', '当前使用');
       if (row.serving === true) push(row.pinned === true ? 'muted' : 'on', '本次调用');
       if (row.expired === true) push('warn', '凭据已过期');
       if (row.error !== '') push('warn', `额度读不到：${row.error}`);
@@ -4457,24 +4456,19 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
       );
     };
 
-    /** 一行：名字 + 积分 + 标签 + 两个控件 */
+    /** 一行：名字 + 积分 + 标签 + 一个控件 */
     const rowNode = (row) => {
       const busy = busyRow === row.key;
-      const unpin = row.family === 'wb' && row.pinned === true;
-      const label = unpin ? '取消固定' : '切换到此账号';
       /**
        * 已经是「当前账号」的那一行还要不要给切换按钮？
        *
-       *   - WorkBuddy：要，但文案换成「取消固定」—— 完全手动语义下它的池把
-       *     「未固定」当正常状态（`selectedAccountId` 为 null = 未选，请求会失败），
-       *     固定住之后必须留一条退出的路；
-       *   - Trae / Qoder：不给。这两家的池选中即服务，没有自动让位，也没有
-       *     「清空选择」这种状态（切换即换到另一张）。
+       * 三家**都不给**。它们的池选中即服务，没有自动让位，也没有「清空选择」
+       * 这种状态（切换即换到另一张）。WorkBuddy 先前例外：当前那一行给的是
+       * 「取消固定」（`{accountId:null}`），而完全手动语义下那是「把服务弄坏」
+       * —— 池子从此没有当前账号，每次请求都失败。按钮已删，三页同款。
        */
-      const hideSelect = unpin === false && row.pinned === true;
-      const selectTitle = unpin
-        ? '取消固定后请求会失败，请手动切换'
-          : `让 ${row.fullName} 成为「当前账号」，请求只用它`;
+      const hideSelect = row.pinned === true;
+      const selectTitle = `让 ${row.fullName} 成为「当前账号」，请求只用它`;
       return jsxs(
         'div',
         {
@@ -4506,7 +4500,7 @@ export function createConsoleSection({ react, jsxRuntime, embedded }) {
                       onClick: () => {
                         void onSelectRow(row);
                       },
-                      children: label,
+                      children: '切换到此账号',
                     }),
               ],
             }),
