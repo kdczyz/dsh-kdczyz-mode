@@ -52,7 +52,45 @@ const PROFILE = process.env.DSH_PROFILE_DIR
   ?? process.env.DSH_PROFILE
   ?? path.join(os.homedir(), '.dsh', 'profiles', 'desktop');
 const PROFILE_NM = path.join(PROFILE, 'node_modules');
-const PLUGIN = path.join(PROFILE_NM, 'dsh-kdczyz-mode');
+
+/**
+ * 这个包在 profile 里装成什么名字，取决于安装方式，**不能硬编码**：
+ *
+ *   - 直接 `pnpm add kdczyz-dsh-model`        -> node_modules/kdczyz-dsh-model
+ *   - `pnpm add dsh-kdczyz-mode@npm:kdczyz-dsh-model`（别名，插件页安装后的形态）
+ *                                             -> node_modules/dsh-kdczyz-mode
+ *
+ * 早期这里写死 `node_modules/dsh-kdczyz-mode`，于是别名安装时能跑、
+ * 直接安装时永远走"跳过"分支 —— 2026-10-12 真机故障（三个子插件全部未运行）
+ * 正是被这条跳过掩盖的。所以改成：**从 profile 的 package.json 读真实声明**，
+ * 读不到再退化为按目录扫描候选名。
+ */
+function resolvePluginRoot() {
+  const candidates = [];
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(PROFILE, 'package.json'), 'utf8'));
+    // dsh.profile.bundles 是宿主认的唯一真相：entry name 必须与它一致
+    for (const name of manifest.dsh?.profile?.bundles ?? []) {
+      if (typeof name === 'string' && name !== 'kdczyz-dsh-model' || name?.includes('kdczyz')) {
+        candidates.push(name);
+      }
+    }
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      if (name.includes('kdczyz')) candidates.push(name);
+    }
+  } catch {}
+  candidates.push('dsh-kdczyz-mode', 'kdczyz-dsh-model');
+
+  for (const name of [...new Set(candidates)]) {
+    const dir = path.join(PROFILE_NM, name);
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+  }
+  return undefined;
+}
+
+const PLUGIN = resolvePluginRoot();
+/** 实际安装名 —— entry name 必须与它一致，否则 loader 解析不到。 */
+const PLUGIN_NAME = PLUGIN === undefined ? undefined : path.basename(PLUGIN);
 
 /** 三个入口在模块顶层直接 import 的宿主内包。 */
 const REQUIRED = [
@@ -64,8 +102,9 @@ const REQUIRED = [
 
 /* —— 1) profile 里到底装没装 —— */
 console.log('profile:', PROFILE);
-if (!fs.existsSync(PLUGIN)) {
-  skipped('profile 里没有 dsh-kdczyz-mode', '尚未部署到该 profile');
+console.log('插件安装名:', PLUGIN_NAME ?? '(未找到)');
+if (PLUGIN === undefined) {
+  skipped('profile 里没找到插件包', '尚未部署到该 profile');
 } else {
   for (const spec of REQUIRED) {
     const pkgName = spec.split('/').slice(0, 2).join('/');
@@ -97,32 +136,81 @@ if (!fs.existsSync(PLUGIN)) {
   }
 
   /* —— 3) 三个入口都能加载（顶层 import 全过 + 导出 apply）—— */
+  //
+  // 入口文件路径**跟随 manifest 的 exports**，不能写死 `lib/`：
+  // wrapper 布局（node_modules/dsh-kdczyz-mode，其内再套一层 dsh-kdczyz-mode/）
+  // 与裸包布局的相对深度不同，写死会在wrapper 布局下全部报「不存在」。
+  const manifest = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'package.json'), 'utf8'));
+  const resolveExport = (sub) => {
+    const target = manifest.exports?.[sub];
+    return typeof target === 'string' ? path.resolve(PLUGIN, target) : undefined;
+  };
   const entries = [
-    ['lib/index.js', 'llm-workbuddy-xdpool'],
-    ['lib/trae.js', 'dsh-connect-trae'],
-    ['lib/qoder.js', 'dsh-connect-qoder'],
+    ['.', 'llm-workbuddy-xdpool'],
+    ['./trae', 'dsh-connect-trae'],
+    ['./qoder', 'dsh-connect-qoder'],
   ];
-  for (const [rel, entryId] of entries) {
-    const file = path.join(PLUGIN, rel);
-    if (!fs.existsSync(file)) { ok(`${rel} 存在`, false, file); continue; }
+  for (const [sub, entryId] of entries) {
+    const file = sub === '.' ? path.resolve(PLUGIN, manifest.main) : resolveExport(sub);
+    if (file === undefined || !fs.existsSync(file)) {
+      ok(`${sub} 解析到真实文件`, false, String(file));
+      continue;
+    }
     try {
       const mod = await import(pathToFileURL(file).href);
-      ok(`${rel} 可加载且导出 apply`, typeof mod.apply === 'function',
+      ok(`${sub} 可加载且导出 apply`, typeof mod.apply === 'function',
         `apply=${typeof mod.apply}`);
     } catch (error) {
       // 这里失败 = 宿主里也会失败，且**宿主不会报错**，只有 provider 静默消失
-      ok(`${rel} 可加载且导出 apply`, false, `${error.code ?? ''} ${String(error.message).split('\n')[0]}`);
+      ok(`${sub} 可加载且导出 apply`, false, `${error.code ?? ''} ${String(error.message).split('\n')[0]}`);
     }
   }
 
   /* —— 4) package.json 的 exports 白名单（子路径入口的前提）—— */
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(PLUGIN, 'package.json'), 'utf8'));
-    ok('exports 声明了 ./qoder', pkg.exports?.['./qoder'] === './lib/qoder.js', String(pkg.exports?.['./qoder']));
-    ok('exports 声明了 ./trae', typeof pkg.exports?.['./trae'] === 'string');
+    ok('exports 声明了 ./qoder', typeof manifest.exports?.['./qoder'] === 'string', String(manifest.exports?.['./qoder']));
+    ok('exports 声明了 ./trae', typeof manifest.exports?.['./trae'] === 'string');
   } catch (error) {
     ok('package.json 可读', false, error.message);
   }
+
+  /* —— 5) client bundle 唯一性（2026-10-12 启动崩溃的根因）—— */
+  //
+  // DSH 的 client-modules 对每个「声明了 ./client 的 manifest」各 emit 份
+  // client bundle。wrapper 与内层 manifest 若都声明了 ./client，且归一化后
+  // 指向**同一个物理文件**，那这份代码会被打进同一个 module scope 两次：
+  //
+  //   Uncaught SyntaxError: Identifier 'XDPOOL_CLIENT_SRC' has already been declared
+  //   -> entry 激活失败 -> web boot: 1 entry did not activate -> 应用起不来
+  //
+  // 关键在于 loader 的归属判定（client-modules 的 nearestPackage）：
+  //   - 裸名 entry   expectedPackageName = 包名 -> 向上找 name 相等的 manifest
+  //   - 子路径 entry expectedPackageName = undefined -> 向上找**第一个** manifest 即接受
+  // 于是裸名 entry 归wrapper、子路径 entry 归内层 —— 两个不同 packageName
+  // 各自声称同一个 client.js。这条断言就是拦住这个组合。
+  const claims = [];
+  for (const dir of [PLUGIN, path.join(PLUGIN, 'dsh-kdczyz-mode')]) {
+    const manifestPath = path.join(dir, 'package.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    let pkg;
+    try { pkg = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { continue; }
+    const target = pkg.exports?.['./client'];
+    if (typeof target !== 'string') continue;
+    claims.push({
+      name: pkg.name,
+      manifest: path.relative(PROFILE_NM, manifestPath),
+      file: path.resolve(dir, target),
+    });
+  }
+  const byFile = new Map();
+  for (const c of claims) byFile.set(c.file, [...(byFile.get(c.file) ?? []), c.name]);
+  const collided = [...byFile.entries()].filter(([, names]) => names.length > 1);
+  ok(
+    '同一 client.js 只被一个 manifest 声明',
+    collided.length === 0,
+    collided.map(([f, names]) => `${path.relative(PROFILE_NM, f)} 被 ${names.join(' + ')} 同时声明`).join('; '),
+  );
 }
 
 console.log(`\nhost-assembly: ${pass} 通过, ${fail} 失败${skip > 0 ? `, ${skip} 跳过` : ''}`);
