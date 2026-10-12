@@ -204,8 +204,7 @@ props（`opts.inject()` 求值一次，`settingsScope` 是同一对象引用）�
   `balanced` 与随机权重）、「参与轮换」开关、冷却机制（`cooldownMs` /
   `exhaustCooldownMs` / 冷却重置路由 `/cooldowns/reset`、冷却展示与
   「清除冷却」按钮）、保留额度（`creditReserves` / `/credit-reserve` 路由）；
-- **保留**（手动管理）：停用 / 启用、移出池子 / 恢复、切换到此账号、
-  签到领取。WorkBuddy 额外保留「取消固定」（取消后 = 未选，请求失败直到手动切换）；
+- **保留**（手动管理）：移出池子 / 恢复、切换到此账号、签到领取。WorkBuddy 额外保留「取消固定」（取消后 = 未选，请求失败直到手动切换）；
   Trae / Qoder 选中即服务，没有「清空选择」状态。
 
 管理页（`console.mjs`）与号池实现（`vendor/xdpool/lib/index.js`、`lib/trae.js`、
@@ -287,7 +286,7 @@ trae 页改为本包自写（`console.mjs` 的 `TraeConfigTab`），与 workbudd
 `lastServedId` 退回「当前账号」、Qoder 用 `serving.accountId`），与卡片是两个口径。
 
 每一行只有一个控件（原先还有一个「停用 / 启用」开关，已移除 —— 完全手动语义下
-它只对「已选中的那个」有效，停用别的账号对请求毫无影响；停用的管理仍在设置页）：
+它只对「已选中的那个」有效，停用别的账号对请求毫无影响；账号管理只剩「移出池子」）：
 
 | 控件 | 干什么 | 打到哪 |
 |---|---|---|
@@ -337,7 +336,7 @@ node scripts/gen-xdpool-client.mjs    # 改 vendor/xdpool/lib/client.js 后
 ```sh
 node test/credit-store.test.mjs     # 14 项：积分/历史记录读写、去重、坏行容错
 node test/client-apply.test.mjs     # 43 项：仿浏览器执行 client.js 并真正调用 apply
-node test/console-render.test.mjs   # 420 项：真正渲染三个 tab（三个配置页的同一套骨架与页头按钮、Qoder 单列）与 **composer 胶囊展开的账号卡片**，空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）、卡片的启停/切换两条写路径与「展开卡片不新增任何定时器」
+node test/console-render.test.mjs   # 402 项：真正渲染三个 tab（三个配置页的同一套骨架与页头按钮、Qoder 单列）与 **composer 胶囊展开的账号卡片**，空/坏数据与边界值、自动刷新定时器、分配策略读写、Qoder 模型列（图片/上下文跟随上游 + 「从 Qoder 刷新」拉取即落盘）、Trae 与 Qoder 的「签到」（每张卡带自己的 accountId、不写 selectedAccountId、重放不许说成「已领 +100」）、卡片的启停/切换两条写路径与「展开卡片不新增任何定时器」
 node test/host-assembly.test.mjs    # 10 项：cordis 装配层（exports 白名单、cordis.patch.yml 条目）
 node test/trae-pool.test.mjs        # 46 项：Trae 号池（scan/分配策略/冷却换号/停用/保留额度）
 node test/trae-checkin-route.test.mjs # 36 项：Trae 签到路由（指定账号走 clientOfAccount 且绝不碰绑定账号、设备门禁 9095 与「账号已签」分开、未知账号 404、方法/区域/来源/坏 JSON 边界）

@@ -325,7 +325,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
   .wotr-credit-region-title{font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary)}
   .wotr-credit-region-sub{font-size:11px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .wotr-credit-row{margin-top:6px;padding:8px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;display:flex;flex-direction:column;gap:6px}
-  .wotr-credit-row[data-off="1"]{opacity:.55}
   .wotr-credit-row[data-serving="1"]{border-color:var(--dsw-alias-label-primary)}
   .wotr-credit-row-top{display:flex;align-items:baseline;gap:8px;justify-content:space-between}
   .wotr-credit-row-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary);font-weight:600}
@@ -689,7 +688,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       const ignored = asArray(status?.ignored);
       const selection = status?.selection ?? {};
       const automation = status?.automation;
-      const usable = accounts.filter((a) => a.disabled !== true).length;
       const automationOn = automation?.enabled === true;
 
       const draft = draftByRegion[region];
@@ -738,17 +736,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         } finally {
           setBusy(null);
         }
-      };
-
-      // —— 账号启停 ——
-      const onToggleDisabled = (accountId, disabled) => {
-        if (!writable) return;
-        return run(accountId, () =>
-          fetchJson(`${POOL_API}/accounts/disabled`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ accountId, disabled }),
-          }), disabled ? '已停用该账号' : '已重新启用该账号');
       };
 
       // —— 移出池子 / 恢复 ——
@@ -1086,7 +1073,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             : jsx(StatsRow, {
                 items: [
                   { label: '账号', value: fmtNum(accounts.length), sub: '个已登录' },
-                  { label: '可用', value: fmtNum(usable), sub: '未被停用' },
                   {
                     label: '当前使用',
                     value: currentName,
@@ -1126,12 +1112,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         AccountCard,
                         {
                           name: a.nickname || a.label || a.id,
-                          dim: a.disabled === true || (currentId !== '' && isCurrent !== true),
+                          dim: (currentId !== '' && isCurrent !== true),
                           tags: [
                             isCurrent
                               ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
                               : { text: '备用', cls: 'wbc-tag' },
-                            a.disabled === true ? { text: '已停用', cls: 'wbc-tag' } : null,
                           ],
                           rows: [
                             /**
@@ -1160,9 +1145,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                               CardActions,
                               {
                                 locked: !writable,
-                                disabled: a.disabled === true,
-                                saving: busy === a.id,
-                                onToggleDisabled: (next) => onToggleDisabled(a.id, next),
                                 onRemove: () => onIgnore(a.id, true),
                                 removeBusy: busy === `ignore-${a.id}`,
                               },
@@ -1757,19 +1739,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         }
       };
 
-      const [savingPool, setSavingPool] = useState(null);
-
-      const onToggleDisabled = (accountId, disabled) => {
-        setSavingPool(accountId);
-        const currentIds = asArray(traeRegionSlotOf(scopeObj?.getSnapshot?.().value, region).disabledAccountIds);
-        const next = disabled
-          ? [...new Set([...currentIds, accountId])]
-          : currentIds.filter((id) => id !== accountId);
-        writePoolField({ disabledAccountIds: next }, (readBack) =>
-          JSON.stringify(traeRegionSlotOf(readBack, region).disabledAccountIds ?? []) === JSON.stringify(next),
-          disabled ? '已停用该账号' : '已重新启用该账号')
-          .finally(() => setSavingPool(null));
-      };
 
       /** 供应商开关：只改 enabled，其余字段原样保留（关掉不丢勾选） */
       const [togglingRegion, setTogglingRegion] = useState(null);
@@ -1874,10 +1843,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
           .filter((pool) => !accounts.some((account) => String(account.id) === String(pool.id)))
           .map((pool) => ({ account: null, pool })),
       ];
-      const traeUsable =
-        poolAccounts.length === 0
-          ? accounts.length
-          : poolAccounts.filter((a) => a.disabled !== true).length;
       const checkinText =
         usage?.checkin?.checkedIn === true
           ? '今日已签到'
@@ -2002,7 +1967,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             ? jsx(StatsRow, {
                 items: [
                   { label: '账号', value: fmtNum(accounts.length), sub: '个已登录' },
-                  { label: '可用', value: fmtNum(traeUsable), sub: '未被停用' },
                   {
                     label: '当前使用',
                     value: usage.accountName ?? current?.accountName ?? '–',
@@ -2047,7 +2011,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                           isCurrent
                             ? { text: '当前使用', cls: 'wbc-tag wbc-tag-on' }
                             : { text: '备用', cls: 'wbc-tag' },
-                          pool?.disabled === true ? { text: '已停用', cls: 'wbc-tag' } : null,
                         ],
                         // 余额来自 /usage 的逐账号 credits，号池状态来自 pool 段，
                         // 两张表按 id 对齐后拼成同一张卡。
@@ -2062,16 +2025,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             : null,
                         ],
                         extra: [
-                          jsx(
-                            CardActions,
-                            {
-                              locked: !writable || pool === null || pool === undefined,
-                              disabled: pool?.disabled === true,
-                              saving: savingPool === id,
-                              onToggleDisabled: (next) => onToggleDisabled(id, next),
-                            },
-                            'actions',
-                          ),
                           /* 卡片最后一行：与 XD Pool 页同款的两按钮排 —— 左边「切换
                            * 到此账号」（**当前那张不给**：它已经是当前了），右边
                            * 「签到」。签到这个按钮是**每张卡都有**的：它签的是卡片
@@ -2519,26 +2472,18 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
      * 账号卡里的控件行：三个配置页同一套。
      *
      * 完全手动语义（本 fork）：账号之间没有分配策略 / 轮换 / 冷却，卡上的操作
-     * 只剩两件**手动管理**的事 ——
+     * 只剩一件**手动管理**的事 ——
      *
-     *   「停用 / 启用」：写 `disabledAccountIds`，停用的账号不会被取号；
      *   「移出池子」：只在传了 `onRemove` 时渲染（Trae 半边没有「移出」概念，
      *   不给它硬塞一个按不动的按钮）。
      *
-     * 早先这里的「参与轮换」勾选与「保留额度」输入已随分配策略一并删除。
+     * 早先这里的「参与轮换」勾选 / 「保留额度」输入 / 「停用」按钮都已按完全手动
+     * 语义删除 —— 停用不影响任何请求（取号只认手动选中的那一个）。
      */
-    function CardActions({ locked, disabled, onToggleDisabled, saving, onRemove, removeBusy }) {
+    function CardActions({ locked, onRemove, removeBusy }) {
       return jsxs('div', {
         className: 'wbc-bar',
         children: [
-          jsx('button', {
-            type: 'button',
-            className: 'wbc-btn',
-            title: disabled === true ? '恢复这个账号参与取号' : '停用后取号不再选中它（请求失败时请手动切换）',
-            disabled: locked === true || saving === true,
-            onClick: () => onToggleDisabled(disabled !== true),
-            children: disabled === true ? '启用' : '停用',
-          }),
           jsx('div', { className: 'wbc-spacer' }),
           typeof onRemove !== 'function'
             ? null
@@ -3013,7 +2958,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       creditsAtMs,
       onRefresh,
       onAddAccount,
-      onToggle,
       onRemove,
       onSelect,
       /**
@@ -3029,7 +2973,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
       checkinNote,
     }) {
       const accounts = asArray(status?.accounts);
-      const usable = accounts.filter((a) => a.disabled !== true).length;
       /**
        * 「当前使用」的那一个 —— 请求就固定用它。
        *
@@ -3212,7 +3155,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             ? jsx(StatsRow, {
                 items: [
                   { label: '账号', value: fmtNum(accounts.length), sub: '个已入池' },
-                  { label: '可用', value: fmtNum(usable), sub: '未被停用' },
                   {
                     // 「当前使用」是谁：这是本页最该一眼看到的一件事 —— 请求就打在
                     // 它身上。它这一轮的余额（真正在扣的那份）与全池合计退到 sub，
@@ -3252,13 +3194,12 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                         name: a.label ?? a.id,
                         // 完全手动：只有「当前使用」那张是亮的，其余卡片压暗。
                         // 不可用（停用）也压暗 —— 具体原因由标签说明。
-                        dim: a.disabled === true || isSelected !== true,
+                        dim: isSelected !== true,
                         tags: [
                           isServing ? { text: '本次调用', cls: 'wbc-tag wbc-tag-on' } : null,
                           isSelected
                             ? { text: '当前使用', cls: isServing ? 'wbc-tag' : 'wbc-tag wbc-tag-on' }
                             : { text: '备用', cls: 'wbc-tag' },
-                          a.disabled === true ? { text: '已停用', cls: 'wbc-tag' } : null,
                           expired ? { text: '令牌已过期', cls: 'wbc-tag wbc-tag-warn' } : null,
                         ],
                         rows: [
@@ -3289,9 +3230,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                             CardActions,
                             {
                               locked,
-                              disabled: a.disabled === true,
-                              onToggleDisabled: (next) => onToggle(a.id, next),
-                              saving: busy === true,
                               onRemove: () => onRemove(a.id),
                               removeBusy: busy === true,
                             },
@@ -3911,7 +3849,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         fullName: name || id,
         credits:
           typeof raw?.credits === 'number' && Number.isFinite(raw.credits) ? raw.credits : undefined,
-        disabled: raw?.disabled === true,
         expired: raw?.expired === true,
         pinned: raw?.pinned === true,
         serving: raw?.serving === true,
@@ -3930,7 +3867,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             id: a.id,
             name: a.nickname ?? a.label ?? '',
             credits: accountCreditsOf(a),
-            disabled: a.disabled,
             pinned: pinned !== '' && a.id === pinned,
             serving: serving !== '' && a.id === serving,
             error: a.creditsError,
@@ -4004,7 +3940,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             credits: isServing
               ? (accountCreditsOf(serving, 'qoder') ?? accountCreditsOf(a, 'qoder'))
               : accountCreditsOf(a, 'qoder'),
-            disabled: a.disabled,
             expired: a.expired,
             pinned: typeof a.id === 'string' && a.id !== '' && a.id === pinned,
             serving: isServing,
@@ -4558,7 +4493,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         // 但选中账号不可用时上一轮可能根本没扣到它。
         if (row.pinned === true) push('on', row.family === 'wb' ? '已固定' : '当前使用');
         if (row.serving === true) push(row.pinned === true ? 'muted' : 'on', '本次调用');
-        if (row.disabled === true) push('warn', '已停用');
         if (row.expired === true) push('warn', '凭据已过期');
         if (row.error !== '') push('warn', `额度读不到：${row.error}`);
         return tags.map((tag, i) =>
@@ -4592,14 +4526,11 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         const hideSelect = unpin === false && row.pinned === true;
         const selectTitle = unpin
           ? '取消固定后请求会失败，请手动切换'
-          : row.disabled === true
-            ? '这个账号已停用：选中它请求会失败，请先启用或换一个'
             : `让 ${row.fullName} 成为「当前账号」，请求只用它`;
         return jsxs(
           'div',
           {
             className: 'wotr-credit-row',
-            'data-off': row.disabled === true ? '1' : '0',
             'data-serving': row.serving === true ? '1' : '0',
             children: [
               jsxs('div', {
@@ -5188,29 +5119,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         [loadQoder],
       );
 
-      /**
-       * 停用 / 启用：往 `disabledAccountIds` 里加减这个账号。
-       *
-       * 必须**读出当前列表再合并** —— 整段覆盖写会把别的账号的停用状态清掉，
-       * 表现为「停用了 A，B 自己被启用了」。
-       */
-      const onQoderToggle = useCallback(
-        (accountId, disabled) => {
-          const current = asArray(qoderConfigSnapshot().disabledAccountIds).filter(
-            (id) => typeof id === 'string',
-          );
-          const next = disabled === true
-            ? [...new Set([...current, accountId])]
-            : current.filter((id) => id !== accountId);
-          const want = disabled === true;
-          return writeQoderPoolField(
-            'disabledAccountIds',
-            next,
-            (doc) => asArray(doc?.disabledAccountIds).includes(accountId) === want,
-          );
-        },
-        [qoderConfigSnapshot, writeQoderPoolField],
-      );
 
       const onQoderRemove = useCallback(
         (accountId) => qoderAction(`${SELF_API}/qoder/pool/remove`, { accountId }),
@@ -5465,7 +5373,6 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
         creditsAtMs: qoderCreditsAtMs,
         onRefresh: loadQoder,
         onAddAccount: onQoderAddAccount,
-        onToggle: onQoderToggle,
         onRemove: onQoderRemove,
         onSelect: onQoderSelect,
         // 每日签到（按账号，不切号）：正在签的 id / 本页各账号的答复 / 顶部结论。

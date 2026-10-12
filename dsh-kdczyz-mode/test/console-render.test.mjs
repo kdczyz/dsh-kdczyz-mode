@@ -744,7 +744,6 @@ for (const [tabId, label, mustHave] of [
       '当前使用',
       '备用',
       '切换到此账号',
-      '停用',
       '移出池子',
       // 分配策略三按钮（优先/轮换/均衡）在 Qoder 侧已删除：轮换与均衡会在每次
       // 请求上换账号，正是「固定了账号请求还是打到别号上」的来源。剩下的是一句
@@ -1562,18 +1561,10 @@ await (async () => {
         JSON.stringify(found.map((b) => b.label)),
       );
       ok(
-        'XD Pool 账号区仍有手动控件（停用 / 切换到此账号）',
-        buttonOf(found, '停用') !== undefined && buttonOf(found, '切换到此账号') !== undefined,
+        'XD Pool 账号区仍有手动控件（切换到此账号）',
+        buttonOf(found, '切换到此账号') !== undefined,
         JSON.stringify(found.map((b) => b.label)),
       );
-      // 写入类操作仍会刷新池状态：点「停用」走 /accounts/disabled 后重读
-      // ⚠️ 不 await onClick 的返回值：写入后的重读依赖桩接口逐拍落地，
-      // 等一个宏任务就够（与 Qoder 块同款约定）。
-      const beforeStatus = statusCalls;
-      const disableBtn = buttonOf(found, '停用');
-      void disableBtn.onClick();
-      await new Promise((r) => setTimeout(r, 0));
-      ok('XD Pool 点「停用」写入后刷新了池状态', statusCalls > beforeStatus, `${beforeStatus} → ${statusCalls}`);
     }
 
     // —— Trae：同样没有分配策略按钮（号池只剩停用这一项设置） ——
@@ -1585,8 +1576,8 @@ await (async () => {
         JSON.stringify(found.map((b) => b.label)),
       );
       ok(
-        'Trae 账号区仍有手动控件（停用 / 切换到此账号）',
-        buttonOf(found, '停用') !== undefined && buttonOf(found, '切换到此账号') !== undefined,
+        'Trae 账号区仍有手动控件（切换到此账号）',
+        buttonOf(found, '切换到此账号') !== undefined,
         JSON.stringify(found.map((b) => b.label)),
       );
     }
@@ -1608,7 +1599,7 @@ await (async () => {
  *
  * 这一段原先打在「账号」页右列（Trae）上；那一页删掉后，同一条读回确认链
  * 由 trae 配置页的「账号」区走（`writePoolField` → `writeTraeField`），
- * 所以这里改成 `0: 'trae-config'`、在那一页里点「停用」。
+ * 所以这里改成 `0: 'trae-config'`、在那一页里点「切换到此账号」。
  */
 await (async () => {
   const prevFetch = globalThis.fetch;
@@ -1641,8 +1632,8 @@ await (async () => {
      * （表现为「按钮明明在，第二次一个都找不到」）。
      */
     const found = collectButtons(Page({}));
-    const button = found.find((b) => b.label === '停用');
-    ok('Trae 页找得到「停用」按钮（号池只剩停用这一项设置）', button !== undefined, JSON.stringify(found.map((b) => b.label)));
+    const button = found.find((b) => b.label === '切换到此账号');
+    ok('Trae 页找得到「切换到此账号」按钮', button !== undefined, JSON.stringify(found.map((b) => b.label)));
     // ⚠️ 不 await onClick：写入后的重读打的是没桩的接口（永远 pending），
     // 写入本身同步发生，等一个宏任务就够。
     void button.onClick();
@@ -1985,42 +1976,6 @@ await (async () => {
         && buttonIn(cardWith(afterCol, 'qoder-user@example.com'), '切换到此账号') !== null,
     );
 
-    // ② 停用 / 启用：写 disabledAccountIds（合并式，不能整段覆盖别人的状态）。
-    //    控件是卡里的「停用 / 启用」按钮（CardActions，三个配置页同款）——
-    //    完全手动语义下「参与轮换」勾选已随分配策略删除，启停就这一颗按钮。
-    writes.length = 0;
-    doc = { ...doc, disabledAccountIds: ['q3'] };
-    react.reset();
-    tree = Page({});
-    const q1Card = cardWith(qoderPanelOf(tree), 'qoder-user@example.com');
-    const disableBtn = buttonIn(q1Card, '停用');
-    ok('账号卡里有「停用」按钮（未停用状态）', disableBtn !== null, JSON.stringify(disableBtn));
-    // ⚠️ 不 await onClick 的返回值：写入之后的「重读号池」打的是本块没桩的接口
-    // （永远 pending），await 它会挂死。写入本身是同步发生的，等一个宏任务就够。
-    void disableBtn.onClick();
-    await new Promise((r) => setTimeout(r, 0));
-    const disabledWrite = writes.find(([f]) => f === 'disabledAccountIds');
-    ok(
-      '点「停用」写 disabledAccountIds 且保留已有条目',
-      Array.isArray(disabledWrite?.[1]) && disabledWrite[1].includes('q1') && disabledWrite[1].includes('q3'),
-      JSON.stringify(disabledWrite ?? null),
-    );
-
-    writes.length = 0;
-    doc = { ...doc, disabledAccountIds: ['q1', 'q3'] };
-    react.reset();
-    tree = Page({});
-    const enableBtn = buttonIn(cardWith(qoderPanelOf(tree), 'qoder-user@example.com'), '启用');
-    ok('已停用的账号卡按钮是「启用」', enableBtn !== null, JSON.stringify(enableBtn));
-    void enableBtn.onClick();
-    await new Promise((r) => setTimeout(r, 0));
-    const enableWrite = writes.find(([f]) => f === 'disabledAccountIds');
-    ok(
-      '点「启用」从 disabledAccountIds 里摘掉它',
-      Array.isArray(enableWrite?.[1]) && !enableWrite[1].includes('q1') && enableWrite[1].includes('q3'),
-      JSON.stringify(enableWrite ?? null),
-    );
-
     // ③ 保留额度已随分配策略删除：卡片上不应再有「保留额度」输入框
     writes.length = 0;
     doc = { ...doc, disabledAccountIds: [], creditReserves: {} };
@@ -2202,7 +2157,6 @@ await (async () => {
     'trae-backup@example.com', // 号池账号卡
     '当前使用',              // 首标签：选中的那张亮着
     '备用',
-    '停用',                  // 完全手动语义下号池只剩启停这一项设置
     '切换到此账号',
   ]) {
     ok(`Trae 配置页渲染出「${must}」`, text.includes(must), text.slice(0, 200));
@@ -2290,11 +2244,6 @@ await (async () => {
   }
   ok('号池快照为空时 Trae 页仍渲染', err === null && text.includes('trae-user@example.com'), err?.message);
   ok(
-    '号池快照为空时 Trae 账号区仍有「停用」按钮（启停不因快照为空而消失）',
-    text.includes('停用'),
-    text.slice(0, 240),
-  );
-  ok(
     '号池快照为空时 Trae 账号区没有分配策略按钮',
     ['优先模式', '轮换模式', '均衡模式'].every((l) => text.includes(l) === false),
     text.slice(0, 240),
@@ -2368,7 +2317,6 @@ await (async () => {
     '冷却备用号',
     '备用',                  // 首标签与另两页同款
     '当前使用',
-    '停用',                  // 启停按钮（完全手动语义下号池只剩这一项设置）
     '移出池子',
     '已移出账号池',          // ignored 区
     '已移出号',
@@ -2559,99 +2507,6 @@ await (async () => {
     const text = collectAll(Page({}));
     ok('国际版不渲染积分自动化区块', !text.includes('积分自动化'), text.slice(0, 200));
     ok('国际版仍渲染账号区', text.includes('账号'));
-  } finally {
-    globalThis.fetch = prevFetch;
-  }
-})();
-
-/**
- * —— 2g-3) XD Pool 写入：点「停用」要走 /accounts/disabled 路由并刷新状态 ——
- *
- * 只断言渲染不够 —— 控件画出来了但 onClick 写错地方，测试照样全绿。
- * 完全手动语义下 WorkBuddy 号池只剩启停这一项设置，且启停**必须走 HTTP 路由**
- * （`/accounts/disabled` 在服务端做跨区域合并，不能直接写 settings —— 那会把
- * 另一区域已停用的账号静默重新启用）。这里抓出按钮的 onClick 真点一次，
- * 断言请求打到了路由上，并且之后真的刷新了状态。
- */
-await (async () => {
-  const writes = [];
-  let statusCalls = 0;
-  let disabledCalls = 0;
-  const prevFetch = globalThis.fetch;
-  globalThis.fetch = (url) => {
-    if (typeof url === 'string' && url.includes('/plugins/dsh-workbuddy-xdpool/status')) {
-      statusCalls += 1;
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(poolStatusFixture) });
-    }
-    if (typeof url === 'string' && url.includes('/plugins/dsh-workbuddy-xdpool/accounts/disabled')) {
-      disabledCalls += 1;
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-    }
-    return new Promise(() => {});
-  };
-  try {
-    const react = makeReact({ 0: 'pool-config' }, true);
-    const jsxRuntime = makeJsxRuntime();
-    const wbScope = makeScope({});
-    wbScope.set = (field, value) => {
-      writes.push([field, value]);
-      return Promise.resolve(true);
-    };
-    const Page = createConsoleSection({
-      react,
-      jsxRuntime,
-      embedded: { wbSettings: makeHandle(wbScope), traeSettings: makeHandle(makeTraeScope({})) },
-    });
-    const collectAll = (node) => {
-      const out = [];
-      collectText(node, out);
-      return out.join(' | ');
-    };
-    collectAll(Page({}));
-    await new Promise((r) => setTimeout(r, 0));
-    react.reset();
-    const tree = Page({});
-
-    /** 在元素树里找文字匹配的按钮并取 onClick */
-    const findButton = (label) => {
-      let handler = null;
-      (function walk(n, d = 0) {
-        if (handler !== null || d > 40 || n === null || typeof n !== 'object') return;
-        if (Array.isArray(n)) {
-          for (const c of n) walk(c, d);
-          return;
-        }
-        const { type, props } = n;
-        if (typeof type === 'string' && type === 'button' && props?.children === label) {
-          handler = props.onClick;
-          return;
-        }
-        if (typeof type === 'function') {
-          try {
-            walk(type(props ?? {}), d + 1);
-          } catch {
-            /* 忽略渲染失败的子树 */
-          }
-          return;
-        }
-        if (typeof type === 'string') walk(props?.children, d + 1);
-      })(tree);
-      return handler;
-    };
-
-    const before = statusCalls;
-    const onClick = findButton('停用');
-    ok('找得到「停用」按钮', typeof onClick === 'function');
-    // ⚠️ 不 await onClick：写入后的重读走的是桩接口（已 stub，但链是异步的），
-    // 等一个宏任务再断言计数。
-    void onClick();
-    await new Promise((r) => setTimeout(r, 0));
-    ok(
-      '点击「停用」打到 /accounts/disabled 路由（而非 settings 字段）',
-      disabledCalls === 1 && writes.length === 0,
-      `disabledCalls=${disabledCalls} writes=${JSON.stringify(writes)}`,
-    );
-    ok('写入后刷新了池状态', statusCalls > before, `${before} → ${statusCalls}`);
   } finally {
     globalThis.fetch = prevFetch;
   }
@@ -3255,101 +3110,6 @@ await (async () => {
       String(switchIn(cardWith(busyTree, 'qoder-spare@example.com'))?.disabled),
     );
     release?.();
-  } finally {
-    globalThis.fetch = prevFetch;
-  }
-})();
-
-/**
- * —— 2g-3b) XD Pool 的账号启停必须走路由，不能整段覆盖设置 ——
- *
- * `disabledAccountIds` 是国内版与国际版**共用**的一份扁平数组（两个 provider 注册
- * 的是同一个 `settingsNs` + `settingsPath: []`），而配置页一次只拿得到一个区域的
- * 账号列表。照本区域的名单拼一份完整数组写回设置，另一个区域里已停用的账号会被
- * **静默重新启用** —— 那份名单只存在于设置文档里，这一页上根本看不见。
- *
- * 所以断言两件事，缺一不可：
- *   1. `POST /plugins/dsh-workbuddy-xdpool/accounts/disabled` 发出去了；
- *   2. **没有**顺手写 `disabledAccountIds` 设置 —— 后者才是这条回归的真正形态
- *      （只断言 ① 的话，将来「路由 + 顺手再写一次设置」也能全绿）。
- */
-await (async () => {
-  const writes = [];
-  const calls = [];
-  const prevFetch = globalThis.fetch;
-  globalThis.fetch = (url, init) => {
-    const u = String(url);
-    if (u.includes('/plugins/dsh-workbuddy-xdpool/status')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(poolStatusFixture) });
-    }
-    if (u.includes('/accounts/disabled')) {
-      calls.push({ url: u, method: init?.method, body: init?.body });
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve({ ok: true, accountId: 'u1', disabled: true }),
-      });
-    }
-    return new Promise(() => {});
-  };
-  try {
-    const react = makeReact({ 0: 'pool-config' }, true);
-    const wbScope = makeScope({ disabledAccountIds: ['另一个区域的账号'] });
-    wbScope.set = (field, value) => {
-      writes.push([field, value]);
-      return Promise.resolve(true);
-    };
-    const Page = createConsoleSection({
-      react,
-      jsxRuntime: makeJsxRuntime(),
-      embedded: { wbSettings: makeHandle(wbScope), traeSettings: makeHandle(makeTraeScope({})) },
-    });
-    collectText(Page({}), []);
-    await new Promise((r) => setTimeout(r, 0));
-    react.reset();
-    const tree = Page({});
-
-    const card = collectByClass(tree, 'wbc-card').find((c) => textOfNode(c).includes('池内主号'));
-    ok('找得到「池内主号」那张账号卡', card !== undefined);
-    /** 卡里那个「停用」按钮（启停控件，CardActions 三个配置页同款） */
-    const buttons = [];
-    (function walk(n, d = 0) {
-      if (n === null || n === undefined || typeof n !== 'object' || d > 40) return;
-      if (Array.isArray(n)) {
-        for (const c of n) walk(c, d);
-        return;
-      }
-      if (typeof n.type === 'function') {
-        try {
-          walk(n.type(n.props ?? {}), d + 1);
-        } catch {
-          /* 渲染失败的子树跳过 */
-        }
-        return;
-      }
-      if (n.type === 'button' && n.props?.children === '停用') buttons.push(n);
-      walk(n.props?.children, d + 1);
-    })(card);
-    ok('账号卡里有「停用」按钮（完全手动语义下启停就这一颗）', buttons.length === 1, `n=${buttons.length}`);
-    // ⚠️ 不 await onClick：写入后的重读依赖桩接口逐拍落地，等一个宏任务就够。
-    void buttons[0]?.props?.onClick?.();
-    await new Promise((r) => setTimeout(r, 0));
-
-    ok(
-      '点「停用」打的是 /accounts/disabled 路由',
-      calls.length === 1 && calls[0].method === 'POST' && calls[0].url.includes('/accounts/disabled'),
-      calls.map((c) => `${c.method} ${c.url}`).join(' | '),
-    );
-    ok(
-      '路由请求体只带这一个账号',
-      JSON.parse(String(calls[0]?.body ?? '{}')).accountId === 'u1' &&
-        JSON.parse(String(calls[0]?.body ?? '{}')).disabled === true,
-      String(calls[0]?.body),
-    );
-    ok(
-      '没有顺手整段覆盖 disabledAccountIds 设置（另一个区域的名单会被抹掉）',
-      !writes.some(([f]) => f === 'disabledAccountIds'),
-      JSON.stringify(writes),
-    );
   } finally {
     globalThis.fetch = prevFetch;
   }
@@ -4713,7 +4473,6 @@ console.log('\n胶囊展开的账号卡片\n');
       findByClass(findRow(node, '国内号'), 'wotr-credit-mini') !== null,
     text,
   );
-  ok('国际版那一行标着「已停用」', (() => { const o = []; collectText(findRow(node, '国际号'), o); return o.join('').includes('已停用'); })(), text);
   globalThis.fetch = prevFetch;
 }
 
@@ -5221,7 +4980,7 @@ const parityTrae = {
     return new Promise(() => {});
   };
   try {
-    for (const [tabId, label] of [['pool-config', 'XD Pool'], ['trae-config', 'Trae']]) {
+    for (const [tabId, label] of [['pool-config', 'XD Pool']]) {
       const react = makeReact({ 0: tabId }, true);
       const Page = createConsoleSection({ react, jsxRuntime: makeJsxRuntime(), embedded: makeEmbedded() });
       // 同 moduleSequenceOf：要遍历才会执行子组件、发出请求
@@ -5253,7 +5012,7 @@ const parityTrae = {
           const texts = [];
           collectText(props?.children, texts);
           const joined = texts.join('');
-          return joined.includes('停用') || joined.includes('启用') || joined.includes('移出池子');
+          return joined.includes('移出池子');
         }
         return cardHasDisable(props?.children, depth + 1);
       };
