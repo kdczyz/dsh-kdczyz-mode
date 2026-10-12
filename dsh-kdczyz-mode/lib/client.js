@@ -1100,7 +1100,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             ? jsx(Section, {
                 title: '账号',
                 sub: `${fmtNum(accounts.length)} 个账号`,
-                hint: '请求只用你「切换到此账号」选中的那一张；它被停用或移出池子时请求直接失败，不会自动换号。停用与移出池子是手动管理，保留。',
+                hint: '请求只用你「切换到此账号」选中的那一张；它被移出池子时请求直接失败，不会自动换号。移出池子是手动管理，保留。',
                 actions: [],
                 children: jsx('div', {
                   className: 'wbc-cards',
@@ -1995,7 +1995,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             ? jsx(Section, {
                 title: '账号',
                 sub: `${fmtNum(accounts.length)} 个登录 · ${checkinText}${checkinCreditText}`,
-                hint: '请求只用你「切换到此账号」选中的那一张；它被停用或不在池里时请求直接失败，不会自动换号。停用是手动管理，保留。',
+                hint: '请求只用你「切换到此账号」选中的那一张；它不在池里时请求直接失败，不会自动换号。',
                 actions: [],
                 children: jsx('div', {
                   className: 'wbc-cards',
@@ -3073,7 +3073,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
                 className: 'wbc-note',
                 'data-diagnostic': 'settings-scope',
                 title:
-                  '宿主没有暴露 `dsh-connect-qoder` 的可写设置作用域，或它尚未就绪。「切换到此账号 / 停用」都会写不进去。',
+                  '宿主没有暴露 `dsh-connect-qoder` 的可写设置作用域，或它尚未就绪。「切换到此账号 / 移出池子」都会写不进去。',
                 children: READONLY_NOTE,
               })
             : null,
@@ -3180,7 +3180,7 @@ const __WBC_CONSOLE_FACTORY__ = (react, jsxRuntime, embedded) => {
             ? jsx(Section, {
                 title: '账号',
                 sub: `${fmtNum(accounts.length)} 个账号 · 请求只用「当前使用」那张`,
-                hint: '请求只用「当前使用」的账号（完全手动：它不可用时本次请求直接失败，不会自动换号）。想换账号请点那张卡上的「切换到此账号」；停用 / 移出池子保留为手动管理。',
+                hint: '请求只用「当前使用」的账号（完全手动：它不可用时本次请求直接失败，不会自动换号）。想换账号请点那张卡上的「切换到此账号」；账号管理只有「移出池子」。',
                 children: jsx('div', {
                   className: 'wbc-cards',
                   children: accounts.map((a) => {
